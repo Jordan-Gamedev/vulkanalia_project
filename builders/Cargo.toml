@@ -1,5 +1,5 @@
 [package]
-name = "mesher"
+name = "builders"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,5 +8,5 @@ gltf = "1.4.1"
 meshopt = "0.6.2"
 
 [[bin]]
-name = "mesher"
-path = "mesher/bin/mesher.rs"
+name = "builder"
+path = "bin/builder.rs"

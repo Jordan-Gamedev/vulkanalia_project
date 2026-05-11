@@ -1,4 +1,4 @@
-cargo-features = ["panic-immediate-abort"]
+cargo-features = ["panic-immediate-abort", "profile-rustflags"]
 
 [package]
 name = "vulkanalia_project"
@@ -14,6 +14,10 @@ strip = true
 debug = 0
 split-debuginfo = "off"
 incremental = false
+rustflags = ["-C", "link-arg=/OPT:REF,ICF",
+             "-C", "link-arg=/INCREMENTAL:NO",
+             "-Zlocation-detail=none",
+             "-Zfmt-debug=none",]
 
 # To free static memory in RAM (Linux only)
 [target.'cfg(target_os = "linux")'.dependencies]
