@@ -14,10 +14,7 @@ strip = true
 debug = 0
 split-debuginfo = "off"
 incremental = false
-rustflags = ["-C", "link-arg=/OPT:REF,ICF",
-             "-C", "link-arg=/INCREMENTAL:NO",
-             "-Zlocation-detail=none",
-             "-Zfmt-debug=none",]
+rustflags = ["-Zlocation-detail=none", "-Zfmt-debug=none"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # To free static memory in RAM (Linux only)
