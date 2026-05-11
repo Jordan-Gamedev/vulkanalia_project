@@ -1,9 +1,10 @@
 use meshopt::{quantize_half, quantize_snorm, quantize_unorm};
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Result;
+use std::io::{stdout, Result, Write};
 use std::path::PathBuf;
-use std::str::FromStr;
+
+const BAR_WIDTH: usize = 28;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
@@ -24,45 +25,96 @@ struct QuantizedVertex {
 }
 
 fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    let source_root_dir = args
+        .next()
+        .unwrap_or_else(|| panic!("Mesher Usage: .\\mesher <in_directory> <out_directory>"));
+    let dest_root_dir = args
+        .next()
+        .unwrap_or_else(|| panic!("Mesher Usage: .\\mesher <in_directory> <out_directory>"));
 
-    let mut cl_args = std::env::args();
-
-    if cl_args.by_ref().len() != 3 {
+    if args.next().is_some() {
         panic!("Mesher Usage: .\\mesher <in_directory> <out_directory>");
     }
 
-    let source_root_dir = cl_args.nth(1).unwrap();
-    let dest_root_dir = cl_args.next().unwrap();
+    print_banner("Mesher / Model Compression");
 
-    // Get all 
-    let paths = traverse_directory(&source_root_dir.as_str(), "glb")?;
-
-    // Remove previous directory
-    match fs::remove_dir_all(&dest_root_dir) {
-        Ok(_) => {},
-        Err(e) => eprintln!("{e}"),
-    };
-
-    // Go over every glb that was gathered
-    for path in paths {
-        println!("Found model: {}", path.to_str().unwrap());
-
-        // Import glb
-        match gltf::import(&path) {
-            // Compress valid glb
-            Ok((glb, buffers, _)) => {
-                let (verts, inds) = compress_glb(glb, buffers)?;
-                write_mesh_to_file(&source_root_dir, &dest_root_dir, path.parent().unwrap().as_os_str(), &path.file_stem().unwrap(), verts, inds)?;
-            }
-            // Invalid glb
-            Err(e) => {
-                eprintln!("Failed to load the model! {e}");
-                continue;
-            },
-        };
+    let paths = traverse_directory(&source_root_dir, "glb")?;
+    if paths.is_empty() {
+        println!("No model files found.");
+        return Ok(());
     }
 
+    if let Err(e) = fs::remove_dir_all(&dest_root_dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("{e}");
+        }
+    }
+
+    render_progress("Meshing models", 0, paths.len())?;
+
+    for (index, path) in paths.iter().enumerate() {
+        match gltf::import(path) {
+            Ok((glb, buffers, _)) => {
+                let (verts, inds) = compress_glb(glb, buffers)?;
+                write_mesh_to_file(
+                    &source_root_dir,
+                    &dest_root_dir,
+                    path.parent().unwrap().as_os_str(),
+                    &path.file_stem().unwrap(),
+                    verts,
+                    inds,
+                )?;
+            }
+            Err(e) => {
+                eprintln!("Failed to load {}: {e}", path.display());
+            }
+        }
+
+        render_progress("Meshing models", index + 1, paths.len())?;
+    }
+
+    finish_progress();
     Ok(())
+}
+
+fn print_banner(title: &str) {
+    println!();
+    println!("+==============================================================================+");
+    println!("| {:<76} |", title);
+    println!("+==============================================================================+");
+    println!();
+}
+
+fn render_progress(label: &str, done: usize, total: usize) -> Result<()> {
+    let total = total.max(1);
+    let done = done.min(total);
+    let filled = done * BAR_WIDTH / total;
+
+    let mut bar = String::with_capacity(BAR_WIDTH + 2);
+    bar.push('[');
+    for index in 0..BAR_WIDTH {
+        if index < filled {
+            bar.push('=');
+        } else {
+            bar.push('-');
+        }
+    }
+    bar.push(']');
+
+    let count = if done == total {
+        format!("\x1b[32m{done}/{total}\x1b[0m")
+    } else {
+        format!("{done}/{total}")
+    };
+
+    print!("\r\x1b[2K\x1b[1m{label}\x1b[0m {bar} {count}");
+    stdout().flush()?;
+    Ok(())
+}
+
+fn finish_progress() {
+    println!();
 }
 
 fn compress_glb(glb: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>)> {
@@ -82,9 +134,6 @@ fn compress_glb(glb: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> Result
             glb_indices.extend(new_indices.into_iter().map(|index| index + index_offset));
         }
     }
-
-    // Compress glb
-    println!("Compressing file. . .");
 
     // Remap vertex and index data
     let (vertex_count, remapped) = meshopt::generate_vertex_remap(glb_vertices.as_slice(), Some(glb_indices.as_slice()));
@@ -154,13 +203,11 @@ fn compress_glb(glb: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> Result
 }
 
 fn write_mesh_to_file(source_root_dir: &String, dest_root_dir: &String, source_path_dir: &OsStr, source_path_file_name: &OsStr, vertices: Option<Vec<u8>>, indices: Option<Vec<u8>>) -> Result<()> {
-    println!("Exporting file. . .");
-
     let vertices = vertices.unwrap();
     let indices = indices.unwrap();
 
     let dest_path_dir = {
-        let source_path_string = String::from_str(source_path_dir.to_str().unwrap()).unwrap();
+        let source_path_string = String::from(source_path_dir.to_str().unwrap());
         source_path_string.replace(source_root_dir.as_str(), dest_root_dir.as_str())
     };
 
@@ -172,16 +219,14 @@ fn write_mesh_to_file(source_root_dir: &String, dest_root_dir: &String, source_p
 
     // Write vertex contents to file
     let file_name = format!("{}{}{}.vertbuff", dest_path_dir.as_str(), std::path::MAIN_SEPARATOR, source_path_file_name.to_str().unwrap());
-    match fs::write(file_name, vertices.as_slice()) {
-        Ok(_) => println!("Vertex Export Successful!"),
-        Err(e) => eprintln!("{e}"),
+    if let Err(e) = fs::write(file_name, vertices.as_slice()) {
+        eprintln!("{e}");
     }
 
     // Write index contents to file
     let file_name = format!("{}{}{}.indbuff", dest_path_dir.as_str(), std::path::MAIN_SEPARATOR, source_path_file_name.to_str().unwrap());
-    match fs::write(file_name, indices.as_slice()) {
-        Ok(_) => println!("Index Export Successful!"),
-        Err(e) => eprintln!("{e}"),
+    if let Err(e) = fs::write(file_name, indices.as_slice()) {
+        eprintln!("{e}");
     }
 
     Ok(())
@@ -265,32 +310,21 @@ fn get_data_from_primitive(buffers: Vec<gltf::buffer::Data>, primitive: gltf::Pr
 }
 
 fn traverse_directory(dir: &str, ext: &str) -> Result<Vec<PathBuf>> {
-    let mut paths: Vec<PathBuf> = vec![];
+    let mut paths = Vec::new();
 
-    // Get all files in current directory
-    paths.extend(fs::read_dir(dir.to_string()).expect(format!("Failed to open directory: {dir}").as_str())
-        .into_iter()
-        .filter(|f| {
-            
-            // Only get files that end with glb
-            let file = f.as_ref().unwrap();
-            file.file_type().unwrap().is_file() && file.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case(ext))
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
 
-        })
-        .map(|f| f.unwrap().path())
-        .collect::<Vec<PathBuf>>()
-    );
+        if entry.file_type()?.is_dir() {
+            paths.extend(traverse_directory(path.to_str().unwrap(), ext)?);
+            continue;
+        }
 
-    // Afterwards go into all the subdirectories in current directory
-    paths.extend(fs::read_dir(dir.to_string()).expect(format!("Failed to open directory: {dir}").as_str())
-        .into_iter()
-        .filter(|f| f.as_ref().unwrap().file_type().unwrap().is_dir())
-        .map(|f| traverse_directory(f.unwrap().path().to_str().unwrap(), ext).unwrap())
-        .collect::<Vec<Vec<PathBuf>>>()
-        .into_iter()
-        .flatten()
-        .collect::<Vec<PathBuf>>()
-    );
+        if path.extension().is_some_and(|candidate_ext| candidate_ext.eq_ignore_ascii_case(ext)) {
+            paths.push(path);
+        }
+    }
 
     Ok(paths)
 }
