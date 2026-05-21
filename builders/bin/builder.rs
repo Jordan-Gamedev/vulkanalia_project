@@ -205,15 +205,16 @@ fn compile_shaders() -> Result<()> {
     for (index, shader_path) in shader_paths.iter().enumerate() {
         match Command::new(slang_command)
             .args([
-                &format!("\"{}\"", shader_path.to_str().unwrap()),
-                "-target spirv",
-                "-profile spirv_1_3",
+                "-target", "spirv",
+                "-profile", "spirv_1_3",
                 "-emit-spirv-directly",
                 "-fvk-use-entrypoint-name",
-                "-entry vertMain",
-                "-entry fragMain",
-                &format!("-o {}", shader_path.file_stem().unwrap().to_str().unwrap()),
+                "-entry", "vertMain",
+                "-entry", "fragMain",
+                "-o",
             ])
+            .arg(shader_path.with_extension("spv"))
+            .arg(shader_path)
             .output() {
                 Ok(_) => { },
                 Err(e) => { log_color(&format!("\n{}", e), ColorType::Red); failed_shaders.push(shader_path.to_str().unwrap()) }

@@ -81,7 +81,7 @@ impl App {
             Arc::make_mut(&mut app.texture_engine).load_texture(app.device_context.as_ref().clone().unwrap(), rp_engine_builder.0.clone(), command_engine_builder.0.clone(), "".to_string())?;
 
             // Load model
-            model_engine_builder.0.load_model(app.device_context.as_ref().clone().unwrap(), &command_engine_builder.0.clone(), "".to_string())?;
+            model_engine_builder.0.load_model(app.device_context.as_ref().clone().unwrap(), command_engine_builder.0.clone(), "".to_string())?;
 
             // Create descriptor sets
             rp_engine_builder.create_descriptor_sets(

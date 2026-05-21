@@ -41,7 +41,7 @@ impl ModelEngine {
     }
 
     /// Todo: make it actually use the path (or some other method) to get the data
-    pub fn load_model(&mut self, context: DeviceContext, command_engine: &CommandEngine, path: String) -> Result<()> {
+    pub fn load_model(&mut self, context: DeviceContext, command_engine: CommandEngine, path: String) -> Result<()> {
         // Add one to the instance count if the model is already loaded and early exit
         if let Some(model) = self.loaded_models.get_mut(&path) {
             model.instance_count += 1;
@@ -67,6 +67,11 @@ impl ModelEngine {
             Err(_) => return Err(anyhow!("Failed to decode index buffer")),
         };
 
+        unsafe {
+            self.add_vertex_buffer(context.clone(), &command_engine, vertices)?;
+            self.add_index_buffer(context, &command_engine, indices)?;
+        }
+
         let model = Model {
             vertex_offset: self.get_vertex_count() as u32,
             vertex_length: vertex_count as u32,
@@ -74,16 +79,14 @@ impl ModelEngine {
             index_length: index_count as u32,
             instance_count: 1,
         };
+        self.loaded_models.insert(path.clone(), model);
 
-        unsafe {
-            self.add_vertex_buffer(context.clone(), command_engine, vertices)?;
-            self.add_index_buffer(context, command_engine, indices)?;
-        }
+        println!("Successfully loaded model: {}", path);
 
         Ok(())
     }
 
-    pub fn unload_model(&mut self, context: DeviceContext, command_engine: &CommandEngine, path: String) -> Result<()> {
+    pub fn unload_model(&mut self, context: DeviceContext, command_engine: CommandEngine, path: String) -> Result<()> {
         let (unloading_model, fully_unloaded) = if let Some(model) = self.loaded_models.get_mut(&path) {
             model.instance_count -= 1;
             (*model, model.instance_count == 0)
@@ -95,8 +98,8 @@ impl ModelEngine {
             // Unload model from memory
             self.loaded_models.remove(&path);
             unsafe {
-                self.remove_vertex_buffer(context.clone(), command_engine, unloading_model)?;
-                self.remove_index_buffer(context, command_engine, unloading_model)?;
+                self.remove_vertex_buffer(context.clone(), &command_engine, unloading_model)?;
+                self.remove_index_buffer(context, &command_engine, unloading_model)?;
             }
 
             // Update other model offsets
