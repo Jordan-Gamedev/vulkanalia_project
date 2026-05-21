@@ -1,0 +1,35 @@
+Low End (720p@60)
+
+Memory Requirements: 512 MiB free
+                    -320 MiB Textures
+                    -108 MiB Game
+                    - 50 MiB Audio
+                    - 30 MiB Models
+                    - 4 MiB Other
+
+40 actively loaded texture packs w/
+
+                                2048 albedo
+                                1024 normal
+                                1024 metallic_roughness_ao
+                                BC7/ASTC4x4 and mipmaps
+
+Game
+    - 57 MiB color/depth buffers w/ 4x MSAA
+    - 23 MiB vulkan drivers/pipelines
+    - 16 MiB shaders
+    - 8 MiB gameplay/components
+    - 4 MiB active model matrices (131,072 32-bit) (65,536 64-bit)
+
+Models
+    1,310,720 max triangles loaded at once (excludes instancing)
+    130 unique 10k-triangle models
+
+
+
+No need to allocate shadow maps when shadow volumes are an option!
+
+Blog on optimizing shadow volumes -> https://lukaskalbertodt.github.io/2023/11/18/tiled-soft-shadow-volumes.html
+
+An alternative approach to textures is to use SDF "textures" (similar to svg images but gpu usable),
+    which TREMENDOUSLY saves vram and allows for infinitely perfect textures
