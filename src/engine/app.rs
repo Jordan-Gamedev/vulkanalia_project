@@ -9,6 +9,10 @@
 
 use anyhow::Result;
 use vulkanalia::vk::DeviceV1_0;
+use vulkanalia::prelude::v1_0::*;
+use crate::components::render::Render;
+use crate::ecs::World;
+use crate::engine::texture_engine::SamplerContents;
 use crate::engine::{CommandEngine, CommandEngineBuilder};
 use crate::engine::DeviceContext;
 use crate::engine::{ModelEngine, ModelEngineBuilder};
@@ -25,11 +29,13 @@ pub struct App {
     pub command_engine: Arc<CommandEngine>,
     pub model_engine: Arc<ModelEngine>,
     pub texture_engine: Arc<TextureEngine>,
+    pub world: World,
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    pub fn new(world: World) -> Result<Self> {
         let mut app = App::default();
+        app.world = world;
 
         unsafe {
             // Create builders
@@ -78,7 +84,19 @@ impl App {
             model_engine_builder.create_uniform_buffers(app.device_context.as_ref().clone().unwrap(), present_engine_builder.0.clone())?;
 
             // Load texture
-            Arc::make_mut(&mut app.texture_engine).load_texture(app.device_context.as_ref().clone().unwrap(), rp_engine_builder.0.clone(), command_engine_builder.0.clone(), "".to_string())?;
+            Arc::make_mut(&mut app.texture_engine).load_texture(
+                app.device_context.as_ref().clone().unwrap(),
+                rp_engine_builder.0.clone(),
+                command_engine_builder.0.clone(),
+                "cuttlefish_albedo".to_string(),
+                SamplerContents::new(
+                    vk::Filter::LINEAR,
+                    vk::SamplerAddressMode::REPEAT,
+                    vk::SamplerAddressMode::REPEAT,
+                    vk::SamplerAddressMode::REPEAT,
+                    vk::SamplerMipmapMode::LINEAR,
+                ),
+            )?;
 
             // Load model
             model_engine_builder.0.load_model(app.device_context.as_ref().clone().unwrap(), command_engine_builder.0.clone(), "".to_string())?;
@@ -91,12 +109,15 @@ impl App {
                 app.texture_engine.as_ref().clone(),
             )?;
 
+            let texture_slot_index = app.texture_engine.as_ref().get_texture_slot_index(&app.world.query::<Render>().unwrap().0[0].material.albedo_name).unwrap_or_default();
+
             // Create command buffers
             command_engine_builder.create_command_buffers(
                 app.device_context.as_ref().clone().unwrap().device,
                 present_engine_builder.0.clone(),
                 rp_engine_builder.0.clone(),
                 model_engine_builder.0.clone(),
+                texture_slot_index,
             )?;
 
             // Create sync objects

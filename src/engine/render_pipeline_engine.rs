@@ -10,6 +10,7 @@
 use anyhow::Result;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
+use std::mem::size_of;
 
 use crate::engine::{ModelEngine, UniformBufferObject, PresentEngine, QuantizedVertex, TextureEngine};
 use super::device_context::DeviceContext;
@@ -314,8 +315,14 @@ impl RenderPipelineEngineBuilder {
         // Layout
     
         let set_layouts = &[self.0.descriptor_set_layout];
+        let push_constant_ranges = &[vk::PushConstantRange::builder()
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(size_of::<u32>() as u32)
+            .build()];
         let layout_info = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(set_layouts);
+            .set_layouts(set_layouts)
+            .push_constant_ranges(push_constant_ranges);
         self.0.pipeline_layout = context.device.create_pipeline_layout(&layout_info, None)?;
     
         // Create

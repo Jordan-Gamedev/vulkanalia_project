@@ -1,7 +1,27 @@
+use vulkanalia_project::components::render::{Material, Render};
+use vulkanalia_project::ecs::{World};
 use vulkanalia_project::engine::App;
 
 fn main() {
-    let mut app = App::new().unwrap();
+    let mut world = World::new();
+    let entity = world.create_entity();
+    let render_component = Render {
+        model_matrix_index: 0,
+        model_name: "Limpet".to_string(),
+        material: Material {
+            sampler_index: 0,
+            albedo_name: "cuttlefish_albedo".to_string(),
+            normal_ao_name: String::new(),
+            metallic_roughness_emissive_name: String::new(),
+        },
+        is_receiving_shadows: true,
+        is_casting_shadows: true,
+    };
+    world.add_component(entity, render_component);
+
+    let mut app = App::new(world).unwrap();
+
+    // Run the app
     app.run();
 }
 

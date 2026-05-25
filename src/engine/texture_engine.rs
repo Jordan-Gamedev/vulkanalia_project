@@ -18,25 +18,33 @@ use super::device_context::DeviceContext;
 
 #[derive(Clone, Default)]
 pub struct TextureEngine {
+    samplers: HashMap<SamplerContents, vk::Sampler>,
+    sampler_usage_amount: HashMap<SamplerContents, u32>,
     loaded_textures: HashMap<String, Texture>,
-    available_slots: Vec<u32>,
+    available_texture_slots: Vec<u32>,
 }
 
 impl TextureEngine {
+    pub fn get_texture_slot_index(&self, path: &str) -> Option<u32> {
+        self.loaded_textures.get(path).map(|texture| texture.slot_index)
+    }
+
     pub fn destroy(&mut self, device: Device) {
         unsafe {
             self.loaded_textures.values().for_each(|t| {
-                device.destroy_sampler(t.sampler, None);
                 device.destroy_image_view(t.image_view, None);
                 device.destroy_image(t.image, None);
                 device.free_memory(t.memory, None);
             });
+            self.samplers.iter().for_each(|(_, s)| device.destroy_sampler(*s, None));
         }
+        self.samplers.clear();
+        self.sampler_usage_amount.clear();
         self.loaded_textures.clear();
-        self.available_slots.clear();
+        self.available_texture_slots.clear();
     }
 
-    pub fn load_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, command_engine: CommandEngine, path: String) -> Result<()> {
+    pub fn load_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, command_engine: CommandEngine, path: String, sampler_contents: SamplerContents) -> Result<()> {
         if let Some(texture) = self.loaded_textures.get_mut(&path) {
             texture.instance_count += 1;
             return Ok(());
@@ -67,7 +75,11 @@ impl TextureEngine {
         let format = vk::Format::from_raw(texture.vk_format().as_raw() as i32);
         let pixel_data = texture.get_image_data(0, 0, 0).unwrap();
         let mipmap_levels = texture.levels();
-    
+        
+        // Update sampler contents mipmap levels
+        let mut sampler_contents = sampler_contents;
+        sampler_contents.mipmap_levels = mipmap_levels;
+
         // Calculate total size for all mip levels and collect per-level data
         let mut mip_sizes: Vec<usize> = Vec::with_capacity(mipmap_levels as usize);
         let mut total_size: u64 = 0;
@@ -189,33 +201,25 @@ impl TextureEngine {
     
         // Create view
         let image_view = TextureEngine::create_image_view(context.clone().device, texture_image, format, vk::ImageAspectFlags::COLOR, mipmap_levels)?;
-
-        // Create sampler
-        let info = vk::SamplerCreateInfo::builder()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(true)
-            .max_anisotropy(16.0)
-            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(false)
-            .compare_enable(false)
-            .compare_op(vk::CompareOp::ALWAYS)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-            .min_lod(0.0)
-            .max_lod(mipmap_levels as f32)
-            .mip_lod_bias(0.0);
-        let image_sampler = unsafe { context.clone().device.create_sampler(&info, None)? };
         
+        // Add one to the usage count if a sampler was found that already has required specifications, otherwise create sampler
+        let sampler = if let Some(usage_count) = self.sampler_usage_amount.get_mut(&sampler_contents) {
+            *usage_count += 1;
+            self.samplers[&sampler_contents]
+        } else {
+            let sampler = TextureEngine::create_sampler(context.clone().device, sampler_contents);
+            self.samplers.insert(sampler_contents, sampler);
+            self.sampler_usage_amount.insert(sampler_contents, 1);
+            sampler
+        };
+
         // Add texture to array of textures
-        let slot_index: Option<u32> = if self.available_slots.len() > 0 { self.available_slots.pop() } else { Some(self.loaded_textures.len() as u32) };
+        let slot_index: Option<u32> = if self.available_texture_slots.len() > 0 { self.available_texture_slots.pop() } else { Some(self.loaded_textures.len() as u32) };
         let slot_index: u32 = slot_index.unwrap();
-        self.loaded_textures.insert(path.clone(), Texture { image: texture_image, memory: texture_image_memory, image_view, sampler: image_sampler, slot_index, instance_count: 1 });
+        self.loaded_textures.insert(path.clone(), Texture { image: texture_image, memory: texture_image_memory, image_view, sampler_contents, slot_index, instance_count: 1 });
         
         // Update bindless descriptor
-        TextureEngine::update_bindless_texture(context.device, &rp_engine, slot_index, image_view, image_sampler)?;
+        TextureEngine::update_bindless_texture(context.device, &rp_engine, slot_index, image_view, sampler)?;
 
         Ok(())
     }
@@ -230,12 +234,22 @@ impl TextureEngine {
 
         if fully_unloaded {
             self.loaded_textures.remove(&path);
-            self.available_slots.push(unloading_texture.slot_index);
+            self.available_texture_slots.push(unloading_texture.slot_index);
             unsafe {
-                context.device.destroy_sampler(unloading_texture.sampler, None);
                 context.device.destroy_image_view(unloading_texture.image_view, None);
                 context.device.destroy_image(unloading_texture.image, None);
                 context.device.free_memory(unloading_texture.memory, None);
+            
+                if let Some(usage_count) = self.sampler_usage_amount.get_mut(&unloading_texture.sampler_contents) {
+                    *usage_count -= 1;
+
+                    // Unload sampler if no more textures use this sampler
+                    if *usage_count == 0 {
+                        context.device.destroy_sampler(self.samplers[&unloading_texture.sampler_contents], None);
+                        self.samplers.remove(&unloading_texture.sampler_contents);
+                        self.sampler_usage_amount.remove(&unloading_texture.sampler_contents);
+                    }
+                }
             }
         }
 
@@ -244,10 +258,31 @@ impl TextureEngine {
 
     pub fn refresh_bindless_textures(&self, device: Device, rp_engine: &RenderPipelineEngine) -> Result<()> {
         for texture in self.loaded_textures.values() {
-            TextureEngine::update_bindless_texture(device.clone(), rp_engine, texture.slot_index, texture.image_view, texture.sampler)?;
+            TextureEngine::update_bindless_texture(device.clone(), rp_engine, texture.slot_index, texture.image_view, self.samplers[&texture.sampler_contents])?;
         }
 
         Ok(())
+    }
+
+    pub fn create_sampler(device: Device, sampler_contents: SamplerContents) -> vk::Sampler {
+        // Create sampler
+        let info = vk::SamplerCreateInfo::builder()
+            .mag_filter(sampler_contents.filter)
+            .min_filter(sampler_contents.filter)
+            .address_mode_u(sampler_contents.address_mode_u)
+            .address_mode_v(sampler_contents.address_mode_v)
+            .address_mode_w(sampler_contents.address_mode_w)
+            .anisotropy_enable(true)
+            .max_anisotropy(16.0)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .compare_op(vk::CompareOp::ALWAYS)
+            .mipmap_mode(sampler_contents.mipmap_mode)
+            .min_lod(0.0)
+            .max_lod(sampler_contents.mipmap_levels as f32)
+            .mip_lod_bias(0.0);
+        unsafe { device.create_sampler(&info, None).unwrap() }
     }
 
     pub fn create_image(
@@ -442,10 +477,39 @@ impl TextureEngine {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Texture {
-    slot_index: u32,
-    image: vk::Image,
-    memory: vk::DeviceMemory,
-    image_view: vk::ImageView,
-    sampler: vk::Sampler,
-    instance_count: u32,
+    pub slot_index: u32,
+    pub image: vk::Image,
+    pub memory: vk::DeviceMemory,
+    pub image_view: vk::ImageView,
+    pub sampler_contents: SamplerContents,
+    pub instance_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct SamplerContents {
+    pub filter: vk::Filter,
+    pub address_mode_u: vk::SamplerAddressMode,
+    pub address_mode_v: vk::SamplerAddressMode,
+    pub address_mode_w: vk::SamplerAddressMode,
+    pub mipmap_mode: vk::SamplerMipmapMode,
+    pub mipmap_levels: u32,
+}
+
+impl SamplerContents {
+    pub fn new(
+        filter: vk::Filter,
+        address_mode_u: vk::SamplerAddressMode,
+        address_mode_v: vk::SamplerAddressMode,
+        address_mode_w: vk::SamplerAddressMode,
+        mipmap_mode: vk::SamplerMipmapMode,
+    ) -> Self {
+        Self {
+            filter,
+            address_mode_u,
+            address_mode_v,
+            address_mode_w,
+            mipmap_mode,
+            mipmap_levels: 0,
+        }
+    }
 }

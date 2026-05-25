@@ -236,7 +236,7 @@ impl CommandEngineBuilder {
         Ok(())
     }
 
-    pub unsafe fn create_command_buffers(&mut self, device: Device, present_engine: PresentEngine, rp_engine: RenderPipelineEngine, model_engine: ModelEngine) -> Result<()> {
+    pub unsafe fn create_command_buffers(&mut self, device: Device, present_engine: PresentEngine, rp_engine: RenderPipelineEngine, model_engine: ModelEngine, texture_slot_index: u32) -> Result<()> {
         // Allocate
     
         let allocate_info = vk::CommandBufferAllocateInfo::builder()
@@ -289,6 +289,13 @@ impl CommandEngineBuilder {
                 0,
                 &[rp_engine.descriptor_sets[i]],
                 &[],
+            );
+            device.cmd_push_constants(
+                *command_buffer,
+                rp_engine.pipeline_layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                0,
+                &texture_slot_index.to_ne_bytes(),
             );
             device.cmd_draw_indexed(*command_buffer, model_engine.get_index_count() as u32, 1, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);

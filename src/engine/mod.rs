@@ -12,4 +12,4 @@ pub use present_engine::{PresentEngine, PresentEngineBuilder};
 pub use render_pipeline_engine::{RenderPipelineEngine, RenderPipelineEngineBuilder};
 pub use command_engine::{CommandEngine, CommandEngineBuilder};
 pub use model_engine::{ModelEngine, ModelEngineBuilder, UniformBufferObject, Vertex, QuantizedVertex};
-pub use texture_engine::TextureEngine;
+pub use texture_engine::{TextureEngine};

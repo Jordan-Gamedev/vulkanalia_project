@@ -19,6 +19,13 @@ struct VSOutput
     float2 fragUv;
 };
 
+struct PushConstants {
+    uint textureIndex;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<PushConstants> pushConstants;
+
 [shader("vertex")]
 VSOutput vertMain(VSInput input) {
     VSOutput output;
@@ -28,9 +35,13 @@ VSOutput vertMain(VSInput input) {
     return output;
 }
 
-Sampler2D texture;
+// Bindless combined image samplers: runtime-sized array declared at the same binding
+// as the descriptor array on the CPU side (binding 1). The engine currently
+// writes textures into these array slots; shaders index into them by integer.
+Sampler2D textures[];
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-    return float4(vertIn.fragColor * texture.Sample(vertIn.fragUv).rgb, 1.0);
+    float4 texcol = textures[pushConstants.textureIndex].Sample(vertIn.fragUv);
+    return float4(vertIn.fragColor * texcol.rgb, 1.0);
 }
