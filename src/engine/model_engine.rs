@@ -13,7 +13,7 @@ use std::{collections::HashMap, mem::size_of};
 use std::ptr::copy_nonoverlapping as memcpy;
 use glam::{vec2, vec3, Vec2, Vec3, Mat4};
 
-use crate::engine::{CommandEngine, PresentEngine};
+use crate::engine::{CommandEngine};
 
 use super::device_context::DeviceContext;
 
@@ -417,13 +417,13 @@ impl ModelEngineBuilder {
         Self(ModelEngine::default())
     }
 
-    pub unsafe fn create_uniform_buffers(&mut self, context: DeviceContext, present_engine: PresentEngine) -> Result<()> {
+    pub unsafe fn create_uniform_buffers(&mut self, context: DeviceContext, command_engine: CommandEngine) -> Result<()> {
         self.0.uniform_buffers.iter().for_each(|b| context.device.destroy_buffer(*b, None));
         self.0.uniform_buffers_memory.iter().for_each(|m| context.device.free_memory(*m, None));
         self.0.uniform_buffers.clear();
         self.0.uniform_buffers_memory.clear();
 
-        for _ in 0..present_engine.swapchain_images.len() {
+        for _ in 0..command_engine.max_frames_in_flight {
             let (uniform_buffer, uniform_buffer_memory) = ModelEngine::create_buffer(
                 context.clone(),
                 size_of::<UniformBufferObject>() as u64,
@@ -435,6 +435,11 @@ impl ModelEngineBuilder {
             self.0.uniform_buffers_memory.push(uniform_buffer_memory);
         }
     
+        Ok(())
+    }
+
+    pub unsafe fn create_model_matrix_buffer(&mut self, context: DeviceContext) -> Result<()> {
+
         Ok(())
     }
 }

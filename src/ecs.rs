@@ -3,6 +3,13 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 
+use crate::engine::App;
+
+pub trait Component: Clone {
+    fn on_add(&mut self, world: &mut World);
+    fn on_remove(&self, world: &mut World);
+}
+
 trait ComponentStorage: Any {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -170,14 +177,16 @@ impl<T: 'static> ComponentStorage for ComponentTypeStorage<T> {
 
 #[derive(Default)]
 pub struct World {
+    pub app: *mut App,
     component_type_storages: HashMap<TypeId, Box<dyn ComponentStorage>>,
     active_entity_references: Vec<Weak<RefCell<EntityRef>>>,
     entity_count: u32,
 }
 
 impl World {
-    pub fn new() -> Self {
+    pub fn new(app: *mut App) -> Self {
         Self {
+            app,
             component_type_storages: HashMap::new(),
             active_entity_references: Vec::new(),
             entity_count: 0,
@@ -268,12 +277,11 @@ impl World {
         } else { None }
     }
 
-    pub fn query<T: 'static>(&mut self) -> Option<(&mut [T], Vec<u32>)> {
+    pub fn query<T: 'static>(&mut self) -> Vec<(&mut T, u32)> {
         match self.component_type_storages.get_mut(&TypeId::of::<T>()) {
             Some(boxed_storage) => {
-                let storage = boxed_storage.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>()?;
-                
-                let components = storage.component_data.as_mut_slice();
+                let storage = boxed_storage.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
+                let components: Vec<&mut T> = storage.component_data.iter_mut().collect();
                 let entities: Vec<u32> = storage.component_indices_by_entity
                     .iter()
                     .enumerate()
@@ -281,10 +289,11 @@ impl World {
                     .map(|(i, _)| i as u32)
                     .collect();
 
-                Some((components, entities))
+                components.into_iter().zip(entities).collect()
             },
             None => {
-                None
+                let query: Vec<(&mut T, u32)> = Vec::new();
+                query
             },
         }
     }
@@ -487,7 +496,7 @@ impl World {
             .collect::<Vec<&TypeId>>()
     }
 
-    pub fn add_component<T: 'static>(&mut self, entity: u32, component: T) {
+    pub fn add_component<T: 'static>(&mut self, entity: u32, component: T) where T: Component {
         if entity >= self.entity_count {
             return
         }
@@ -497,17 +506,26 @@ impl World {
             self.component_type_storages.insert(TypeId::of::<T>(), Box::new(ComponentTypeStorage::<T>::new(self.entity_count)));
         }
 
+        // Call on_add method implementation for this component
+        let mut component = component.clone();
+        component.on_add(self);
+
         // Add component to the entity (downcast to concrete storage)
         let boxed = self.component_type_storages.get_mut(&TypeId::of::<T>()).unwrap();
         let concrete = boxed.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
         concrete.add_component(entity, component);
     }
 
-    pub fn remove_component<T: 'static>(&mut self, entity: u32) {
+    pub fn remove_component<T: 'static>(&mut self, entity: u32) where T: Component {
         if entity >= self.entity_count {
             return
         }
         
+        // Call on_remove method implementation for this component
+        if let Some(component) = self.get_component::<T>(entity) {
+            component.clone().on_remove(self);
+        }
+
         if let Some(boxed) = self.component_type_storages.get_mut(&TypeId::of::<T>()) {
             if let Some(concrete) = boxed.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>() {
                 concrete.remove_component(entity as usize);

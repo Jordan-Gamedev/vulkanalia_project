@@ -17,7 +17,6 @@ use winit::event::{Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, Window, WindowBuilder};
 
-use crate::components::render::Render;
 use crate::engine::{App, CommandEngine, CommandEngineBuilder, DeviceContext, ModelEngineBuilder, RenderPipelineEngineBuilder, TextureEngine};
 
 
@@ -122,7 +121,7 @@ impl PresentEngine {
             model_engine_builder.0 = app.model_engine.as_ref().clone();
             model_engine_builder.create_uniform_buffers(
                 app.device_context.as_ref().clone().unwrap(),
-                app.present_engine.as_ref().clone(),
+                app.command_engine.as_ref().clone(),
             )?;
             app.model_engine = model_engine_builder.0.into();
 
@@ -136,6 +135,7 @@ impl PresentEngine {
             render_engine_builder.create_descriptor_pool(
                 app.device_context.as_ref().clone().unwrap().device,
                 app.present_engine.as_ref().clone(),
+                app.command_engine.as_ref().clone(),
             )?;
             render_engine_builder.create_pipeline(
                 app.device_context.as_ref().clone().unwrap(),
@@ -149,13 +149,11 @@ impl PresentEngine {
             // Finish updating render pipeline
             render_engine_builder.create_descriptor_sets(
                 app.device_context.as_ref().clone().unwrap().device,
-                app.present_engine.as_ref().clone(),
                 app.model_engine.as_ref().clone(),
+                app.command_engine.as_ref().clone(),
                 app.texture_engine.as_ref().clone(),
             )?;
             app.rp_engine = render_engine_builder.0.into();
-
-            let texture_slot_index = app.texture_engine.as_ref().get_texture_slot_index(&app.world.query::<Render>().unwrap().0[0].material.albedo_name).unwrap_or_default();
 
             // Update command buffers
             let mut command_engine_builder = CommandEngineBuilder::new();
@@ -164,8 +162,6 @@ impl PresentEngine {
                     app.device_context.as_ref().clone().unwrap().device,
                     app.present_engine.as_ref().clone(),
                     app.rp_engine.as_ref().clone(),
-                    app.model_engine.as_ref().clone(),
-                    texture_slot_index,
             )?;
             command_engine_builder.0.images_in_flight.resize(app.present_engine.swapchain_images.len(), vk::Fence::null());
             app.command_engine = command_engine_builder.0.into();

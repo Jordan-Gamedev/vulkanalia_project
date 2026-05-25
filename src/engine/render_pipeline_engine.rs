@@ -12,7 +12,7 @@ use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 use std::mem::size_of;
 
-use crate::engine::{ModelEngine, UniformBufferObject, PresentEngine, QuantizedVertex, TextureEngine};
+use crate::engine::{CommandEngine, ModelEngine, PresentEngine, QuantizedVertex, TextureEngine, UniformBufferObject};
 use super::device_context::DeviceContext;
 
 const BINDLESS_TEXTURE_COUNT: u32 = 10_000;
@@ -169,10 +169,10 @@ impl RenderPipelineEngineBuilder {
         Ok(())
     }
 
-    pub unsafe fn create_descriptor_pool(&mut self, device: Device, present_engine: PresentEngine) -> Result<()> {
+    pub unsafe fn create_descriptor_pool(&mut self, device: Device, present_engine: PresentEngine, command_engine: CommandEngine) -> Result<()> {
         let ubo_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(present_engine.swapchain_images.len() as u32);
+            .descriptor_count(command_engine.max_frames_in_flight as u32);
     
         let sampler_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -189,10 +189,10 @@ impl RenderPipelineEngineBuilder {
         Ok(())
     }
 
-    pub unsafe fn create_descriptor_sets(&mut self, device: Device, present_engine: PresentEngine, model_engine: ModelEngine, texture_engine: TextureEngine) -> Result<()> {
+    pub unsafe fn create_descriptor_sets(&mut self, device: Device, model_engine: ModelEngine, command_engine: CommandEngine, texture_engine: TextureEngine) -> Result<()> {
         // Allocate
     
-        let layouts = vec![self.0.descriptor_set_layout; present_engine.swapchain_images.len()];
+        let layouts = vec![self.0.descriptor_set_layout; command_engine.max_frames_in_flight];
         let info = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(self.0.descriptor_pool)
             .set_layouts(&layouts);
@@ -201,7 +201,7 @@ impl RenderPipelineEngineBuilder {
     
         // Update
     
-        for i in 0..present_engine.swapchain_images.len() {
+        for i in 0..command_engine.max_frames_in_flight {
             let info = vk::DescriptorBufferInfo::builder()
                 .buffer(model_engine.uniform_buffers[i])
                 .offset(0)

@@ -16,6 +16,7 @@ use std::ptr::copy_nonoverlapping as memcpy;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::vk::KhrSwapchainExtensionDeviceCommands;
 
+use crate::components::render::Render;
 use crate::engine::{App, ModelEngine, PresentEngine, RenderPipelineEngine, UniformBufferObject};
 use super::device_context::DeviceContext;
 
@@ -133,16 +134,101 @@ impl CommandEngine {
 
             Arc::make_mut(&mut app.command_engine).images_in_flight[image_index] = in_flight_fence;
 
+            // let render_components: Vec<Render> = app
+            //     .world
+            //     .query::<Render>()
+            //     .map(|(renders, _)| renders.iter().map(|render| render.clone()).collect())
+            //     .unwrap_or_default();
+
+            //if let Some(render_components) = app.world.query::<Render>();
+
             app.command_engine.update_uniform_buffer(
                 device.clone(),
                 app.present_engine.as_ref().clone(),
                 app.model_engine.as_ref().clone(),
-                image_index
+                app.command_engine.current_frame,
             )?;
+
+            // Commands
+
+            let command_buffer = app.command_engine.command_buffers[image_index];
+            device.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
+
+            let info = vk::CommandBufferBeginInfo::builder();
+            device.begin_command_buffer(command_buffer, &info)?;
+
+            let render_area = vk::Rect2D::builder()
+                .offset(vk::Offset2D::default())
+                .extent(app.present_engine.swapchain_extent);
+
+            let color_clear_value = vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            };
+
+            let depth_clear_value = vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            };
+
+            let clear_values = &[color_clear_value, depth_clear_value];
+            let info = vk::RenderPassBeginInfo::builder()
+                .render_pass(app.rp_engine.render_pass)
+                .framebuffer(app.rp_engine.framebuffers[image_index])
+                .render_area(render_area)
+                .clear_values(clear_values);
+
+            device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, app.rp_engine.pipeline);
+
+            for (render, _) in app.world.query::<Render>() {
+                let model = if let Some(model) = app.model_engine.loaded_models.get(&render.model_name) {
+                    *model
+                } else {
+                    continue;
+                };
+
+                let texture_slot_index = app
+                    .texture_engine
+                    .get_texture_slot_index(&render.material.albedo_name)
+                    .unwrap_or(0);
+
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &[app.model_engine.vertex_buffer], &[0]);
+                device.cmd_bind_index_buffer(command_buffer, app.model_engine.index_buffer, 0, vk::IndexType::UINT32);
+                device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    app.rp_engine.pipeline_layout,
+                    0,
+                    &[app.rp_engine.descriptor_sets[app.command_engine.current_frame]],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    command_buffer,
+                    app.rp_engine.pipeline_layout,
+                    vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    &texture_slot_index.to_ne_bytes(),
+                );
+                device.cmd_draw_indexed(
+                    command_buffer,
+                    model.index_length,
+                    1,
+                    model.index_offset,
+                    model.vertex_offset as i32,
+                    0,
+                );
+            }
+
+            device.cmd_end_render_pass(command_buffer);
+            device.end_command_buffer(command_buffer)?;
 
             let wait_semaphores = &[app.command_engine.image_available_semaphores[app.command_engine.current_frame]];
             let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-            let command_buffers = &[app.command_engine.command_buffers[image_index]];
+            let command_buffers = &[command_buffer];
             let signal_semaphores = &[app.command_engine.render_finished_semaphores[image_index]];
             let submit_info = vk::SubmitInfo::builder()
                 .wait_semaphores(wait_semaphores)
@@ -180,7 +266,7 @@ impl CommandEngine {
     }
 
     /// Updates the uniform buffer object for the Vulkan app
-    unsafe fn update_uniform_buffer(&self, device: Device, present_engine: PresentEngine, model_engine: ModelEngine, image_index: usize) -> Result<()> {
+    unsafe fn update_uniform_buffer(&self, device: Device, present_engine: PresentEngine, model_engine: ModelEngine, frame_index: usize) -> Result<()> {
         // MVP
 
         let time = self.start.unwrap().elapsed().as_secs_f32();
@@ -207,7 +293,7 @@ impl CommandEngine {
         // Copy
 
         let memory = device.map_memory(
-            model_engine.uniform_buffers_memory[image_index],
+            model_engine.uniform_buffers_memory[frame_index],
             0,
             size_of::<UniformBufferObject>() as u64,
             vk::MemoryMapFlags::empty(),
@@ -215,7 +301,7 @@ impl CommandEngine {
 
         memcpy(&ubo, memory.cast(), 1);
 
-        device.unmap_memory(model_engine.uniform_buffers_memory[image_index]);
+        device.unmap_memory(model_engine.uniform_buffers_memory[frame_index]);
 
         Ok(())
     }
@@ -225,18 +311,22 @@ pub struct CommandEngineBuilder(pub(crate) CommandEngine);
 
 impl CommandEngineBuilder {
     pub fn new() -> Self {
-        Self(CommandEngine::default())
+        let mut command_engine = CommandEngine::default();
+        command_engine.max_frames_in_flight = MAX_FRAMES_IN_FLIGHT;
+        Self(command_engine)
     }
 
     pub unsafe fn create_command_pool(&mut self, context: DeviceContext) -> Result<()> {
-        let info = vk::CommandPoolCreateInfo::builder().queue_family_index(context.graphics_queue_family_index);
+        let info = vk::CommandPoolCreateInfo::builder()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(context.graphics_queue_family_index);
     
         self.0.command_pool = context.device.create_command_pool(&info, None)?;
     
         Ok(())
     }
 
-    pub unsafe fn create_command_buffers(&mut self, device: Device, present_engine: PresentEngine, rp_engine: RenderPipelineEngine, model_engine: ModelEngine, texture_slot_index: u32) -> Result<()> {
+    pub unsafe fn create_command_buffers(&mut self, device: Device, present_engine: PresentEngine, rp_engine: RenderPipelineEngine) -> Result<()> {
         // Allocate
     
         let allocate_info = vk::CommandBufferAllocateInfo::builder()
@@ -245,63 +335,6 @@ impl CommandEngineBuilder {
             .command_buffer_count(rp_engine.framebuffers.len() as u32);
     
         self.0.command_buffers = device.allocate_command_buffers(&allocate_info)?;
-    
-        // Commands
-    
-        for (i, command_buffer) in self.0.command_buffers.iter().enumerate() {
-            let info = vk::CommandBufferBeginInfo::builder();
-    
-            device.begin_command_buffer(*command_buffer, &info)?;
-    
-            let render_area = vk::Rect2D::builder()
-                .offset(vk::Offset2D::default())
-                .extent(present_engine.swapchain_extent);
-    
-            let color_clear_value = vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
-                },
-            };
-    
-            let depth_clear_value = vk::ClearValue {
-                depth_stencil: vk::ClearDepthStencilValue {
-                    depth: 1.0,
-                    stencil: 0,
-                },
-            };
-    
-            let clear_values = &[color_clear_value, depth_clear_value];
-            let info = vk::RenderPassBeginInfo::builder()
-                .render_pass(rp_engine.render_pass)
-                .framebuffer(rp_engine.framebuffers[i])
-                .render_area(render_area)
-                .clear_values(clear_values);
-    
-            // TODO: UPDATE TO RENDER MULTIPLE MESHES
-            device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
-            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, rp_engine.pipeline);
-            device.cmd_bind_vertex_buffers(*command_buffer, 0, &[model_engine.vertex_buffer], &[0]);
-            device.cmd_bind_index_buffer(*command_buffer, model_engine.index_buffer, 0, vk::IndexType::UINT32);
-            device.cmd_bind_descriptor_sets(
-                *command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                rp_engine.pipeline_layout,
-                0,
-                &[rp_engine.descriptor_sets[i]],
-                &[],
-            );
-            device.cmd_push_constants(
-                *command_buffer,
-                rp_engine.pipeline_layout,
-                vk::ShaderStageFlags::FRAGMENT,
-                0,
-                &texture_slot_index.to_ne_bytes(),
-            );
-            device.cmd_draw_indexed(*command_buffer, model_engine.get_index_count() as u32, 1, 0, 0, 0);
-            device.cmd_end_render_pass(*command_buffer);
-    
-            device.end_command_buffer(*command_buffer)?;
-        }
     
         Ok(())
     }

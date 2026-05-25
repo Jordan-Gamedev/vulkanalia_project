@@ -475,6 +475,14 @@ impl TextureEngine {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Material {
+    pub albedo_name: String, // Albedo texture used
+    pub normal_ao_name: String, // Packed normal map and ambient occlusion map used
+    pub metallic_roughness_emissive_name: String, // Packed metallic, roughness, and emissive maps used
+    pub sampler_contents: SamplerContents, // Texture sampler used
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Texture {
     pub slot_index: u32,

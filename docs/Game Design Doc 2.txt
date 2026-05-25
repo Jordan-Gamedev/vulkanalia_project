@@ -1,0 +1,39 @@
+Title:
+
+-> Schizophrenia: The Game
+
+
+Art Style:
+
+-> 1) Clean (Cel Shading, Mostly Vertex Colors, Some Smooth Cartoony Textures)
+
+2) Sharp (Simple Lighting, Pixel Art)
+
+3) Realist (Complex Lighting, detailed textures)
+
+
+Genre:
+
+-> 1) Horror
+
+2) Cozy
+
+3) Casual
+
+4) Competitive
+
+
+Premise:
+
+You are a detective with a flashlight, a wooden stake melee, and a gun that can chamber both regular and silver bullets
+
+Mission: Take out the vampires taking over the town with minimal civilian casualties
+
+To find out who the vampires are, look at puddle and glass reflections, check if civilians avoid the light,
+    hold the bible out towards them, look out for vampires eating other people,
+    and shoot them to see if they bleed from the regular bullets
+    (since vampires are immune to regular bullets they also wouldn't be scared of being shot)
+
+Vampires can also target you, not just the civilians, so be wary in crowded areas
+
+Your flashlight and silver bullets are highly valueable tools that you need to conserve

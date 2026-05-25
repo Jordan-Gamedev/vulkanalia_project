@@ -9,8 +9,6 @@
 
 use anyhow::Result;
 use vulkanalia::vk::DeviceV1_0;
-use vulkanalia::prelude::v1_0::*;
-use crate::components::render::Render;
 use crate::ecs::World;
 use crate::engine::texture_engine::SamplerContents;
 use crate::engine::{CommandEngine, CommandEngineBuilder};
@@ -33,9 +31,9 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(world: World) -> Result<Self> {
-        let mut app = App::default();
-        app.world = world;
+    pub fn new() -> Result<Box<Self>> {
+        let mut app = Box::new(App::default());
+        app.world.app = &mut *app as *mut App;
 
         unsafe {
             // Create builders
@@ -69,7 +67,7 @@ impl App {
             rp_engine_builder.create_descriptor_set_layout(app.device_context.as_ref().clone().unwrap().device)?;
 
             // Create a descriptor pool
-            rp_engine_builder.create_descriptor_pool(app.device_context.as_ref().clone().unwrap().device, present_engine_builder.0.clone())?;
+            rp_engine_builder.create_descriptor_pool(app.device_context.as_ref().clone().unwrap().device, present_engine_builder.0.clone(), command_engine_builder.0.clone())?;
 
             // Create the render pipeline
             rp_engine_builder.create_pipeline(app.device_context.as_ref().clone().unwrap(), present_engine_builder.0.clone())?;
@@ -81,43 +79,21 @@ impl App {
             command_engine_builder.create_command_pool(app.device_context.as_ref().clone().unwrap())?;
 
             // Create uniform buffer objects
-            model_engine_builder.create_uniform_buffers(app.device_context.as_ref().clone().unwrap(), present_engine_builder.0.clone())?;
-
-            // Load texture
-            Arc::make_mut(&mut app.texture_engine).load_texture(
-                app.device_context.as_ref().clone().unwrap(),
-                rp_engine_builder.0.clone(),
-                command_engine_builder.0.clone(),
-                "cuttlefish_albedo".to_string(),
-                SamplerContents::new(
-                    vk::Filter::LINEAR,
-                    vk::SamplerAddressMode::REPEAT,
-                    vk::SamplerAddressMode::REPEAT,
-                    vk::SamplerAddressMode::REPEAT,
-                    vk::SamplerMipmapMode::LINEAR,
-                ),
-            )?;
-
-            // Load model
-            model_engine_builder.0.load_model(app.device_context.as_ref().clone().unwrap(), command_engine_builder.0.clone(), "".to_string())?;
+            model_engine_builder.create_uniform_buffers(app.device_context.as_ref().clone().unwrap(), command_engine_builder.0.clone())?;
 
             // Create descriptor sets
             rp_engine_builder.create_descriptor_sets(
                 app.device_context.as_ref().clone().unwrap().device,
-                present_engine_builder.0.clone(),
                 model_engine_builder.0.clone(),
+                command_engine_builder.0.clone(),
                 app.texture_engine.as_ref().clone(),
             )?;
-
-            let texture_slot_index = app.texture_engine.as_ref().get_texture_slot_index(&app.world.query::<Render>().unwrap().0[0].material.albedo_name).unwrap_or_default();
 
             // Create command buffers
             command_engine_builder.create_command_buffers(
                 app.device_context.as_ref().clone().unwrap().device,
                 present_engine_builder.0.clone(),
                 rp_engine_builder.0.clone(),
-                model_engine_builder.0.clone(),
-                texture_slot_index,
             )?;
 
             // Create sync objects
@@ -145,5 +121,25 @@ impl App {
         Arc::make_mut(&mut self.command_engine).destroy(device.clone());
         Arc::make_mut(&mut self.model_engine).destroy(device.clone());
         Arc::make_mut(&mut self.texture_engine).destroy(device.clone());
+    }
+
+    pub fn load_model(&mut self, path: String) -> Result<()> {
+        Arc::make_mut(&mut self.model_engine).load_model(self.device_context.as_ref().clone().unwrap(), self.command_engine.as_ref().clone(), path)?;
+        Ok(())
+    }
+
+    pub fn load_texture(&mut self, path: String, sampler_contents: SamplerContents) -> Result<()> {
+        Arc::make_mut(&mut self.texture_engine).load_texture(self.device_context.as_ref().clone().unwrap(), self.rp_engine.as_ref().clone(), self.command_engine.as_ref().clone(), path, sampler_contents)?;
+        Ok(())
+    }
+
+    pub fn unload_texture(&mut self, path: String) -> Result<()> {
+        Arc::make_mut(&mut self.texture_engine).unload_texture(self.device_context.as_ref().clone().unwrap(), self.rp_engine.as_ref().clone(), path)?;
+        Ok(())
+    }
+
+    pub fn unload_model(&mut self, path: String) -> Result<()> {
+        Arc::make_mut(&mut self.model_engine).unload_model(self.device_context.as_ref().clone().unwrap(), self.command_engine.as_ref().clone(), path)?;
+        Ok(())
     }
 }
