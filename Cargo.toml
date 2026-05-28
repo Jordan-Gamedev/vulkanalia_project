@@ -31,8 +31,11 @@ winres = "0.1.12"
 # Errors
 anyhow = "1.0.102"
 
+# Byte conversion
+bytemuck = { version = "1.25.0", features = ["derive"] }
+
 # Vector math
-glam = "0.32.1"
+glam = "0.33.0"
 
 # 3d scene loading
 gltf = "1.4.1"

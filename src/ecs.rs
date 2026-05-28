@@ -292,61 +292,72 @@ impl World {
                 components.into_iter().zip(entities).collect()
             },
             None => {
-                let query: Vec<(&mut T, u32)> = Vec::new();
-                query
+                Vec::new()
             },
         }
     }
 
-    pub fn query2<T: 'static, U: 'static>(&mut self) -> Option<(Vec<&mut T>, Vec<&mut U>, Vec<u32>)> {
+    pub fn query2<T: 'static, U: 'static>(&mut self) -> Vec<(&mut T, &mut U, u32)> {
         let t_id = TypeId::of::<T>();
         let u_id = TypeId::of::<U>();
 
         if t_id == u_id {
-            return None;
+            return Vec::new();
         }
     
         if !self.component_type_storages.contains_key(&t_id)
         || !self.component_type_storages.contains_key(&u_id) {
-            return None
+            return Vec::new()
         }
 
         // First pass: collect entities with component T
         let shared_entities: Vec<u32> = {
-            let boxed_storage_t = self.component_type_storages.get_mut(&t_id)?;
-            let storage_t = boxed_storage_t.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>()?;
-            storage_t.component_indices_by_entity
-                .iter()
-                .enumerate()
-                .filter(|(_, comp_index)| **comp_index != u32::MAX)
-                .map(|(i, _)| i as u32)
-                .collect()
+            match self.component_type_storages.get_mut(&t_id) {
+                Some(boxed_storage_t) => {
+                    let storage_t = boxed_storage_t.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
+                    storage_t.component_indices_by_entity
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, comp_index)| **comp_index != u32::MAX)
+                        .map(|(i, _)| i as u32)
+                        .collect()
+                },
+                None => {
+                    Vec::new()
+                },
+            }
         };
         
         // Second pass: filter by component U
         let shared_entities: Vec<u32> = {
-            let boxed_storage_u = self.component_type_storages.get_mut(&u_id)?;
-            let storage_u = boxed_storage_u.as_any_mut().downcast_mut::<ComponentTypeStorage<U>>()?;
-            shared_entities
-                .iter()
-                .filter(|&&f| storage_u.component_indices_by_entity[f as usize] != u32::MAX)
-                .map(|m| *m)
-                .collect()
+            match self.component_type_storages.get_mut(&u_id) {
+                Some(boxed_storage_u) => {
+                    let storage_u = boxed_storage_u.as_any_mut().downcast_mut::<ComponentTypeStorage<U>>().unwrap();
+                    shared_entities
+                        .iter()
+                        .filter(|&&f| storage_u.component_indices_by_entity[f as usize] != u32::MAX)
+                        .map(|m| *m)
+                        .collect()
+                },
+                None => {
+                    Vec::new()
+                },
+            }
         };
         
         if shared_entities.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         let storage_t_ptr = {
-            let boxed_storage_t = self.component_type_storages.get_mut(&t_id)?;
-            let storage_t = boxed_storage_t.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>()?;
+            let boxed_storage_t = self.component_type_storages.get_mut(&t_id).unwrap();
+            let storage_t = boxed_storage_t.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
             storage_t as *mut ComponentTypeStorage<T>
         };
         
         let storage_u_ptr = {
-            let boxed_storage_u = self.component_type_storages.get_mut(&u_id)?;
-            let storage_u = boxed_storage_u.as_any_mut().downcast_mut::<ComponentTypeStorage<U>>()?;
+            let boxed_storage_u = self.component_type_storages.get_mut(&u_id).unwrap();
+            let storage_u = boxed_storage_u.as_any_mut().downcast_mut::<ComponentTypeStorage<U>>().unwrap();
             storage_u as *mut ComponentTypeStorage<U>
         };
         
@@ -360,7 +371,7 @@ impl World {
                     let component_index = component_indices_by_entity_t[entity as usize] as usize;
                     &mut *(*storage_t_ptr).component_data.as_mut_ptr().add(component_index)
                 })
-                .collect();
+                .collect::<Vec<&mut T>>();
 
             let components_u = shared_entities
                 .iter()
@@ -368,85 +379,107 @@ impl World {
                     let component_index = component_indices_by_entity_u[entity as usize] as usize;
                     &mut *(*storage_u_ptr).component_data.as_mut_ptr().add(component_index)
                 })
-                .collect();
+                .collect::<Vec<&mut U>>();
 
-            Some((components_t, components_u, shared_entities))
+            components_t
+                .into_iter()
+                .zip(components_u)
+                .zip(shared_entities)
+                .map(|((t, u), entity)| (t, u, entity))
+                .collect()
         }
-        
     }
 
-    pub fn query3<T: 'static, U: 'static, V: 'static>(&mut self) -> Option<(Vec<&mut T>, Vec<&mut U>, Vec<&mut V>, Vec<u32>)> {
+    pub fn query3<T: 'static, U: 'static, V: 'static>(&mut self) -> Vec<(&mut T, &mut U, &mut V, u32)> {
         let t_id = TypeId::of::<T>();
         let u_id = TypeId::of::<U>();
         let v_id = TypeId::of::<V>();
 
         if t_id == u_id || t_id == v_id || u_id == v_id {
-            return None;
+            return Vec::new();
         }
     
         if !self.component_type_storages.contains_key(&t_id)
         || !self.component_type_storages.contains_key(&u_id)
         || !self.component_type_storages.contains_key(&v_id) {
-            return None
+            return Vec::new();
         }
 
         // First pass: collect entities with component T
         let shared_entities: Vec<u32> = {
-            let boxed_storage_t = self.component_type_storages.get_mut(&t_id)?;
-            let storage_t = boxed_storage_t.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>()?;
-            storage_t.component_indices_by_entity
-                .iter()
-                .enumerate()
-                .filter(|(_, comp_index)| **comp_index != u32::MAX)
-                .map(|(i, _)| i as u32)
-                .collect()
+            match self.component_type_storages.get_mut(&t_id) {
+                Some(boxed_storage_t) => {
+                    let storage_t = boxed_storage_t.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
+                    storage_t.component_indices_by_entity
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, comp_index)| **comp_index != u32::MAX)
+                        .map(|(i, _)| i as u32)
+                        .collect()
+                },
+                None => {
+                    Vec::new()
+                },
+            }
         };
         
         // Second pass: filter by component U
         let shared_entities: Vec<u32> = {
-            let boxed_storage_u = self.component_type_storages.get_mut(&u_id)?;
-            let storage_u = boxed_storage_u.as_any_mut().downcast_mut::<ComponentTypeStorage<U>>()?;
-            shared_entities
-                .iter()
-                .filter(|&&f| storage_u.component_indices_by_entity[f as usize] != u32::MAX)
-                .map(|m| *m)
-                .collect()
+            match self.component_type_storages.get_mut(&u_id) {
+                Some(boxed_storage_u) => {
+                    let storage_u = boxed_storage_u.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
+                    shared_entities
+                        .iter()
+                        .filter(|&&f| storage_u.component_indices_by_entity[f as usize] != u32::MAX)
+                        .map(|m| *m)
+                        .collect()
+                },
+                None => {
+                    Vec::new()
+                },
+            }
         };
         
         if shared_entities.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         // Third pass: filter by component V
         let shared_entities: Vec<u32> = {
-            let boxed_storage_v = self.component_type_storages.get_mut(&v_id)?;
-            let storage_v = boxed_storage_v.as_any_mut().downcast_mut::<ComponentTypeStorage<V>>()?;
-            shared_entities
-                .iter()
-                .filter(|&&f| storage_v.component_indices_by_entity[f as usize] != u32::MAX)
-                .map(|m| *m)
-                .collect()
+            match self.component_type_storages.get_mut(&v_id) {
+                Some(boxed_storage_v) => {
+                    let storage_v = boxed_storage_v.as_any_mut().downcast_mut::<ComponentTypeStorage<V>>().unwrap();
+                    shared_entities
+                        .iter()
+                        .filter(|&&f| storage_v.component_indices_by_entity[f as usize] != u32::MAX)
+                        .map(|m| *m)
+                        .collect()
+                },
+                None => {
+                    Vec::new()
+                },
+            }
         };
 
         if shared_entities.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         let storage_t_ptr = {
-            let boxed_storage_t = self.component_type_storages.get_mut(&t_id)?;
-            let storage_t = boxed_storage_t.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>()?;
+            let boxed_storage_t = self.component_type_storages.get_mut(&t_id).unwrap();
+            let storage_t = boxed_storage_t.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
             storage_t as *mut ComponentTypeStorage<T>
         };
         
         let storage_u_ptr = {
-            let boxed_storage_u = self.component_type_storages.get_mut(&u_id)?;
-            let storage_u = boxed_storage_u.as_any_mut().downcast_mut::<ComponentTypeStorage<U>>()?;
+            let boxed_storage_u = self.component_type_storages.get_mut(&u_id).unwrap();
+            let storage_u = boxed_storage_u.as_any_mut().downcast_mut::<ComponentTypeStorage<U>>().unwrap();
             storage_u as *mut ComponentTypeStorage<U>
         };
         
         let storage_v_ptr = {
-            let boxed_storage_v = self.component_type_storages.get_mut(&v_id)?;
-            let storage_v = boxed_storage_v.as_any_mut().downcast_mut::<ComponentTypeStorage<V>>()?;
+            let boxed_storage_v = self.component_type_storages.get_mut(&v_id).unwrap();
+            let storage_v = boxed_storage_v.as_any_mut().downcast_mut::<ComponentTypeStorage<V>>().unwrap();
             storage_v as *mut ComponentTypeStorage<V>
         };
 
@@ -461,7 +494,7 @@ impl World {
                     let component_index = component_indices_by_entity_t[entity as usize] as usize;
                     &mut *(*storage_t_ptr).component_data.as_mut_ptr().add(component_index)
                 })
-                .collect();
+                .collect::<Vec<&mut T>>();
 
             let components_u = shared_entities
                 .iter()
@@ -469,7 +502,7 @@ impl World {
                     let component_index = component_indices_by_entity_u[entity as usize] as usize;
                     &mut *(*storage_u_ptr).component_data.as_mut_ptr().add(component_index)
                 })
-                .collect();
+                .collect::<Vec<&mut U>>();
 
             let components_v = shared_entities
                 .iter()
@@ -477,11 +510,16 @@ impl World {
                     let component_index = component_indices_by_entity_v[entity as usize] as usize;
                     &mut *(*storage_v_ptr).component_data.as_mut_ptr().add(component_index)
                 })
-                .collect();
+                .collect::<Vec<&mut V>>();
 
-            Some((components_t, components_u, components_v, shared_entities))
+            components_t
+                .into_iter()
+                .zip(components_u)
+                .zip(components_v)
+                .zip(shared_entities)
+                .map(|(((t, u), v), entity)| (t, u, v, entity))
+                .collect()
         }
-        
     }
 
     pub fn get_all_components(&self, entity: u32) -> Vec<&TypeId> {

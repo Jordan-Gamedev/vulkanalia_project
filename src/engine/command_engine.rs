@@ -17,6 +17,8 @@ use vulkanalia::prelude::v1_0::*;
 use vulkanalia::vk::KhrSwapchainExtensionDeviceCommands;
 
 use crate::components::render::Render;
+use crate::components::transform::Transform;
+use crate::engine::render_pipeline_engine::PushConstant;
 use crate::engine::{App, ModelEngine, PresentEngine, RenderPipelineEngine, UniformBufferObject};
 use super::device_context::DeviceContext;
 
@@ -98,6 +100,9 @@ impl CommandEngine {
 
     /// Renders a frame for the Vulkan app
     pub fn render(app: &mut App) -> Result<()> {
+        // Update transforms
+        Arc::make_mut(&mut app.model_engine).transfer_cpu_model_matrices(app.device_context.as_ref().clone().unwrap().device);
+
         unsafe {
             let context = app.device_context.as_ref().clone().unwrap();
             let device = context.device;
@@ -133,14 +138,6 @@ impl CommandEngine {
             }
 
             Arc::make_mut(&mut app.command_engine).images_in_flight[image_index] = in_flight_fence;
-
-            // let render_components: Vec<Render> = app
-            //     .world
-            //     .query::<Render>()
-            //     .map(|(renders, _)| renders.iter().map(|render| render.clone()).collect())
-            //     .unwrap_or_default();
-
-            //if let Some(render_components) = app.world.query::<Render>();
 
             app.command_engine.update_uniform_buffer(
                 device.clone(),
@@ -184,7 +181,8 @@ impl CommandEngine {
             device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, app.rp_engine.pipeline);
 
-            for (render, _) in app.world.query::<Render>() {
+            // TODO: Implement trasform
+            for (render, transform, _) in app.world.query2::<Render, Transform>() {
                 let model = if let Some(model) = app.model_engine.loaded_models.get(&render.model_name) {
                     *model
                 } else {
@@ -206,12 +204,17 @@ impl CommandEngine {
                     &[app.rp_engine.descriptor_sets[app.command_engine.current_frame]],
                     &[],
                 );
+                
+                let push_constant = PushConstant {
+                    model_matrix_info: transform.model_matrix_info,
+                    texture_index: texture_slot_index,
+                };
                 device.cmd_push_constants(
                     command_buffer,
                     app.rp_engine.pipeline_layout,
-                    vk::ShaderStageFlags::FRAGMENT,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    &texture_slot_index.to_ne_bytes(),
+                    bytemuck::bytes_of(&push_constant),
                 );
                 device.cmd_draw_indexed(
                     command_buffer,
@@ -271,7 +274,7 @@ impl CommandEngine {
 
         let time = self.start.unwrap().elapsed().as_secs_f32();
 
-        let model = Mat4::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);
+        //let model = Mat4::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);
     
         let view = Mat4::look_at_rh(
             vec3(2.0, 2.0, 2.0),
@@ -288,7 +291,7 @@ impl CommandEngine {
 
         proj.col_mut(1).y *= -1.0;
 
-        let ubo = UniformBufferObject { model, view, proj };
+        let ubo = UniformBufferObject { view, proj };
 
         // Copy
 
