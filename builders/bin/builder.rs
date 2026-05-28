@@ -216,7 +216,14 @@ fn compile_shaders() -> Result<()> {
             .arg(shader_path.with_extension("spv"))
             .arg(shader_path)
             .output() {
-                Ok(_) => { },
+                Ok(m) =>
+                {
+                    if m.status.code().map_or(false, |c| c != 0) {
+                        let msg = String::from_utf8_lossy(&m.stderr).to_string();
+                        log_color(&msg, ColorType::Red);
+                        failed_shaders.push(shader_path.to_str().unwrap())
+                    }
+                },
                 Err(e) => { log_color(&format!("\n{}", e), ColorType::Red); failed_shaders.push(shader_path.to_str().unwrap()) }
             };
 
@@ -253,12 +260,12 @@ fn convert_textures() -> Result<()> {
     };
     let base_args = vec![
         "--genmipmap",
-        "--filter lanczos",
+        "--filter", "mitchell",
         "--t2"
     ];
 
-    let etc1s_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { "--clevel 5" } else { "--clevel 1" };
-    let uastc_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { "--zcmp 16" } else { "--zcmp 3" };
+    let etc1s_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { vec!["--clevel", "5"] } else { vec!["--clevel", "1"] };
+    let uastc_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { vec!["--zcmp", "16"] } else { vec!["--zcmp", "3"] };
 
     let mut failed_conversions: Vec<&str> = Vec::new();
 
@@ -267,19 +274,19 @@ fn convert_textures() -> Result<()> {
 
         let encode_args = match tex_path {
             s if s.contains("_albedo") => {
-                vec!["--encode uastc", "--uastc_quality 3", "--uastc_rdo_l 1.0", uastc_quality]
+                vec!["--encode", "uastc", "--uastc_quality", "3", "--uastc_rdo_l", "1.0", uastc_quality[0], uastc_quality[1]]
             },
             s if s.contains("_normal") => {
-                vec!["--encode uastc", "--uastc_quality 4", "--uastc_rdo_l 0.75", uastc_quality]
+                vec!["--encode", "uastc", "--uastc_quality", "4", "--uastc_rdo_l", "0.75", uastc_quality[0], uastc_quality[1]]
             },
             s if s.contains("_metallic") || s.contains("_roughness") => {
-                vec!["--encode etc1s", "--qlevel 128", etc1s_quality]
+                vec!["--encode", "etc1s", "--qlevel", "128", etc1s_quality[0], etc1s_quality[1]]
             },
             s if s.contains("_ao") => {
-                vec!["--encode uastc", "--uastc_quality 2", "--uastc_rdo_l 2.0", uastc_quality]
+                vec!["--encode", "uastc", "--uastc_quality", "2", "--uastc_rdo_l", "2.0", uastc_quality[0], uastc_quality[1]]
             },
             s if s.contains("_emissive") => {
-                vec!["--encode etc1s", "--qlevel 64", etc1s_quality]
+                vec!["--encode", "etc1s", "--qlevel", "64", etc1s_quality[0], etc1s_quality[1]]
             },
             _ => {
                 vec![]
@@ -292,10 +299,14 @@ fn convert_textures() -> Result<()> {
         final_args.push(file_output.as_str());
         final_args.push(tex_path);
 
-        match Command::new(ktx_command)
-            .args(final_args)
-            .output() {
-                Ok(_) => { },
+        match Command::new(ktx_command).args(final_args).output() {
+                Ok(m) => {
+                    if m.status.code().map_or(false, |c| c != 0) {
+                        let msg = String::from_utf8_lossy(&m.stderr).to_string();
+                        log_color(&msg, ColorType::Red);
+                        failed_conversions.push(tex_path)
+                    }
+                },
                 Err(e) => { log_color(&format!("\n{}", e), ColorType::Red); failed_conversions.push(tex_path) }
             };
 
@@ -306,9 +317,9 @@ fn convert_textures() -> Result<()> {
     if failed_conversions.len() == 0 {
         log_color("Texture conversion finished successfully.", ColorType::Green);
     } else {
-        log_color(&format!("{}/{} textures failed!", failed_conversions.len(), failed_conversions.len()), ColorType::Red);
+        log_color(&format!("{}/{} textures failed!", failed_conversions.len(), texture_paths.len()), ColorType::Red);
         for (i, failed) in failed_conversions.iter().enumerate() {
-            log_color(&format!("\t[{}]: {}", {i}, {failed}), ColorType::Red);
+            log_color(&format!("\t[{}]: {}", i, failed), ColorType::Red);
         }
         println!();
     }

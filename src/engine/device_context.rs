@@ -351,13 +351,18 @@ impl DeviceContextBuilder {
     
         let features = vk::PhysicalDeviceFeatures::builder()
             .sampler_anisotropy(true)
-            .sample_rate_shading(true);
+            .sample_rate_shading(true)
+            .shader_int16(true);
     
         let mut descriptor_indexing_features = vk::PhysicalDeviceVulkan12Features::builder()
             .descriptor_indexing(true)
             .descriptor_binding_sampled_image_update_after_bind(true)
             .descriptor_binding_partially_bound(true)
             .runtime_descriptor_array(true);
+
+        let mut storage_16bit_features = vk::PhysicalDevice16BitStorageFeatures::builder()
+            .storage_buffer_16bit_access(true)
+            .uniform_and_storage_buffer_16bit_access(true);
 
         // Create
     
@@ -366,6 +371,7 @@ impl DeviceContextBuilder {
             .enabled_layer_names(&layers)
             .enabled_extension_names(&extensions)
             .enabled_features(&features)
+            .push_next(&mut storage_16bit_features)
             .push_next(&mut descriptor_indexing_features);
     
         let device = instance.create_device(physical_device, &info, None)?;

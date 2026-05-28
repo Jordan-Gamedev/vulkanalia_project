@@ -9,10 +9,11 @@ struct UniformBuffer {
     float4x4 view;
     float4x4 proj;
 };
+
 struct QuantizedModelMatrix {
-    float3 position;
-    float3 scale;
-    uint4 rotation;
+    float[3] position;
+    float[3] scale;
+    int16_t[4] rotation;
 };
 
 [[vk::binding(2, 0)]]
@@ -37,8 +38,8 @@ struct PushConstants {
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pushConstants;
 
-float4 decodeQuaternion(uint4 packedRotation) {
-    float4 q = (float4(packedRotation) / 65535.0) * 2.0 - 1.0;
+float4 decodeQuaternion(int16_t[4] packedRotation) {
+    float4 q = float4(packedRotation[0], packedRotation[1], packedRotation[2], packedRotation[3]) / int16_t::maxValue;
     return normalize(q);
 }
 
@@ -48,6 +49,10 @@ float3 rotateVector(float3 vector, float4 quaternion) {
 }
 
 float4x4 buildModelMatrix(QuantizedModelMatrix modelMatrix) {
+    // //modelMatrix.position = float3(0, 0, 0);
+    // //modelMatrix.scale = float3(1.0, 1.0, 1.0);
+    // //float4 quaternion = float4(0.0, 0.0, 0.0, 1.0);
+    
     float4 quaternion = decodeQuaternion(modelMatrix.rotation);
 
     float3 right = rotateVector(float3(1.0, 0.0, 0.0), quaternion);
@@ -55,10 +60,10 @@ float4x4 buildModelMatrix(QuantizedModelMatrix modelMatrix) {
     float3 forward = rotateVector(float3(0.0, 0.0, 1.0), quaternion);
 
     return float4x4(
-        float4(right * modelMatrix.scale.x, 0.0),
-        float4(up * modelMatrix.scale.y, 0.0),
-        float4(forward * modelMatrix.scale.z, 0.0),
-        float4(modelMatrix.position, 1.0)
+        float4(right.x * modelMatrix.scale[0], up.x * modelMatrix.scale[1], forward.x * modelMatrix.scale[2], modelMatrix.position[0]),
+        float4(right.y * modelMatrix.scale[0], up.y * modelMatrix.scale[1], forward.y * modelMatrix.scale[2], modelMatrix.position[1]),
+        float4(right.z * modelMatrix.scale[0], up.z * modelMatrix.scale[1], forward.z * modelMatrix.scale[2], modelMatrix.position[2]),
+        float4(0.0, 0.0, 0.0, 1.0)
     );
 }
 

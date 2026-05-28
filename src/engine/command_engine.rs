@@ -100,8 +100,22 @@ impl CommandEngine {
 
     /// Renders a frame for the Vulkan app
     pub fn render(app: &mut App) -> Result<()> {
+        let time = app.command_engine.start.unwrap().elapsed().as_secs_f32();
+
+        let transforms: Vec<Transform> = app.world.query::<Transform>().iter().map(|r| r.0.clone()).collect();
+
+        for transform in transforms {
+            let value = transform.get_quantized_model_matrix(&app.world).unwrap();
+            let position = vec3(value.position[0], value.position[1], value.position[2]);
+            let rotation = glam::Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);
+            let scale = vec3(value.scale[0], value.scale[1], value.scale[2]);
+            transform.update_model_matrix(&mut app.world, position, rotation.normalize(), scale);
+        }
+        
         // Update transforms
         Arc::make_mut(&mut app.model_engine).transfer_cpu_model_matrices(app.device_context.as_ref().clone().unwrap().device);
+
+//        return Ok(());
 
         unsafe {
             let context = app.device_context.as_ref().clone().unwrap();

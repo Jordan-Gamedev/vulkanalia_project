@@ -211,13 +211,13 @@ impl ModelEngine {
         if let Some(model_matrix) = buffer_contents.get_mut(model_matrix_index as usize) {
             model_matrix.position = position.to_array();
             model_matrix.scale = scale.to_array();
-            let rotation_u16: [u16; 4] = [
-                (rotation.x * 65535.0) as u16,
-                (rotation.y * 65535.0) as u16,
-                (rotation.z * 65535.0) as u16,
-                (rotation.w * 65535.0) as u16,
+            let rotation_i16: [i16; 4] = [
+                (rotation.x * i16::MAX as f32) as i16,
+                (rotation.y * i16::MAX as f32) as i16,
+                (rotation.z * i16::MAX as f32) as i16,
+                (rotation.w * i16::MAX as f32) as i16,
             ];
-            model_matrix.rotation = rotation_u16;
+            model_matrix.rotation = rotation_i16;
             Ok(())
         } else {
             Err(anyhow!("Error: Failed to update model matrix (index out of bounds)"))
@@ -808,5 +808,5 @@ pub struct Model {
 pub struct QuantizedModelMatrix {
     pub position: [f32; 3],
     pub scale: [f32; 3],
-    pub rotation: [u16; 4],
+    pub rotation: [i16; 4],
 }
