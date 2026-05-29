@@ -28,15 +28,18 @@ fn main() {
             true,
             true,
         );
-        let transform_component = Transform::new();
+        let mut transform_component = Transform::new();
+        if i == 0 {
+            transform_component.set_is_static(true);
+        }
         app.world.add_component(entity, render_component);
         app.world.add_component(entity, transform_component);
         let transform_component = *app.world.get_component::<Transform>(entity).unwrap();
 
         if i == 0 {
-            transform_component.update_model_matrix(&mut app.world, glam::vec3(-2.0, 0.0, 0.0), glam::Quat::IDENTITY, glam::Vec3::ONE);    
+            transform_component.set_model_matrix(&mut app.world, glam::vec3(-2.0, 0.0, 0.0), glam::Quat::IDENTITY, glam::Vec3::ONE);    
         } else {
-            transform_component.update_model_matrix(&mut app.world, glam::vec3(2.0, 0.0, 0.0), glam::Quat::IDENTITY, glam::Vec3::ONE);    
+            transform_component.set_model_matrix(&mut app.world, glam::vec3(2.0, 0.0, 0.0), glam::Quat::IDENTITY, glam::Vec3::ONE);    
         }
     }
 

@@ -164,16 +164,30 @@ impl RenderPipelineEngineBuilder {
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX);
 
+        let indirect_draw_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(4)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+        let instance_data_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(5)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
         let binding_flags = &[
             vk::DescriptorBindingFlags::empty(),
             vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND,
+            vk::DescriptorBindingFlags::empty(),
+            vk::DescriptorBindingFlags::empty(),
             vk::DescriptorBindingFlags::empty(),
             vk::DescriptorBindingFlags::empty(),
         ];
         let mut layout_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder()
             .binding_flags(binding_flags);
 
-        let bindings = &[ubo_binding, sampler_binding, static_model_matrix_binding, dyn_model_matrix_binding];
+        let bindings = &[ubo_binding, sampler_binding, static_model_matrix_binding, dyn_model_matrix_binding, indirect_draw_binding, instance_data_binding];
         let info = vk::DescriptorSetLayoutCreateInfo::builder()
             .bindings(bindings)
             .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
@@ -196,12 +210,20 @@ impl RenderPipelineEngineBuilder {
         let dyn_model_matrix_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(command_engine.max_frames_in_flight as u32);
+
+        let indirect_draw_size = vk::DescriptorPoolSize::builder()
+            .type_(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(command_engine.max_frames_in_flight as u32);
+
+        let instance_data_size = vk::DescriptorPoolSize::builder()
+            .type_(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(command_engine.max_frames_in_flight as u32);
     
         let sampler_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(BINDLESS_TEXTURE_COUNT * present_engine.swapchain_images.len() as u32);
     
-        let pool_sizes = &[ubo_size, static_model_matrix_size, dyn_model_matrix_size, sampler_size];
+        let pool_sizes = &[ubo_size, static_model_matrix_size, dyn_model_matrix_size, indirect_draw_size, instance_data_size, sampler_size];
         let info = vk::DescriptorPoolCreateInfo::builder()
             .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
             .pool_sizes(pool_sizes)
@@ -264,7 +286,33 @@ impl RenderPipelineEngineBuilder {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&dyn_model_matrix_buffer_info);
 
-            device.update_descriptor_sets(&[ubo_write, static_model_matrix_write, dyn_model_matrix_write], &[] as &[vk::CopyDescriptorSet]);
+            let indirect_draw_info = vk::DescriptorBufferInfo::builder()
+                .buffer(command_engine.indirect_draw_buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE);
+
+            let indirect_draw_buffer_info = [indirect_draw_info];
+            let indirect_draw_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.0.descriptor_sets[i])
+                .dst_binding(4)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&indirect_draw_buffer_info);
+
+            let instance_data_info = vk::DescriptorBufferInfo::builder()
+                .buffer(command_engine.instance_buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE);
+
+            let instance_data_buffer_info = [instance_data_info];
+            let instance_data_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.0.descriptor_sets[i])
+                .dst_binding(5)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&instance_data_buffer_info);
+
+            device.update_descriptor_sets(&[ubo_write, static_model_matrix_write, dyn_model_matrix_write, indirect_draw_write, instance_data_write], &[] as &[vk::CopyDescriptorSet]);
         }
 
         texture_engine.refresh_bindless_textures(device, &self.0)?;

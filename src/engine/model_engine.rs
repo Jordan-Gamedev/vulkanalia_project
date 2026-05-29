@@ -42,7 +42,7 @@ pub struct ModelEngine {
     pub dyn_available_model_matrix_indices: Vec<u32>,
     pub dyn_model_matrices_buffer_contents: Vec<QuantizedModelMatrix>,
 
-    // Static Transforms (TODO: DO NOT STORE MATRICES IN CPU MEMORY, SINCE THERE IS NO BENEFIT YET TO USING STATIC)
+    // Static Transforms
     pub static_model_matrix_buffer: vk::Buffer,
     pub static_model_matrix_buffer_memory: vk::DeviceMemory,
     pub static_active_model_matrix_count: u32,
@@ -205,7 +205,7 @@ impl ModelEngine {
         Ok(())
     }
 
-    pub fn update_model_matrix(&mut self, model_matrix_index: u32, position: Vec3, rotation: Quat, scale: Vec3, is_static: bool) -> Result<()> {
+    pub fn set_model_matrix(&mut self, model_matrix_index: u32, position: Vec3, rotation: Quat, scale: Vec3, is_static: bool) -> Result<()> {
         let buffer_contents = if is_static { &mut self.static_model_matrices_buffer_contents } else { &mut self.dyn_model_matrices_buffer_contents };
         
         if let Some(model_matrix) = buffer_contents.get_mut(model_matrix_index as usize) {
@@ -224,7 +224,20 @@ impl ModelEngine {
         }
     }
 
-    pub fn transfer_cpu_model_matrices(&mut self, device: Device) {
+    pub fn save_model_matrix_changes(&mut self, device: Device, model_matrix_index: u32, is_static: bool) {
+        unsafe {
+            if is_static && self.static_model_matrices_buffer_contents.len() > 0 {
+                let memory = device.map_memory(
+                    self.static_model_matrix_buffer_memory, model_matrix_index as u64, size_of::<QuantizedModelMatrix>() as u64, vk::MemoryMapFlags::empty()).unwrap();
+                    *memory.cast::<QuantizedModelMatrix>() = self.static_model_matrices_buffer_contents[model_matrix_index as usize];
+                    device.unmap_memory(self.static_model_matrix_buffer_memory);
+            } else if !is_static && self.dyn_model_matrices_buffer_contents.len() > 0 {
+                *self.dyn_model_matrix_buffer_mapped.cast::<QuantizedModelMatrix>().add(model_matrix_index as usize) = self.dyn_model_matrices_buffer_contents[model_matrix_index as usize];
+            }
+        }
+    }
+
+    pub fn save_all_model_matrices_changes(&mut self, device: Device) {
         unsafe {
             if self.dyn_model_matrices_buffer_contents.len() > 0 {
                 memcpy(self.dyn_model_matrices_buffer_contents.as_ptr(), self.dyn_model_matrix_buffer_mapped.cast(), self.dyn_model_matrices_buffer_contents.len());
@@ -645,7 +658,7 @@ impl Vertex {
             .input_rate(vk::VertexInputRate::VERTEX)
             .build()
     }
-
+    
     pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
         let pos = vk::VertexInputAttributeDescription::builder()
             .binding(0)

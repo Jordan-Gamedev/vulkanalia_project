@@ -78,6 +78,12 @@ impl App {
             // Create command pool
             command_engine_builder.create_command_pool(app.device_context.as_ref().clone().unwrap())?;
 
+            // Create indirect draw buffer
+            command_engine_builder.create_indirect_draw_buffer(app.device_context.as_ref().clone().unwrap())?;
+
+            // Create instance data buffer
+            command_engine_builder.create_instance_buffer(app.device_context.as_ref().clone().unwrap())?;
+
             // Create uniform buffer objects
             model_engine_builder.create_uniform_buffers(app.device_context.as_ref().clone().unwrap(), command_engine_builder.0.clone())?;
 

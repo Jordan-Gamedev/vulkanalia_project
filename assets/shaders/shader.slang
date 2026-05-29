@@ -16,11 +16,35 @@ struct QuantizedModelMatrix {
     int16_t[4] rotation;
 };
 
+struct IndirectDrawData {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+    uint modelMatrixInfo;
+    uint textureIndex;
+    uint padding;
+};
+
 [[vk::binding(2, 0)]]
 StructuredBuffer<QuantizedModelMatrix> staticModelMatrices;
 
 [[vk::binding(3, 0)]]
 StructuredBuffer<QuantizedModelMatrix> dynamicModelMatrices;
+
+[[vk::binding(4, 0)]]
+StructuredBuffer<IndirectDrawData> indirectDrawData;
+ 
+struct PerInstanceData {
+    uint modelMatrixInfo;
+    uint textureIndex;
+    uint padding0;
+    uint padding1;
+};
+
+[[vk::binding(5, 0)]]
+StructuredBuffer<PerInstanceData> instanceData;
 ConstantBuffer<UniformBuffer> ubo;
 
 struct VSOutput
@@ -28,15 +52,8 @@ struct VSOutput
     float4 pos : SV_Position;
     float3 fragColor;
     float2 fragUv;
-};
-
-struct PushConstants {
-    uint modelMatrixInfo;
     uint textureIndex;
 };
-
-[[vk::push_constant]]
-ConstantBuffer<PushConstants> pushConstants;
 
 float4 decodeQuaternion(int16_t[4] packedRotation) {
     float4 q = float4(packedRotation[0], packedRotation[1], packedRotation[2], packedRotation[3]) / int16_t::maxValue;
@@ -49,10 +66,6 @@ float3 rotateVector(float3 vector, float4 quaternion) {
 }
 
 float4x4 buildModelMatrix(QuantizedModelMatrix modelMatrix) {
-    // //modelMatrix.position = float3(0, 0, 0);
-    // //modelMatrix.scale = float3(1.0, 1.0, 1.0);
-    // //float4 quaternion = float4(0.0, 0.0, 0.0, 1.0);
-    
     float4 quaternion = decodeQuaternion(modelMatrix.rotation);
 
     float3 right = rotateVector(float3(1.0, 0.0, 0.0), quaternion);
@@ -68,11 +81,15 @@ float4x4 buildModelMatrix(QuantizedModelMatrix modelMatrix) {
 }
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input) {
+VSOutput vertMain(VSInput input, uint drawId : SV_DrawIndex, uint instanceId : SV_InstanceID) {
     VSOutput output;
 
-    bool isStatic = (pushConstants.modelMatrixInfo & 0x80000000u) != 0;
-    uint modelMatrixIndex = pushConstants.modelMatrixInfo & 0x7FFFFFFFu;
+    IndirectDrawData drawData = indirectDrawData[drawId];
+    uint instanceIndex = drawData.firstInstance + instanceId;
+    PerInstanceData pi = instanceData[instanceIndex];
+
+    bool isStatic = (pi.modelMatrixInfo & 0x80000000u) != 0;
+    uint modelMatrixIndex = pi.modelMatrixInfo & 0x7FFFFFFFu;
 
     QuantizedModelMatrix modelMatrix = isStatic ? staticModelMatrices[modelMatrixIndex] : dynamicModelMatrices[modelMatrixIndex];
     float4x4 model = buildModelMatrix(modelMatrix);
@@ -80,6 +97,7 @@ VSOutput vertMain(VSInput input) {
     output.pos = mul(ubo.proj, mul(ubo.view, mul(model, float4(input.inPos, 1.0))));
     output.fragColor = input.inColor;
     output.fragUv = input.inUv;
+    output.textureIndex = pi.textureIndex;
     return output;
 }
 
@@ -90,6 +108,6 @@ Sampler2D textures[];
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-    float4 texcol = textures[pushConstants.textureIndex].Sample(vertIn.fragUv);
+    float4 texcol = textures[vertIn.textureIndex].Sample(vertIn.fragUv);
     return float4(vertIn.fragColor * texcol.rgb, 1.0);
 }

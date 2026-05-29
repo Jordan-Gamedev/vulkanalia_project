@@ -352,7 +352,8 @@ impl DeviceContextBuilder {
         let features = vk::PhysicalDeviceFeatures::builder()
             .sampler_anisotropy(true)
             .sample_rate_shading(true)
-            .shader_int16(true);
+            .shader_int16(true)
+            .multi_draw_indirect(true);
     
         let mut descriptor_indexing_features = vk::PhysicalDeviceVulkan12Features::builder()
             .descriptor_indexing(true)

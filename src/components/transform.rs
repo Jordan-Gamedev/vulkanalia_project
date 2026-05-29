@@ -29,16 +29,17 @@ impl Transform {
         Transform::default()
     }
 
-    pub fn update_model_matrix(&self, world: &mut crate::ecs::World, position: Vec3, rotation: Quat, scale: Vec3) {
+    pub fn set_model_matrix(&self, world: &mut crate::ecs::World, position: Vec3, rotation: Quat, scale: Vec3) {
         unsafe {
             let app = world.app.as_mut().unwrap();
-            Arc::make_mut(&mut app.model_engine).update_model_matrix(
+            Arc::make_mut(&mut app.model_engine).set_model_matrix(
                 self.get_model_matrix_index(),
                 position,
                 rotation,
                 scale,
                 self.is_static(),
             ).unwrap();
+            self.save_transform_changes(world);
         }
     }
 
@@ -71,6 +72,17 @@ impl Transform {
             } else {
                 Err(anyhow!("Error: failed to get model matrix (index out of bounds)"))
             }
+        }
+    }
+
+    pub fn save_transform_changes(&self, world: &mut crate::ecs::World) {
+        unsafe {
+            let app = world.app.as_mut().unwrap();
+            Arc::make_mut(&mut app.model_engine).save_model_matrix_changes(
+                app.device_context.as_ref().clone().unwrap().device,
+                self.get_model_matrix_index(),
+                self.is_static(),
+            );
         }
     }
 
