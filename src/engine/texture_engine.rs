@@ -51,10 +51,12 @@ impl TextureEngine {
         }
 
         // Load
-    
+
         let texture = {
-            let image = include_bytes!("../../assets/textures/cuttlefish_albedo.ktx2");
-            let mut texture = ktx2_rw::Ktx2Texture::from_memory(image)?;
+            //let image = include_bytes!("../../assets/textures/cuttlefish_albedo.ktx2");
+
+            let image = std::fs::read(format!("{}.ktx2", path.clone()))?;
+            let mut texture = ktx2_rw::Ktx2Texture::from_memory(&image)?;
             let context = context.clone();
 
             // Try BC7 first, fall back to ASTC 4x4 if not supported
@@ -216,7 +218,7 @@ impl TextureEngine {
         // Add texture to array of textures
         let slot_index: Option<u32> = if self.available_texture_slots.len() > 0 { self.available_texture_slots.pop() } else { Some(self.loaded_textures.len() as u32) };
         let slot_index: u32 = slot_index.unwrap();
-        self.loaded_textures.insert(path.clone(), Texture { image: texture_image, memory: texture_image_memory, image_view, sampler_contents, slot_index, instance_count: 1 });
+        self.loaded_textures.insert(path, Texture { image: texture_image, memory: texture_image_memory, image_view, sampler_contents, slot_index, instance_count: 1 });
         
         // Update bindless descriptor
         TextureEngine::update_bindless_texture(context.device, &rp_engine, slot_index, image_view, sampler)?;

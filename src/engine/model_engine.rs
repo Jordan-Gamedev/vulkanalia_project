@@ -9,6 +9,7 @@
 
 use anyhow::{anyhow, Result};
 use vulkanalia::prelude::v1_0::*;
+use core::slice;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -83,7 +84,11 @@ impl ModelEngine {
         
         // Get vertices
     
-        let vertex_bytes: &[u8; _] = include_bytes!("../../assets/models_compressed/Limpet.vertbuff");
+        //let vertex_bytes: &[u8; _] = include_bytes!("../../assets/models_compressed/Limpet.vertbuff");
+        let path_vert = format!("{}.vertbuff", path.clone());
+        let path_index = format!("{}.indbuff", path.clone());
+        
+        let vertex_bytes = std::fs::read(path_vert)?;
         let vertex_count = u32::from_be_bytes(vertex_bytes[0..size_of::<u32>()].try_into().unwrap()) as usize;
     
         let vertices: Vec<QuantizedVertex> = match meshopt::decode_vertex_buffer(vertex_bytes[size_of::<u32>()..].try_into().unwrap(), vertex_count) {
@@ -93,7 +98,8 @@ impl ModelEngine {
     
         // Get indices
     
-        let index_bytes: &[u8; _] = include_bytes!("../../assets/models_compressed/Limpet.indbuff");
+        //let index_bytes: &[u8; _] = include_bytes!("../../assets/models_compressed/Limpet.indbuff");
+        let index_bytes = std::fs::read(path_index)?;
         let index_count = u32::from_be_bytes(index_bytes[0..size_of::<u32>()].try_into().unwrap()) as usize;
         let indices: Vec<u32> = match meshopt::decode_index_buffer(index_bytes[size_of::<u32>()..].try_into().unwrap(), index_count) {
             Ok(indices) => indices,
@@ -282,7 +288,7 @@ impl ModelEngine {
         count
     }
     
-    pub fn get_buffer_contents<T>(context: DeviceContext, command_engine: &CommandEngine, buffer: vk::Buffer, content_length: usize) -> Result<Vec<T>> {
+    pub fn get_buffer_contents<T: std::fmt::Debug + Clone>(context: DeviceContext, command_engine: &CommandEngine, buffer: vk::Buffer, content_length: usize) -> Result<Vec<T>> {
         unsafe {
             // Create staging buffer to read data from GPU
             let size: usize = content_length * size_of::<T>();
@@ -307,7 +313,7 @@ impl ModelEngine {
             .cast::<T>();
 
             // Create a Vector out of the memory
-            let vec: Vec<T> = Vec::from_raw_parts(memory, size as usize, size as usize);
+            let vec: Vec<T> = slice::from_raw_parts(memory.cast(), content_length).to_vec();
 
             // Cleanup
             context.device.destroy_buffer(staging_buffer, None);
@@ -408,7 +414,7 @@ impl ModelEngine {
         let (vertex_buffer, vertex_buffer_memory) = ModelEngine::create_buffer(
             context.clone(),
             size,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
         self.vertex_buffer = vertex_buffer;
@@ -465,7 +471,7 @@ impl ModelEngine {
         let (index_buffer, index_buffer_memory) = ModelEngine::create_buffer(
             context.clone(),
             size,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
         self.index_buffer = index_buffer;
@@ -493,7 +499,7 @@ impl ModelEngine {
         let mut total_vertices = ModelEngine::get_buffer_contents::<QuantizedVertex>(context.clone(), command_engine, self.vertex_buffer, self.get_vertex_count() as usize)?;
 
         // Combine old and new vertices
-        total_vertices.extend(vertices);
+        total_vertices.extend(vertices.iter());
 
         // Create a new vertex buffer with all the vertices
         self.create_vertex_buffer(context.clone(), command_engine, total_vertices)?;
@@ -508,7 +514,7 @@ impl ModelEngine {
         }
         
         // Get indices from current index buffer
-        let mut total_indices = ModelEngine::get_buffer_contents::<u32>(context.clone(), command_engine, self.vertex_buffer, self.get_index_count() as usize)?;
+        let mut total_indices = ModelEngine::get_buffer_contents::<u32>(context.clone(), command_engine, self.index_buffer, self.get_index_count() as usize)?;
 
         // Combine old and new indices
         total_indices.extend(indices);
@@ -534,7 +540,7 @@ impl ModelEngine {
 
     unsafe fn remove_index_buffer(&mut self, context: DeviceContext, command_engine: &CommandEngine, model: Model) -> Result<()> {        
         // Get indices from current index buffer
-        let mut indices = ModelEngine::get_buffer_contents::<u32>(context.clone(), command_engine, self.vertex_buffer, self.get_index_count() as usize)?;
+        let mut indices = ModelEngine::get_buffer_contents::<u32>(context.clone(), command_engine, self.index_buffer, self.get_index_count() as usize)?;
         
         // Remove designated indices
         indices.drain((model.index_offset as usize)..((model.index_offset + model.index_length) as usize));
