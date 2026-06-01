@@ -18,15 +18,19 @@ use super::device_context::DeviceContext;
 
 #[derive(Clone, Default)]
 pub struct TextureEngine {
-    samplers: HashMap<SamplerContents, vk::Sampler>,
-    sampler_usage_amount: HashMap<SamplerContents, u32>,
     loaded_textures: HashMap<String, Texture>,
     available_texture_slots: Vec<u32>,
+    samplers: HashMap<SamplerContents, SamplerUsage>,
+    available_sampler_slots: Vec<u32>,
 }
 
 impl TextureEngine {
     pub fn get_texture_slot_index(&self, path: &str) -> Option<u32> {
         self.loaded_textures.get(path).map(|texture| texture.slot_index)
+    }
+
+    pub fn get_sampler_slot_index(&self, sampler_contents: SamplerContents) -> Option<u32> {
+        self.samplers.get(&sampler_contents).map(|s| s.slot_index)
     }
 
     pub fn destroy(&mut self, device: Device) {
@@ -36,12 +40,13 @@ impl TextureEngine {
                 device.destroy_image(t.image, None);
                 device.free_memory(t.memory, None);
             });
-            self.samplers.iter().for_each(|(_, s)| device.destroy_sampler(*s, None));
+            self.samplers.iter().for_each(|(_, s)| device.destroy_sampler(s.sampler, None));
         }
         self.samplers.clear();
-        self.sampler_usage_amount.clear();
         self.loaded_textures.clear();
         self.available_texture_slots.clear();
+        self.samplers.clear();
+        self.available_sampler_slots.clear();
     }
 
     pub fn load_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, command_engine: CommandEngine, path: String, sampler_contents: SamplerContents) -> Result<()> {
@@ -205,28 +210,31 @@ impl TextureEngine {
         let image_view = TextureEngine::create_image_view(context.clone().device, texture_image, format, vk::ImageAspectFlags::COLOR, mipmap_levels)?;
         
         // Add one to the usage count if a sampler was found that already has required specifications, otherwise create sampler
-        let sampler = if let Some(usage_count) = self.sampler_usage_amount.get_mut(&sampler_contents) {
-            *usage_count += 1;
-            self.samplers[&sampler_contents]
+        let sampler = if let Some(usage) = self.samplers.get_mut(&sampler_contents) {
+            usage.instance_count += 1;
+            self.samplers[&sampler_contents].sampler
         } else {
             let sampler = TextureEngine::create_sampler(context.clone().device, sampler_contents);
-            self.samplers.insert(sampler_contents, sampler);
-            self.sampler_usage_amount.insert(sampler_contents, 1);
+
+            // Get sampler slot index
+            let slot_index: u32 = if self.available_sampler_slots.len() > 0 { self.available_sampler_slots.pop().unwrap() } else { self.samplers.len() as u32 };
+            let sampler_usage = SamplerUsage { slot_index, sampler, instance_count: 1 };
+            self.samplers.insert(sampler_contents, sampler_usage);
+            TextureEngine::update_bindless_sampler(context.clone().device, &rp_engine, slot_index, sampler)?;
             sampler
         };
 
         // Add texture to array of textures
-        let slot_index: Option<u32> = if self.available_texture_slots.len() > 0 { self.available_texture_slots.pop() } else { Some(self.loaded_textures.len() as u32) };
-        let slot_index: u32 = slot_index.unwrap();
-        self.loaded_textures.insert(path, Texture { image: texture_image, memory: texture_image_memory, image_view, sampler_contents, slot_index, instance_count: 1 });
+        let slot_index: u32 = if self.available_texture_slots.len() > 0 { self.available_texture_slots.pop().unwrap() } else { self.loaded_textures.len() as u32 };
+        self.loaded_textures.insert(path, Texture { image: texture_image, memory: texture_image_memory, image_view, slot_index, instance_count: 1 });
         
         // Update bindless descriptor
-        TextureEngine::update_bindless_texture(context.device, &rp_engine, slot_index, image_view, sampler)?;
+        TextureEngine::update_bindless_texture(context.device, &rp_engine, slot_index, image_view)?;
 
         Ok(())
     }
 
-    pub fn unload_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, path: String) -> Result<()> {
+    pub fn unload_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, path: String, sampler_contents: SamplerContents) -> Result<()> {
         let (unloading_texture, fully_unloaded) = if let Some(texture) = self.loaded_textures.get_mut(&path) {
             texture.instance_count -= 1;
             (*texture, texture.instance_count == 0)
@@ -242,15 +250,18 @@ impl TextureEngine {
                 context.device.destroy_image(unloading_texture.image, None);
                 context.device.free_memory(unloading_texture.memory, None);
             
-                if let Some(usage_count) = self.sampler_usage_amount.get_mut(&unloading_texture.sampler_contents) {
-                    *usage_count -= 1;
+                // Unload sampler if no more textures use this sampler
+                let sampler = self.samplers[&sampler_contents].sampler.clone();
+                let slot_index = self.samplers[&sampler_contents].slot_index;
+                let should_unload_sampler: bool = if let Some(usage) = self.samplers.get_mut(&sampler_contents) {
+                    usage.instance_count -= 1;
+                    usage.instance_count == 0
+                } else { false };
 
-                    // Unload sampler if no more textures use this sampler
-                    if *usage_count == 0 {
-                        context.device.destroy_sampler(self.samplers[&unloading_texture.sampler_contents], None);
-                        self.samplers.remove(&unloading_texture.sampler_contents);
-                        self.sampler_usage_amount.remove(&unloading_texture.sampler_contents);
-                    }
+                if should_unload_sampler {
+                    context.device.destroy_sampler(sampler, None);
+                    self.samplers.remove(&sampler_contents);
+                    self.available_sampler_slots.push(slot_index);
                 }
             }
         }
@@ -260,7 +271,10 @@ impl TextureEngine {
 
     pub fn refresh_bindless_textures(&self, device: Device, rp_engine: &RenderPipelineEngine) -> Result<()> {
         for texture in self.loaded_textures.values() {
-            TextureEngine::update_bindless_texture(device.clone(), rp_engine, texture.slot_index, texture.image_view, self.samplers[&texture.sampler_contents])?;
+            TextureEngine::update_bindless_texture(device.clone(), rp_engine, texture.slot_index, texture.image_view)?;
+        }
+        for sampler_usage in self.samplers.values() {
+            TextureEngine::update_bindless_sampler(device.clone(), rp_engine, sampler_usage.slot_index, sampler_usage.sampler)?;
         }
 
         Ok(())
@@ -391,15 +405,14 @@ impl TextureEngine {
         properties.optimal_tiling_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE)
     }
     
-    fn update_bindless_texture(device: Device, rp_engine: &RenderPipelineEngine, slot_index: u32, view: vk::ImageView, sampler: vk::Sampler) -> Result<()> {
+    fn update_bindless_texture(device: Device, rp_engine: &RenderPipelineEngine, slot_index: u32, view: vk::ImageView) -> Result<()> {
         if rp_engine.descriptor_sets.is_empty() {
             return Ok(());
         }
 
         let info = vk::DescriptorImageInfo::builder()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(view)
-            .sampler(sampler);
+            .image_view(view);
 
         let image_info = &[info];
         for descriptor_set in &rp_engine.descriptor_sets {
@@ -407,8 +420,28 @@ impl TextureEngine {
                 .dst_set(*descriptor_set)
                 .dst_binding(1)
                 .dst_array_element(slot_index)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .image_info(image_info);
+
+            unsafe { device.update_descriptor_sets(&[write_set], &[] as &[vk::CopyDescriptorSet]); }
+        }
+        Ok(())
+    }
+
+    fn update_bindless_sampler(device: Device, rp_engine: &RenderPipelineEngine, slot_index: u32, sampler: vk::Sampler) -> Result<()> {
+        if rp_engine.descriptor_sets.is_empty() {
+            return Ok(());
+        }
+
+        let info = vk::DescriptorImageInfo::builder().sampler(sampler);
+        let sampler_info = &[info];
+        for descriptor_set in &rp_engine.descriptor_sets {
+            let write_set = vk::WriteDescriptorSet::builder()
+                .dst_set(*descriptor_set)
+                .dst_binding(6)
+                .dst_array_element(slot_index)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .image_info(sampler_info);
 
             unsafe { device.update_descriptor_sets(&[write_set], &[] as &[vk::CopyDescriptorSet]); }
         }
@@ -491,8 +524,14 @@ pub struct Texture {
     pub image: vk::Image,
     pub memory: vk::DeviceMemory,
     pub image_view: vk::ImageView,
-    pub sampler_contents: SamplerContents,
     pub instance_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct SamplerUsage {
+    slot_index: u32,
+    sampler: vk::Sampler,
+    instance_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

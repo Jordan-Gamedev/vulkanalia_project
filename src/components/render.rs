@@ -33,7 +33,7 @@ impl Component for Render {
     fn on_remove(&self, world: &mut crate::ecs::World) {
         unsafe {
             let app = &mut *world.app;
-            app.unload_texture(self.material.albedo_name.clone()).unwrap();
+            app.unload_texture(self.material.albedo_name.clone(), self.material.sampler_contents).unwrap();
             app.unload_model(self.model_name.clone()).unwrap();
         }
     }

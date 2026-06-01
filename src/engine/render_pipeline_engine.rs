@@ -146,9 +146,15 @@ impl RenderPipelineEngineBuilder {
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX);
     
-        let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
+        let texture_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(1)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .descriptor_count(BINDLESS_TEXTURE_COUNT)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(6)
+            .descriptor_type(vk::DescriptorType::SAMPLER)
             .descriptor_count(BINDLESS_TEXTURE_COUNT)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
@@ -183,11 +189,12 @@ impl RenderPipelineEngineBuilder {
             vk::DescriptorBindingFlags::empty(),
             vk::DescriptorBindingFlags::empty(),
             vk::DescriptorBindingFlags::empty(),
+            vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND,
         ];
         let mut layout_flags = vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder()
             .binding_flags(binding_flags);
 
-        let bindings = &[ubo_binding, sampler_binding, static_model_matrix_binding, dyn_model_matrix_binding, indirect_draw_binding, instance_data_binding];
+        let bindings = &[ubo_binding, texture_binding, static_model_matrix_binding, dyn_model_matrix_binding, indirect_draw_binding, instance_data_binding, sampler_binding];
         let info = vk::DescriptorSetLayoutCreateInfo::builder()
             .bindings(bindings)
             .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
@@ -219,11 +226,15 @@ impl RenderPipelineEngineBuilder {
             .type_(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(command_engine.max_frames_in_flight as u32);
     
+        let texture_size = vk::DescriptorPoolSize::builder()
+            .type_(vk::DescriptorType::SAMPLED_IMAGE)
+            .descriptor_count(BINDLESS_TEXTURE_COUNT * present_engine.swapchain_images.len() as u32);
+
         let sampler_size = vk::DescriptorPoolSize::builder()
-            .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .type_(vk::DescriptorType::SAMPLER)
             .descriptor_count(BINDLESS_TEXTURE_COUNT * present_engine.swapchain_images.len() as u32);
     
-        let pool_sizes = &[ubo_size, static_model_matrix_size, dyn_model_matrix_size, indirect_draw_size, instance_data_size, sampler_size];
+        let pool_sizes = &[ubo_size, texture_size, static_model_matrix_size, dyn_model_matrix_size, indirect_draw_size, instance_data_size, sampler_size];
         let info = vk::DescriptorPoolCreateInfo::builder()
             .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
             .pool_sizes(pool_sizes)

@@ -142,8 +142,8 @@ impl App {
         Ok(())
     }
 
-    pub fn unload_texture(&mut self, path: String) -> Result<()> {
-        Arc::make_mut(&mut self.texture_engine).unload_texture(self.device_context.as_ref().clone().unwrap(), self.rp_engine.as_ref().clone(), path)?;
+    pub fn unload_texture(&mut self, path: String, sampler_contents: SamplerContents) -> Result<()> {
+        Arc::make_mut(&mut self.texture_engine).unload_texture(self.device_context.as_ref().clone().unwrap(), self.rp_engine.as_ref().clone(), path, sampler_contents)?;
         Ok(())
     }
 

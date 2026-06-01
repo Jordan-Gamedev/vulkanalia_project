@@ -336,11 +336,16 @@ impl CommandEngine {
                 .get_texture_slot_index(&render.material.albedo_name)
                 .unwrap_or(0);
 
+            let sampler_slot_index = app
+                .texture_engine
+                .get_sampler_slot_index(render.material.sampler_contents)
+                .unwrap_or(0);
+
             let entry = PerInstanceData {
                 model_matrix_info: transform.model_matrix_info,
                 texture_index: texture_slot_index,
-                padding0: 0,
-                padding1: 0,
+                sampler_index: sampler_slot_index,
+                padding: 0,
             };
 
             instances_map.entry(render.model_name.clone()).or_default().push(entry);
@@ -521,6 +526,6 @@ pub struct IndirectDrawData {
 pub struct PerInstanceData {
     pub model_matrix_info: u32,
     pub texture_index: u32,
-    pub padding0: u32,
-    pub padding1: u32,
+    pub sampler_index: u32,
+    pub padding: u32,
 }

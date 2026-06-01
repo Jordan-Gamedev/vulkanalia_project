@@ -39,8 +39,8 @@ StructuredBuffer<IndirectDrawData> indirectDrawData;
 struct PerInstanceData {
     uint modelMatrixInfo;
     uint textureIndex;
-    uint padding0;
-    uint padding1;
+    uint samplerIndex;
+    uint padding;
 };
 
 [[vk::binding(5, 0)]]
@@ -53,6 +53,7 @@ struct VSOutput
     float3 fragColor;
     float2 fragUv;
     uint textureIndex;
+    uint samplerIndex;
 };
 
 float4 decodeQuaternion(int16_t[4] packedRotation) {
@@ -98,16 +99,17 @@ VSOutput vertMain(VSInput input, uint drawId : SV_DrawIndex, uint instanceId : S
     output.fragColor = input.inColor;
     output.fragUv = input.inUv;
     output.textureIndex = pi.textureIndex;
+    output.samplerIndex = pi.samplerIndex;
     return output;
 }
 
-// Bindless combined image samplers: runtime-sized array declared at the same binding
-// as the descriptor array on the CPU side (binding 1). The engine currently
-// writes textures into these array slots; shaders index into them by integer.
-Sampler2D textures[];
+// Bindless texture and sampler arrays are separate: binding 1 is sampled images,
+// binding 6 is samplers. The engine writes both arrays independently.
+Texture2D textures[];
+SamplerState samplers[];
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-    float4 texcol = textures[vertIn.textureIndex].Sample(vertIn.fragUv);
+    float4 texcol = textures[vertIn.textureIndex].Sample(samplers[vertIn.samplerIndex], vertIn.fragUv);
     return float4(vertIn.fragColor * texcol.rgb, 1.0);
 }
