@@ -7,7 +7,6 @@
     clippy::unnecessary_wraps
 )]
 
-
 use anyhow::{anyhow, Result};
 use glam::{Mat4, vec3};
 use std::ffi::c_void;
@@ -144,7 +143,16 @@ impl CommandEngine {
             }
         }
 
+        // Save cpu model matrix changes to gpu
+        //Arc::make_mut(&mut app.model_engine).save_all_model_matrices_changes(app.device_context.as_ref().clone().unwrap().device);
+
+        // benchmark getting indirect draw data
+//        let start = Instant::now();
+
         let (indirect_draws, instances) = CommandEngine::get_indirect_data(app);
+
+//        let duration = start.elapsed();
+//        println!("Getting indirect draw data took: {:?}", duration);
 
         unsafe {
             let context = app.device_context.as_ref().clone().unwrap();
@@ -324,6 +332,15 @@ impl CommandEngine {
         // Group instances by model name, collect per-instance data
         let mut instances_map: HashMap<String, Vec<PerInstanceData>> = HashMap::new();
 
+        // TODO: slap data on the end of executable and read them with bytes
+        //       use bytes to to get model and texture info
+        let start = Instant::now();
+
+        let bro = app.world.query2::<Render, Transform>();
+
+        let duration = start.elapsed();
+        println!("Running render and transform query took: {:?}", duration);
+
         for (render, transform, entity) in app.world.query2::<Render, Transform>() {
             let model = if let Some(model) = app.model_engine.loaded_models.get(&render.model_name) {
                 *model
@@ -355,6 +372,8 @@ impl CommandEngine {
         let mut instances = Vec::<PerInstanceData>::new();
         let mut base_instance_index: u32 = 0;
 
+        let start = Instant::now();
+
         for (model_name, model_instance_list) in instances_map.iter() {
             if let Some(model) = app.model_engine.loaded_models.get(model_name) {
                 let count = model_instance_list.len() as u32;
@@ -373,6 +392,9 @@ impl CommandEngine {
                 base_instance_index += count;
             }
         }
+
+        let duration = start.elapsed();
+        println!("Filling instance and draws took: {:?}", duration);
 
         (indirect_draws, instances)
     }

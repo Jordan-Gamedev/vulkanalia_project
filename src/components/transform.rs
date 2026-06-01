@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use glam::{Quat, Vec3};
 use std::sync::Arc;
-use crate::{ecs::Component, engine::{model_engine::QuantizedModelMatrix}};
+use crate::{ecs::Component, engine::{ModelEngine, model_engine::QuantizedModelMatrix}};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Transform {
@@ -12,14 +12,14 @@ impl Component for Transform {
     fn on_add(&mut self, world: &mut crate::ecs::World) {
         unsafe {
             let app = world.app.as_mut().unwrap();
-            self.set_model_matrix_index(Arc::make_mut(&mut app.model_engine).create_model_matrix(app.device_context.as_ref().clone().unwrap(), self.is_static()).unwrap());
+            self.set_model_matrix_index(ModelEngine::create_model_matrix(app, self.is_static()).unwrap());
         }
     }
 
     fn on_remove(&self, world: &mut crate::ecs::World) {
         unsafe {
             let app = world.app.as_mut().unwrap();
-            Arc::make_mut(&mut app.model_engine).remove_model_matrix(app.device_context.as_ref().clone().unwrap(), self.get_model_matrix_index(), self.is_static()).unwrap();
+            ModelEngine::remove_model_matrix(app, self.get_model_matrix_index(), self.is_static()).unwrap();
         }
     }
 }
