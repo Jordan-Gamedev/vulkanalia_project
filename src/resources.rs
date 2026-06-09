@@ -5,20 +5,62 @@
 #![allow(dead_code)]
 
 #[repr(align(4096))]
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct AlignedAsset(pub &'static[u8]);
 
+// ------------KTX2 Textures------------
+
 // 682 B
-pub const BLANK_ALBEDO_T: AlignedAsset = AlignedAsset(*&include_bytes!("../assets/textures/blank_albedo.ktx2").as_slice());
+pub const BLANK_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/blank_albedo.ktx2").as_slice());
 // 220.63 KiB
-pub const CUTTLEFISH_ALBEDO_T: AlignedAsset = AlignedAsset(*&include_bytes!("../assets/textures/cuttlefish_albedo.ktx2").as_slice());
+pub const CUTTLEFISH_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/cuttlefish_albedo.ktx2").as_slice());
+
+// ------------Model Vertices-----------
 
 // 109 B
-pub const CUBE_V: AlignedAsset = AlignedAsset(*&include_bytes!("../assets/models_compressed/Cube.vertbuff").as_slice());
+pub const CUBE_V: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Cube.vertbuff").as_slice());
 // 1.67 KiB
-pub const LIMPET_V: AlignedAsset = AlignedAsset(*&include_bytes!("../assets/models_compressed/Limpet.vertbuff").as_slice());
+pub const LIMPET_V: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Limpet.vertbuff").as_slice());
+
+// ------------Model Indices------------
 
 // 38 B
-pub const CUBE_I: AlignedAsset = AlignedAsset(*&include_bytes!("../assets/models_compressed/Cube.indbuff").as_slice());
+pub const CUBE_I: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Cube.indbuff").as_slice());
 // 89 B
-pub const LIMPET_I: AlignedAsset = AlignedAsset(*&include_bytes!("../assets/models_compressed/Limpet.indbuff").as_slice());
+pub const LIMPET_I: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Limpet.indbuff").as_slice());
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum AssetId {
+	#[default] None,
+	BlankAlbedoTexture,
+	CuttlefishAlbedoTexture,
+	CubeVertices,
+	LimpetVertices,
+	CubeIndices,
+	LimpetIndices,
+}
+
+pub fn get_asset_from_id(id: AssetId) -> AlignedAsset {
+	match id {
+		AssetId::None => {
+			AlignedAsset(&[])
+		},
+		AssetId::BlankAlbedoTexture => {
+			BLANK_ALBEDO_T
+		},
+		AssetId::CuttlefishAlbedoTexture => {
+			CUTTLEFISH_ALBEDO_T
+		},
+		AssetId::CubeVertices => {
+			CUBE_V
+		},
+		AssetId::LimpetVertices => {
+			LIMPET_V
+		},
+		AssetId::CubeIndices => {
+			CUBE_I
+		},
+		AssetId::LimpetIndices => {
+			LIMPET_I
+		},
+	}
+}

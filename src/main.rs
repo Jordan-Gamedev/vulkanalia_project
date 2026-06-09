@@ -1,27 +1,38 @@
+use std::time::Instant;
+
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia_project::components::render::Render;
 use vulkanalia_project::components::transform::Transform;
 use vulkanalia_project::engine::App;
 use vulkanalia_project::engine::texture_engine::{Material, SamplerContents};
-use vulkanalia_project::resources::*;
+use vulkanalia_project::resources::AssetId;
 
 fn main() {
+
+    let start = Instant::now();
+
     // Create the app
     let mut app = App::new().unwrap();
 
+    let duration = start.elapsed();
+    println!("Creating app took: {:?}", duration);
+
+
+    let start = Instant::now();
+
     let placement_dist: f32 = 0.1;
 
-    for x in -64..64 {
-        for z in -64..64 {
+    for x in -32..32 {
+        for z in -32..32 {
             // Create entity with a renderer
             let entity = app.world.create_entity();
             let render_component = Render::new(
-                LIMPET_V,
-                LIMPET_I,
+                AssetId::LimpetVertices,
+                AssetId::LimpetIndices,
                 Material {
-                    albedo_name: "assets/textures/cuttlefish_albedo".to_string(),
-                    normal_ao_name: String::new(),
-                    metallic_roughness_emissive_name: String::new(),
+                    albedo: AssetId::CuttlefishAlbedoTexture,
+                    normal_ao: AssetId::None,
+                    metallic_roughness_emissive: AssetId::None,
                     sampler_contents: SamplerContents::new(
                         vk::Filter::LINEAR,
                         vk::SamplerAddressMode::REPEAT,
@@ -46,6 +57,10 @@ fn main() {
             transform_component.set_model_matrix(&mut app.world, position, glam::Quat::IDENTITY, scale);
         }
     }
+
+    
+    let duration = start.elapsed();
+    println!("Creating entities took: {:?}", duration);
 
     // {
     //     // Create entity with a renderer

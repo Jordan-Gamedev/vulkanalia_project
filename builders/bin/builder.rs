@@ -400,42 +400,154 @@ fn create_resources() -> Result<()> {
     resource_file_contents.push_str("// |                                            |\n\n");
     resource_file_contents.push_str("#![allow(dead_code)]\n\n");
     resource_file_contents.push_str("#[repr(align(4096))]\n");
-    resource_file_contents.push_str("#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]\n");
     resource_file_contents.push_str("pub struct AlignedAsset(pub &'static[u8]);\n\n");
+   
+    resource_file_contents.push_str("// ------------KTX2 Textures------------\n\n");
 
     let texture_resources = traverse_directory("assets", vec!["ktx2"])?;
+    let mut texture_file_names: Vec<String> = Vec::new();
+
     for resource in texture_resources {
         let resource_path = resource.to_string_lossy().replace("\\", "/");
         let resource_path = resource_path.as_str();
         let file_name = format!("{}_T", resource.file_stem().unwrap().to_ascii_uppercase().into_string().unwrap());
         let byte_size = fs::read(resource_path).unwrap().len();
         resource_file_contents.push_str(&format!("// {}\n", &file_size_as_string(&byte_size)));
-        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(*&include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
+        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
+        texture_file_names.push(file_name);
     }
 
-    resource_file_contents.push_str("\n");
+    resource_file_contents.push_str("\n// ------------Model Vertices-----------\n\n");
 
     let vertex_resources = traverse_directory("assets", vec!["vertbuff"])?;
+    let mut vertex_file_names: Vec<String> = Vec::new();
+    
     for resource in vertex_resources {
         let resource_path = resource.to_string_lossy().replace("\\", "/");
         let resource_path = resource_path.as_str();
         let file_name = format!("{}_V", resource.file_stem().unwrap().to_ascii_uppercase().into_string().unwrap());
         let byte_size = fs::read(resource_path).unwrap().len();
         resource_file_contents.push_str(&format!("// {}\n", &file_size_as_string(&byte_size)));
-        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(*&include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
+        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
+        vertex_file_names.push(file_name);
     }
 
-    resource_file_contents.push_str("\n");
+    resource_file_contents.push_str("\n// ------------Model Indices------------\n\n");
 
     let index_resources = traverse_directory("assets", vec!["indbuff"])?;
+    let mut index_file_names: Vec<String> = Vec::new();
+
     for resource in index_resources {
         let resource_path = resource.to_string_lossy().replace("\\", "/");
         let resource_path = resource_path.as_str();
         let file_name = format!("{}_I", resource.file_stem().unwrap().to_ascii_uppercase().into_string().unwrap());
         let byte_size = fs::read(resource_path).unwrap().len();
         resource_file_contents.push_str(&format!("// {}\n", &file_size_as_string(&byte_size)));
-        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(*&include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
+        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
+        index_file_names.push(file_name);
     }
+
+    // Create asset ids
+    resource_file_contents.push_str("\n#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]\n");
+    resource_file_contents.push_str("pub enum AssetId {\n");
+    resource_file_contents.push_str("\t#[default] None,\n");
+
+    let mut enum_texture_names: Vec<String> = Vec::new();
+    for tex_name in texture_file_names.clone() {
+        // Split name into individual words
+        let mut name_words: Vec<String> = tex_name.split("_").map(|s| s.to_ascii_lowercase().to_string()).collect();
+        
+        // Remove asset type suffix
+        name_words.remove(name_words.len() - 1);
+
+        // Capitalize first letter of every word
+        for name in &mut name_words {
+            name.get_mut(0..1).unwrap().make_ascii_uppercase();
+        }
+
+        // Add asset type suffix
+        name_words.push("Texture".to_string());
+
+        let tex_name = name_words.concat();
+
+        // Add the enum name
+        resource_file_contents.push_str(&format!("\t{},\n", tex_name));
+        enum_texture_names.push(tex_name);
+    }
+
+    let mut enum_vertex_names: Vec<String> = Vec::new();
+    for vert_name in vertex_file_names.clone() {
+        // Split name into individual words
+        let mut name_words: Vec<String> = vert_name.split("_").map(|s| s.to_ascii_lowercase().to_string()).collect();
+        
+        // Remove asset type suffix
+        name_words.remove(name_words.len() - 1);
+
+        // Capitalize first letter of every word
+        for name in &mut name_words {
+            name.get_mut(0..1).unwrap().make_ascii_uppercase();
+        }
+
+        // Add asset type suffix
+        name_words.push("Vertices".to_string());
+
+        let vert_name = name_words.concat();
+
+        // Add the enum name
+        resource_file_contents.push_str(&format!("\t{},\n", vert_name));
+        enum_vertex_names.push(vert_name);
+    }
+
+    let mut enum_index_names: Vec<String> = Vec::new();
+    for index_name in index_file_names.clone() {
+        // Split name into individual words
+        let mut name_words: Vec<String> = index_name.split("_").map(|s| s.to_ascii_lowercase().to_string()).collect();
+        
+        // Remove asset type suffix
+        name_words.remove(name_words.len() - 1);
+
+        // Capitalize first letter of every word
+        for name in &mut name_words {
+            name.get_mut(0..1).unwrap().make_ascii_uppercase();
+        }
+
+        // Add asset type suffix
+        name_words.push("Indices".to_string());
+
+        let index_name = name_words.concat();
+        
+        // Add the enum name
+        resource_file_contents.push_str(&format!("\t{},\n", index_name));
+        enum_index_names.push(index_name);
+    }
+
+    resource_file_contents.push_str("}\n\n");
+    resource_file_contents.push_str("pub fn get_asset_from_id(id: AssetId) -> AlignedAsset {\n");
+    resource_file_contents.push_str("\tmatch id {\n");
+    resource_file_contents.push_str("\t\tAssetId::None => {\n");
+    resource_file_contents.push_str("\t\t\tAlignedAsset(&[])\n");
+    resource_file_contents.push_str("\t\t},\n");
+
+    for i in 0..texture_file_names.len() {
+        resource_file_contents.push_str(&format!("\t\tAssetId::{} => {{\n", enum_texture_names[i]));
+        resource_file_contents.push_str(&format!("\t\t\t{}\n", texture_file_names[i]));
+        resource_file_contents.push_str("\t\t},\n");
+    }
+
+    for i in 0..vertex_file_names.len() {
+        resource_file_contents.push_str(&format!("\t\tAssetId::{} => {{\n", enum_vertex_names[i]));
+        resource_file_contents.push_str(&format!("\t\t\t{}\n", vertex_file_names[i]));
+        resource_file_contents.push_str("\t\t},\n");
+    }
+
+    for i in 0..index_file_names.len() {
+        resource_file_contents.push_str(&format!("\t\tAssetId::{} => {{\n", enum_index_names[i]));
+        resource_file_contents.push_str(&format!("\t\t\t{}\n", index_file_names[i]));
+        resource_file_contents.push_str("\t\t},\n");
+    }
+    
+    resource_file_contents.push_str("\t}\n");
+    resource_file_contents.push_str("}\n");
 
     fs::write("src/resources.rs", resource_file_contents)
 }

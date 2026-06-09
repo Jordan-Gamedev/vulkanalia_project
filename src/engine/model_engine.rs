@@ -17,7 +17,7 @@ use std::ptr::copy_nonoverlapping as memcpy;
 use glam::{Mat4, Quat, Vec2, Vec3, vec2, vec3};
 
 use crate::engine::{App, CommandEngine, RenderPipelineEngine};
-use crate::resources::AlignedAsset;
+use crate::resources::{AssetId, get_asset_from_id};
 
 use super::device_context::DeviceContext;
 
@@ -53,7 +53,7 @@ pub struct ModelEngine {
     pub static_model_matrices_buffer_contents: Vec<QuantizedModelMatrix>,
 
     // Actively loaded models
-    pub loaded_models: HashMap<(AlignedAsset, AlignedAsset), Model>,
+    pub loaded_models: HashMap<(AssetId, AssetId), Model>,
 }
 
 impl ModelEngine {
@@ -81,17 +81,22 @@ impl ModelEngine {
         }
     }
 
-    pub fn load_model(&mut self, context: DeviceContext, command_engine: CommandEngine, vertices_asset: AlignedAsset, indices_asset: AlignedAsset) -> Result<()> {
+    pub fn load_model(&mut self, context: DeviceContext, command_engine: CommandEngine, vertex_asset_id: AssetId, index_asset_id: AssetId) -> Result<()> {
+        if vertex_asset_id == AssetId::None || index_asset_id == AssetId::None {
+            return Ok(())
+        }
+
         // Add one to the instance count if the model is already loaded and early exit
-        if let Some(model) = self.loaded_models.get_mut(&(vertices_asset, indices_asset)) {
+        if let Some(model) = self.loaded_models.get_mut(&(vertex_asset_id, index_asset_id)) {
             model.instance_count += 1;
             return Ok(())
         }
         
         // Get vertices
-
-        let vertex_bytes = &vertices_asset.0[size_of::<u32>()..];
-        let vertex_count = u32::from_be_bytes(vertices_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
+        
+        let vertex_asset = get_asset_from_id(vertex_asset_id);
+        let vertex_bytes: &[u8] = &vertex_asset.0[size_of::<u32>()..];
+        let vertex_count = u32::from_be_bytes(vertex_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
 
         let vertices: Vec<QuantizedVertex> = match meshopt::decode_vertex_buffer(vertex_bytes, vertex_count) {
             Ok(bytes) => bytes,
@@ -100,8 +105,9 @@ impl ModelEngine {
     
         // Get indices
         
-        let index_bytes = &indices_asset.0[size_of::<u32>()..];
-        let index_count = u32::from_be_bytes(indices_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
+        let index_asset = get_asset_from_id(index_asset_id);
+        let index_bytes: &[u8] = &index_asset.0[size_of::<u32>()..];
+        let index_count = u32::from_be_bytes(index_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
         let indices: Vec<u32> = match meshopt::decode_index_buffer(index_bytes, index_count) {
             Ok(indices) => indices,
             Err(_) => return Err(anyhow!("Failed to decode index buffer")),
@@ -120,13 +126,17 @@ impl ModelEngine {
             instance_count: 1,
         };
 
-        self.loaded_models.insert((vertices_asset, indices_asset), model);
+        self.loaded_models.insert((vertex_asset_id, index_asset_id), model);
 
         Ok(())
     }
 
-    pub fn unload_model(&mut self, context: DeviceContext, command_engine: CommandEngine, vertices_asset: AlignedAsset, indices_asset: AlignedAsset) -> Result<()> {
-        let (unloading_model, fully_unloaded) = if let Some(model) = self.loaded_models.get_mut(&(vertices_asset, indices_asset)) {
+    pub fn unload_model(&mut self, context: DeviceContext, command_engine: CommandEngine, vertex_asset_id: AssetId, index_asset_id: AssetId) -> Result<()> {
+        if vertex_asset_id == AssetId::None || index_asset_id == AssetId::None {
+            return Ok(())
+        }
+
+        let (unloading_model, fully_unloaded) = if let Some(model) = self.loaded_models.get_mut(&(vertex_asset_id, index_asset_id)) {
             model.instance_count -= 1;
             (*model, model.instance_count == 0)
         } else {
@@ -135,7 +145,7 @@ impl ModelEngine {
         
         if fully_unloaded {
             // Unload model from memory
-            self.loaded_models.remove(&(vertices_asset, indices_asset));
+            self.loaded_models.remove(&(vertex_asset_id, index_asset_id));
             unsafe {
                 self.remove_vertex_buffer(context.clone(), &command_engine, unloading_model)?;
                 self.remove_index_buffer(context, &command_engine, unloading_model)?;

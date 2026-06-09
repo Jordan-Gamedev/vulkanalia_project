@@ -17,7 +17,7 @@ use crate::engine::{ModelEngine, ModelEngineBuilder};
 use crate::engine::{PresentEngine, PresentEngineBuilder};
 use crate::engine::{RenderPipelineEngine, RenderPipelineEngineBuilder};
 use crate::engine::TextureEngine;
-use crate::resources::AlignedAsset;
+use crate::resources::{AssetId};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -133,22 +133,22 @@ impl App {
         Arc::make_mut(&mut self.texture_engine).destroy(device.clone());
     }
 
-    pub fn load_model(&mut self, vertices_asset: AlignedAsset, indices_asset: AlignedAsset) -> Result<()> {
+    pub fn load_model(&mut self, vertices_asset: AssetId, indices_asset: AssetId) -> Result<()> {
         Arc::make_mut(&mut self.model_engine).load_model(self.device_context.as_ref().clone().unwrap(), self.command_engine.as_ref().clone(), vertices_asset, indices_asset)?;
         Ok(())
     }
 
-    pub fn load_texture(&mut self, path: String, sampler_contents: SamplerContents) -> Result<()> {
-        Arc::make_mut(&mut self.texture_engine).load_texture(self.device_context.as_ref().clone().unwrap(), self.rp_engine.as_ref().clone(), self.command_engine.as_ref().clone(), path, sampler_contents)?;
+    pub fn load_texture(&mut self, texture_asset: AssetId, sampler_contents: SamplerContents) -> Result<()> {
+        Arc::make_mut(&mut self.texture_engine).load_texture(self.device_context.as_ref().clone().unwrap(), self.rp_engine.as_ref().clone(), self.command_engine.as_ref().clone(), texture_asset, sampler_contents)?;
         Ok(())
     }
 
-    pub fn unload_texture(&mut self, path: String, sampler_contents: SamplerContents) -> Result<()> {
-        Arc::make_mut(&mut self.texture_engine).unload_texture(self.device_context.as_ref().clone().unwrap(), self.rp_engine.as_ref().clone(), path, sampler_contents)?;
+    pub fn unload_texture(&mut self, texture_asset: AssetId, sampler_contents: SamplerContents) -> Result<()> {
+        Arc::make_mut(&mut self.texture_engine).unload_texture(self.device_context.as_ref().clone().unwrap(), self.rp_engine.as_ref().clone(), texture_asset, sampler_contents)?;
         Ok(())
     }
 
-    pub fn unload_model(&mut self, vertices_asset: AlignedAsset, indices_asset: AlignedAsset) -> Result<()> {
+    pub fn unload_model(&mut self, vertices_asset: AssetId, indices_asset: AssetId) -> Result<()> {
         Arc::make_mut(&mut self.model_engine).unload_model(self.device_context.as_ref().clone().unwrap(), self.command_engine.as_ref().clone(), vertices_asset, indices_asset)?;
         Ok(())
     }

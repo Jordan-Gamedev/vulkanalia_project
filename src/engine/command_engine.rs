@@ -22,7 +22,7 @@ use vulkanalia::vk::KhrSwapchainExtensionDeviceCommands;
 use crate::components::render::Render;
 use crate::components::transform::Transform;
 use crate::engine::{App, ModelEngine, PresentEngine, RenderPipelineEngine, UniformBufferObject};
-use crate::resources::AlignedAsset;
+use crate::resources::AssetId;
 use super::device_context::DeviceContext;
 
 /// The maximum number of frames that can be processed concurrently
@@ -331,16 +331,16 @@ impl CommandEngine {
     /// Gets the IndirectDrawData and PerInstanceData from the render and transform components
     fn get_indirect_data(app: &mut App) -> (Vec<IndirectDrawData>, Vec<PerInstanceData>) {
         // Group instances by model name, collect per-instance data
-        let mut instances_map: HashMap<(AlignedAsset, AlignedAsset), Vec<PerInstanceData>> = HashMap::new();
+        let mut instances_map: HashMap<(AssetId, AssetId), Vec<PerInstanceData>> = HashMap::new();
 
-        // TODO: slap data on the end of executable and read them with bytes
-        //       use bytes to to get model and texture info
+        // let start = Instant::now();
+
+        // let bro = app.world.query2::<Render, Transform>();
+
+        // let duration = start.elapsed();
+        // println!("Running render and transform query took: {:?}", duration);
+
         let start = Instant::now();
-
-        let bro = app.world.query2::<Render, Transform>();
-
-        let duration = start.elapsed();
-        println!("Running render and transform query took: {:?}", duration);
 
         for (render, transform, entity) in app.world.query2::<Render, Transform>() {
             let model = if let Some(model) = app.model_engine.loaded_models.get(&(render.model_vertices, render.model_indices)) {
@@ -351,7 +351,7 @@ impl CommandEngine {
 
             let texture_slot_index = app
                 .texture_engine
-                .get_texture_slot_index(&render.material.albedo_name)
+                .get_texture_slot_index(render.material.albedo)
                 .unwrap_or(0);
 
             let sampler_slot_index = app
@@ -369,14 +369,17 @@ impl CommandEngine {
             instances_map.entry((render.model_vertices, render.model_indices)).or_default().push(entry);
         }
 
+        let duration = start.elapsed();
+        println!("Running render and transform query took: {:?}", duration);
+
         let mut indirect_draws = Vec::<IndirectDrawData>::new();
         let mut instances = Vec::<PerInstanceData>::new();
         let mut base_instance_index: u32 = 0;
 
         let start = Instant::now();
 
-        for (model_name, model_instance_list) in instances_map.iter() {
-            if let Some(model) = app.model_engine.loaded_models.get(model_name) {
+        for (model_data, model_instance_list) in instances_map.iter() {
+            if let Some(model) = app.model_engine.loaded_models.get(&(model_data.0, model_data.1)) {
                 let count = model_instance_list.len() as u32;
                 indirect_draws.push(IndirectDrawData {
                     index_count: model.index_length,

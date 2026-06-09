@@ -14,19 +14,20 @@ use std::ptr::copy_nonoverlapping as memcpy;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::vk::{self};
 use crate::engine::{CommandEngine, ModelEngine, RenderPipelineEngine};
+use crate::resources::{AssetId, get_asset_from_id};
 use super::device_context::DeviceContext;
 
 #[derive(Clone, Default)]
 pub struct TextureEngine {
-    loaded_textures: HashMap<String, Texture>,
+    loaded_textures: HashMap<AssetId, Texture>,
     available_texture_slots: Vec<u32>,
     samplers: HashMap<SamplerContents, SamplerUsage>,
     available_sampler_slots: Vec<u32>,
 }
 
 impl TextureEngine {
-    pub fn get_texture_slot_index(&self, path: &str) -> Option<u32> {
-        self.loaded_textures.get(path).map(|texture| texture.slot_index)
+    pub fn get_texture_slot_index(&self, texture_asset_id: AssetId) -> Option<u32> {
+        self.loaded_textures.get(&texture_asset_id).map(|texture| texture.slot_index)
     }
 
     pub fn get_sampler_slot_index(&self, sampler_contents: SamplerContents) -> Option<u32> {
@@ -49,8 +50,12 @@ impl TextureEngine {
         self.available_sampler_slots.clear();
     }
 
-    pub fn load_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, command_engine: CommandEngine, path: String, sampler_contents: SamplerContents) -> Result<()> {
-        if let Some(texture) = self.loaded_textures.get_mut(&path) {
+    pub fn load_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, command_engine: CommandEngine, texture_asset_id: AssetId, sampler_contents: SamplerContents) -> Result<()> {
+        if texture_asset_id == AssetId::None {
+            return Ok(())
+        }
+
+        if let Some(texture) = self.loaded_textures.get_mut(&texture_asset_id) {
             texture.instance_count += 1;
             return Ok(());
         }
@@ -58,10 +63,7 @@ impl TextureEngine {
         // Load
 
         let texture = {
-            //let image = include_bytes!("../../assets/textures/cuttlefish_albedo.ktx2");
-
-            let image = std::fs::read(format!("{}.ktx2", path.clone()))?;
-            let mut texture = ktx2_rw::Ktx2Texture::from_memory(&image)?;
+            let mut texture = ktx2_rw::Ktx2Texture::from_memory(get_asset_from_id(texture_asset_id).0)?;
             let context = context.clone();
 
             // Try BC7 first, fall back to ASTC 4x4 if not supported
@@ -226,7 +228,7 @@ impl TextureEngine {
 
         // Add texture to array of textures
         let slot_index: u32 = if self.available_texture_slots.len() > 0 { self.available_texture_slots.pop().unwrap() } else { self.loaded_textures.len() as u32 };
-        self.loaded_textures.insert(path, Texture { image: texture_image, memory: texture_image_memory, image_view, slot_index, instance_count: 1 });
+        self.loaded_textures.insert(texture_asset_id, Texture { image: texture_image, memory: texture_image_memory, image_view, slot_index, instance_count: 1 });
         
         // Update bindless descriptor
         TextureEngine::update_bindless_texture(context.device, &rp_engine, slot_index, image_view)?;
@@ -234,8 +236,12 @@ impl TextureEngine {
         Ok(())
     }
 
-    pub fn unload_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, path: String, sampler_contents: SamplerContents) -> Result<()> {
-        let (unloading_texture, fully_unloaded) = if let Some(texture) = self.loaded_textures.get_mut(&path) {
+    pub fn unload_texture(&mut self, context: DeviceContext, rp_engine: RenderPipelineEngine, texture_asset_id: AssetId, sampler_contents: SamplerContents) -> Result<()> {
+        if texture_asset_id == AssetId::None {
+            return Ok(())
+        }
+
+        let (unloading_texture, fully_unloaded) = if let Some(texture) = self.loaded_textures.get_mut(&texture_asset_id) {
             texture.instance_count -= 1;
             (*texture, texture.instance_count == 0)
         } else {
@@ -243,7 +249,7 @@ impl TextureEngine {
         };
 
         if fully_unloaded {
-            self.loaded_textures.remove(&path);
+            self.loaded_textures.remove(&texture_asset_id);
             self.available_texture_slots.push(unloading_texture.slot_index);
             unsafe {
                 context.device.destroy_image_view(unloading_texture.image_view, None);
@@ -512,9 +518,9 @@ impl TextureEngine {
 
 #[derive(Clone, Debug, Default)]
 pub struct Material {
-    pub albedo_name: String, // Albedo texture used
-    pub normal_ao_name: String, // Packed normal map and ambient occlusion map used
-    pub metallic_roughness_emissive_name: String, // Packed metallic, roughness, and emissive maps used
+    pub albedo: AssetId, // Albedo texture used
+    pub normal_ao: AssetId, // Packed normal map and ambient occlusion map used
+    pub metallic_roughness_emissive: AssetId, // Packed metallic, roughness, and emissive maps used
     pub sampler_contents: SamplerContents, // Texture sampler used
 }
 
