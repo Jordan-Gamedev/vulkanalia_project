@@ -3,6 +3,7 @@ use vulkanalia_project::components::render::Render;
 use vulkanalia_project::components::transform::Transform;
 use vulkanalia_project::engine::App;
 use vulkanalia_project::engine::texture_engine::{Material, SamplerContents};
+use vulkanalia_project::resources::*;
 
 fn main() {
     // Create the app
@@ -10,12 +11,13 @@ fn main() {
 
     let placement_dist: f32 = 0.1;
 
-    for x in -32..32 {
-        for z in -32..32 {
+    for x in -64..64 {
+        for z in -64..64 {
             // Create entity with a renderer
             let entity = app.world.create_entity();
             let render_component = Render::new(
-                "assets/models_compressed/Limpet".to_string(),
+                LIMPET_V,
+                LIMPET_I,
                 Material {
                     albedo_name: "assets/textures/cuttlefish_albedo".to_string(),
                     normal_ao_name: String::new(),

@@ -17,6 +17,7 @@ use crate::engine::{ModelEngine, ModelEngineBuilder};
 use crate::engine::{PresentEngine, PresentEngineBuilder};
 use crate::engine::{RenderPipelineEngine, RenderPipelineEngineBuilder};
 use crate::engine::TextureEngine;
+use crate::resources::AlignedAsset;
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -132,8 +133,8 @@ impl App {
         Arc::make_mut(&mut self.texture_engine).destroy(device.clone());
     }
 
-    pub fn load_model(&mut self, path: String) -> Result<()> {
-        Arc::make_mut(&mut self.model_engine).load_model(self.device_context.as_ref().clone().unwrap(), self.command_engine.as_ref().clone(), path)?;
+    pub fn load_model(&mut self, vertices_asset: AlignedAsset, indices_asset: AlignedAsset) -> Result<()> {
+        Arc::make_mut(&mut self.model_engine).load_model(self.device_context.as_ref().clone().unwrap(), self.command_engine.as_ref().clone(), vertices_asset, indices_asset)?;
         Ok(())
     }
 
@@ -147,8 +148,8 @@ impl App {
         Ok(())
     }
 
-    pub fn unload_model(&mut self, path: String) -> Result<()> {
-        Arc::make_mut(&mut self.model_engine).unload_model(self.device_context.as_ref().clone().unwrap(), self.command_engine.as_ref().clone(), path)?;
+    pub fn unload_model(&mut self, vertices_asset: AlignedAsset, indices_asset: AlignedAsset) -> Result<()> {
+        Arc::make_mut(&mut self.model_engine).unload_model(self.device_context.as_ref().clone().unwrap(), self.command_engine.as_ref().clone(), vertices_asset, indices_asset)?;
         Ok(())
     }
 }

@@ -17,6 +17,7 @@ use std::ptr::copy_nonoverlapping as memcpy;
 use glam::{Mat4, Quat, Vec2, Vec3, vec2, vec3};
 
 use crate::engine::{App, CommandEngine, RenderPipelineEngine};
+use crate::resources::AlignedAsset;
 
 use super::device_context::DeviceContext;
 
@@ -52,7 +53,7 @@ pub struct ModelEngine {
     pub static_model_matrices_buffer_contents: Vec<QuantizedModelMatrix>,
 
     // Actively loaded models
-    pub loaded_models: HashMap<String, Model>,
+    pub loaded_models: HashMap<(AlignedAsset, AlignedAsset), Model>,
 }
 
 impl ModelEngine {
@@ -80,34 +81,28 @@ impl ModelEngine {
         }
     }
 
-    /// Todo: make it actually use the path (or some other method) to get the data
-    pub fn load_model(&mut self, context: DeviceContext, command_engine: CommandEngine, path: String) -> Result<()> {
+    pub fn load_model(&mut self, context: DeviceContext, command_engine: CommandEngine, vertices_asset: AlignedAsset, indices_asset: AlignedAsset) -> Result<()> {
         // Add one to the instance count if the model is already loaded and early exit
-        if let Some(model) = self.loaded_models.get_mut(&path) {
+        if let Some(model) = self.loaded_models.get_mut(&(vertices_asset, indices_asset)) {
             model.instance_count += 1;
             return Ok(())
         }
         
         // Get vertices
-    
-        //let vertex_bytes: &[u8; _] = include_bytes!("../../assets/models_compressed/Limpet.vertbuff");
-        let path_vert = format!("{}.vertbuff", path.clone());
-        let path_index = format!("{}.indbuff", path.clone());
-        
-        let vertex_bytes = std::fs::read(path_vert)?;
-        let vertex_count = u32::from_be_bytes(vertex_bytes[0..size_of::<u32>()].try_into().unwrap()) as usize;
-    
-        let vertices: Vec<QuantizedVertex> = match meshopt::decode_vertex_buffer(vertex_bytes[size_of::<u32>()..].try_into().unwrap(), vertex_count) {
+
+        let vertex_bytes = &vertices_asset.0[size_of::<u32>()..];
+        let vertex_count = u32::from_be_bytes(vertices_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
+
+        let vertices: Vec<QuantizedVertex> = match meshopt::decode_vertex_buffer(vertex_bytes, vertex_count) {
             Ok(bytes) => bytes,
             Err(_) => return Err(anyhow!("Failed to decode vertex buffer")),
         };
     
         // Get indices
-    
-        //let index_bytes: &[u8; _] = include_bytes!("../../assets/models_compressed/Limpet.indbuff");
-        let index_bytes = std::fs::read(path_index)?;
-        let index_count = u32::from_be_bytes(index_bytes[0..size_of::<u32>()].try_into().unwrap()) as usize;
-        let indices: Vec<u32> = match meshopt::decode_index_buffer(index_bytes[size_of::<u32>()..].try_into().unwrap(), index_count) {
+        
+        let index_bytes = &indices_asset.0[size_of::<u32>()..];
+        let index_count = u32::from_be_bytes(indices_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
+        let indices: Vec<u32> = match meshopt::decode_index_buffer(index_bytes, index_count) {
             Ok(indices) => indices,
             Err(_) => return Err(anyhow!("Failed to decode index buffer")),
         };
@@ -124,15 +119,14 @@ impl ModelEngine {
             index_length: index_count as u32,
             instance_count: 1,
         };
-        self.loaded_models.insert(path.clone(), model);
 
-        println!("Successfully loaded model: {}", path);
+        self.loaded_models.insert((vertices_asset, indices_asset), model);
 
         Ok(())
     }
 
-    pub fn unload_model(&mut self, context: DeviceContext, command_engine: CommandEngine, path: String) -> Result<()> {
-        let (unloading_model, fully_unloaded) = if let Some(model) = self.loaded_models.get_mut(&path) {
+    pub fn unload_model(&mut self, context: DeviceContext, command_engine: CommandEngine, vertices_asset: AlignedAsset, indices_asset: AlignedAsset) -> Result<()> {
+        let (unloading_model, fully_unloaded) = if let Some(model) = self.loaded_models.get_mut(&(vertices_asset, indices_asset)) {
             model.instance_count -= 1;
             (*model, model.instance_count == 0)
         } else {
@@ -141,7 +135,7 @@ impl ModelEngine {
         
         if fully_unloaded {
             // Unload model from memory
-            self.loaded_models.remove(&path);
+            self.loaded_models.remove(&(vertices_asset, indices_asset));
             unsafe {
                 self.remove_vertex_buffer(context.clone(), &command_engine, unloading_model)?;
                 self.remove_index_buffer(context, &command_engine, unloading_model)?;
