@@ -49,6 +49,11 @@ meshopt = "0.6.2"
 
 # Logging
 pretty_env_logger = "0.5.0"
+
+# Enum converter
+strum = { version = "0.27.2", features = ["derive"]}
+
+# Errors
 thiserror = "2.0.18"
 
 # Vulkan

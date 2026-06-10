@@ -22,9 +22,6 @@ struct IndirectDrawData {
     uint firstIndex;
     int vertexOffset;
     uint firstInstance;
-    uint modelMatrixInfo;
-    uint textureIndex;
-    uint padding;
 };
 
 [[vk::binding(2, 0)]]

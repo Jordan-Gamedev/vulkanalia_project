@@ -9,12 +9,20 @@ pub struct AlignedAsset(pub &'static[u8]);
 
 // ------------KTX2 Textures------------
 
-// 682 B
+pub const START_ENUM_T: usize = 1;
+pub const END_ENUM_T: usize = 2;
+pub const COUNT_ENUM_T: usize = 2;
+
+// 698 B
 pub const BLANK_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/blank_albedo.ktx2").as_slice());
-// 220.63 KiB
+// 212.69 KiB
 pub const CUTTLEFISH_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/cuttlefish_albedo.ktx2").as_slice());
 
 // ------------Model Vertices-----------
+
+pub const START_ENUM_V: usize = 3;
+pub const END_ENUM_V: usize = 4;
+pub const COUNT_ENUM_V: usize = 2;
 
 // 109 B
 pub const CUBE_V: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Cube.vertbuff").as_slice());
@@ -23,12 +31,17 @@ pub const LIMPET_V: AlignedAsset = AlignedAsset(include_bytes!("../assets/models
 
 // ------------Model Indices------------
 
+pub const START_ENUM_I: usize = 5;
+pub const END_ENUM_I: usize = 6;
+pub const COUNT_ENUM_I: usize = 2;
+
 // 38 B
 pub const CUBE_I: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Cube.indbuff").as_slice());
 // 89 B
 pub const LIMPET_I: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Limpet.indbuff").as_slice());
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, strum::FromRepr, Hash, PartialEq)]
+#[repr(usize)]
 pub enum AssetId {
 	#[default] None,
 	BlankAlbedoTexture,

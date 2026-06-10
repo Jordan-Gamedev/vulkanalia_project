@@ -1,4 +1,4 @@
-use crate::{ecs::Component, engine::texture_engine::Material, resources::{AssetId}};
+use crate::{components::transform::Transform, ecs::Component, engine::{command_engine::PerInstanceData, texture_engine::Material}, resources::AssetId};
 
 #[derive(Clone, Debug, Default)]
 pub struct Render {
@@ -8,10 +8,18 @@ pub struct Render {
     pub model_matrix_index: u32, // The model matrix
     pub is_receiving_shadows: bool, // Whether this entity should receive shadows from other shadow casters
     pub is_casting_shadows: bool, // Whether this entity is a shadow caster
+    pub instance_data: PerInstanceData,
 }
 
 impl Render {
-    pub fn new(model_vertices: AssetId, model_indices: AssetId, material: Material, receives_shadows: bool, casts_shadows: bool) -> Self {
+    pub fn new(transform: Transform, model_vertices: AssetId, model_indices: AssetId, material: Material, receives_shadows: bool, casts_shadows: bool) -> Self {
+        let instance_data = PerInstanceData {
+            model_matrix_info: transform.model_matrix_info,
+            texture_index: 0,
+            sampler_index: 0,
+            padding: 0
+        };
+        
         Self {
             model_vertices,
             model_indices,
@@ -19,6 +27,7 @@ impl Render {
             model_matrix_index: 0,
             is_receiving_shadows: receives_shadows,
             is_casting_shadows: casts_shadows,
+            instance_data,
         }
     }
 }
@@ -29,6 +38,18 @@ impl Component for Render {
             let app = &mut *world.app;
             app.load_texture(self.material.albedo, self.material.sampler_contents).unwrap();
             app.load_model(self.model_vertices, self.model_indices).unwrap();
+            
+            // Set bindless texture index
+            self.instance_data.texture_index = app
+                .texture_engine
+                .get_texture_slot_index(self.material.albedo)
+                .unwrap_or(0);
+
+            // Set bindless sampler index
+            self.instance_data.sampler_index = app
+                .texture_engine
+                .get_sampler_slot_index(self.material.sampler_contents)
+                .unwrap_or(0);
         }
     }
 

@@ -405,9 +405,14 @@ fn create_resources() -> Result<()> {
     resource_file_contents.push_str("// ------------KTX2 Textures------------\n\n");
 
     let texture_resources = traverse_directory("assets", vec!["ktx2"])?;
+
+    resource_file_contents.push_str("pub const START_ENUM_T: usize = 1;\n");
+    resource_file_contents.push_str(&format!("pub const END_ENUM_T: usize = {};\n", texture_resources.len()));
+    resource_file_contents.push_str(&format!("pub const COUNT_ENUM_T: usize = {};\n\n", texture_resources.len()));
+
     let mut texture_file_names: Vec<String> = Vec::new();
 
-    for resource in texture_resources {
+    for resource in texture_resources.clone() {
         let resource_path = resource.to_string_lossy().replace("\\", "/");
         let resource_path = resource_path.as_str();
         let file_name = format!("{}_T", resource.file_stem().unwrap().to_ascii_uppercase().into_string().unwrap());
@@ -420,9 +425,14 @@ fn create_resources() -> Result<()> {
     resource_file_contents.push_str("\n// ------------Model Vertices-----------\n\n");
 
     let vertex_resources = traverse_directory("assets", vec!["vertbuff"])?;
+
+    resource_file_contents.push_str(&format!("pub const START_ENUM_V: usize = {};\n", texture_resources.len() + 1));
+    resource_file_contents.push_str(&format!("pub const END_ENUM_V: usize = {};\n", texture_resources.len() + vertex_resources.len()));
+    resource_file_contents.push_str(&format!("pub const COUNT_ENUM_V: usize = {};\n\n", vertex_resources.len()));
+
     let mut vertex_file_names: Vec<String> = Vec::new();
     
-    for resource in vertex_resources {
+    for resource in vertex_resources.clone() {
         let resource_path = resource.to_string_lossy().replace("\\", "/");
         let resource_path = resource_path.as_str();
         let file_name = format!("{}_V", resource.file_stem().unwrap().to_ascii_uppercase().into_string().unwrap());
@@ -435,6 +445,11 @@ fn create_resources() -> Result<()> {
     resource_file_contents.push_str("\n// ------------Model Indices------------\n\n");
 
     let index_resources = traverse_directory("assets", vec!["indbuff"])?;
+    
+    resource_file_contents.push_str(&format!("pub const START_ENUM_I: usize = {};\n", texture_resources.len() + vertex_resources.len() + 1));
+    resource_file_contents.push_str(&format!("pub const END_ENUM_I: usize = {};\n", texture_resources.len() + vertex_resources.len() + index_resources.len()));
+    resource_file_contents.push_str(&format!("pub const COUNT_ENUM_I: usize = {};\n\n", index_resources.len()));
+    
     let mut index_file_names: Vec<String> = Vec::new();
 
     for resource in index_resources {
@@ -448,7 +463,9 @@ fn create_resources() -> Result<()> {
     }
 
     // Create asset ids
-    resource_file_contents.push_str("\n#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]\n");
+    resource_file_contents.push_str("\n#[derive(Clone, Copy, Debug, Default, Eq, strum::FromRepr, Hash, PartialEq)]\n");
+    resource_file_contents.push_str("#[repr(usize)]\n");
+
     resource_file_contents.push_str("pub enum AssetId {\n");
     resource_file_contents.push_str("\t#[default] None,\n");
 

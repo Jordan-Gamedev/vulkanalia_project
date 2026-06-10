@@ -22,11 +22,19 @@ fn main() {
 
     let placement_dist: f32 = 0.1;
 
-    for x in -32..32 {
-        for z in -32..32 {
-            // Create entity with a renderer
+    for x in -64..64 {
+        for z in -64..64 {
+            // Create entity
             let entity = app.world.create_entity();
+
+            // Add transform component
+            let mut transform_component = Transform::new();
+            transform_component.set_is_static(true);
+            app.world.add_component(entity, transform_component);
+
+            // Add render component
             let render_component = Render::new(
+                *app.world.get_component::<Transform>(entity).unwrap(),
                 AssetId::LimpetVertices,
                 AssetId::LimpetIndices,
                 Material {
@@ -44,11 +52,7 @@ fn main() {
                 true,
                 true,
             );
-            let mut transform_component = Transform::new();
-            transform_component.set_is_static(true);
-            
             app.world.add_component(entity, render_component);
-            app.world.add_component(entity, transform_component);
     
             let position = glam::vec3(x as f32 * placement_dist, 0.0, z as f32 * placement_dist);
             let scale = glam::vec3(0.1, 0.1, 0.1);
