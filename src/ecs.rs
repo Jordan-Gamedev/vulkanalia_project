@@ -2,6 +2,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
+use std::time::Instant;
 
 use crate::engine::App;
 
@@ -277,11 +278,71 @@ impl World {
         } else { None }
     }
 
+    //&[(&mut T, u32)]
+    pub fn query_opt<T: 'static>(&mut self) -> Option<&mut Vec<T>> {
+        match self.component_type_storages.get_mut(&TypeId::of::<T>()) {
+            Some(boxed_storage) => {
+
+                //let start = Instant::now();
+
+                let storage = boxed_storage.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
+                
+                //println!("Getting storage took: {:?}", start.elapsed());        
+                
+                //let start = Instant::now();
+                Some(&mut storage.component_data)
+
+                // let components: &mut [T] = &mut storage.component_data;
+                
+                // //println!("Getting components took: {:?}", start.elapsed());
+                
+                // //let start = Instant::now();
+
+                // let entities: Vec<u32> = storage.component_indices_by_entity
+                //     .iter()
+                //     .enumerate()
+                //     .filter(|(_, comp_index)| **comp_index != u32::MAX)
+                //     .map(|(i, _)| i as u32)
+                //     .collect();
+
+                // //println!("Getting entities took: {:?}", start.elapsed());
+
+                // let start = Instant::now();
+
+                // let result: Vec<(&mut T, u32)> = components.into_iter().zip(entities).collect();
+
+                // //let result: Vec<(&mut T, u32)> = components.iter_mut().enumerate().map(|(i, c)| (c, entities[i])).collect();
+
+                // println!("Getting opt result took: {:?}", start.elapsed());
+
+                // result
+            },
+            None => {
+                //&mut []
+                //Vec::new()
+                None
+            },
+        }
+    }
+
     pub fn query<T: 'static>(&mut self) -> Vec<(&mut T, u32)> {
         match self.component_type_storages.get_mut(&TypeId::of::<T>()) {
             Some(boxed_storage) => {
+
+                //let start = Instant::now();
+
                 let storage = boxed_storage.as_any_mut().downcast_mut::<ComponentTypeStorage<T>>().unwrap();
+                
+                //println!("Getting storage took: {:?}", start.elapsed());        
+                
+                //let start = Instant::now();
+
                 let components: Vec<&mut T> = storage.component_data.iter_mut().collect();
+                
+                //println!("Getting components took: {:?}", start.elapsed());
+                
+                //let start = Instant::now();
+
                 let entities: Vec<u32> = storage.component_indices_by_entity
                     .iter()
                     .enumerate()
@@ -289,7 +350,15 @@ impl World {
                     .map(|(i, _)| i as u32)
                     .collect();
 
-                components.into_iter().zip(entities).collect()
+                //println!("Getting entities took: {:?}", start.elapsed());
+
+                //let start = Instant::now();
+
+                let result: Vec<(&mut T, u32)> = components.into_iter().zip(entities).collect();
+
+                //println!("Getting result took: {:?}", start.elapsed());
+
+                result
             },
             None => {
                 Vec::new()

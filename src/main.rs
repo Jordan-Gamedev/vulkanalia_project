@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::time::Instant;
 
 use vulkanalia::prelude::v1_0::*;
@@ -6,6 +8,7 @@ use vulkanalia_project::components::transform::Transform;
 use vulkanalia_project::engine::App;
 use vulkanalia_project::engine::texture_engine::{Material, SamplerContents};
 use vulkanalia_project::resources::AssetId;
+
 
 fn main() {
 
@@ -22,8 +25,8 @@ fn main() {
 
     let placement_dist: f32 = 0.1;
 
-    for x in -64..64 {
-        for z in -64..64 {
+    for x in -128..128 {
+        for z in -128..128 {
             // Create entity
             let entity = app.world.create_entity();
 

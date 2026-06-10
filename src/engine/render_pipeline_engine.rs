@@ -238,7 +238,7 @@ impl RenderPipelineEngineBuilder {
         let info = vk::DescriptorPoolCreateInfo::builder()
             .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
             .pool_sizes(pool_sizes)
-            .max_sets(present_engine.swapchain_images.len() as u32);
+            .max_sets(command_engine.max_frames_in_flight as u32);
     
         self.0.descriptor_pool = device.create_descriptor_pool(&info, None)?;
     

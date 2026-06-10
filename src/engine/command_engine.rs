@@ -9,6 +9,7 @@
 
 use anyhow::{anyhow, Result};
 use glam::{Mat4, vec3};
+use rayon::prelude::*;
 use std::array;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -26,9 +27,9 @@ use crate::resources::*;
 use super::device_context::DeviceContext;
 
 /// The maximum number of frames that can be processed concurrently
-const MAX_FRAMES_IN_FLIGHT: usize = 2;
+const MAX_FRAMES_IN_FLIGHT: usize = 4;
 const MAX_INDIRECT_DRAWS: usize = 1024;
-const MAX_INSTANCES: usize = 16384;
+const MAX_INSTANCES: usize = 65_536;
 
 const DEG_TO_RAD: f32 = PI / 180.0;
 
@@ -131,29 +132,39 @@ impl CommandEngine {
 
     /// Renders a frame for the Vulkan app
     pub fn render(app: &mut App) -> Result<()> {
-        // Rotate non-static transforms
-        let time = app.command_engine.start.unwrap().elapsed().as_secs_f32();
-        let transforms: Vec<Transform> = app.world.query::<Transform>().iter().map(|r| r.0.clone()).collect();
-        for transform in transforms {
-            if !transform.is_static() {
-                let value = transform.get_quantized_model_matrix(&app.world).unwrap();
-                let position = vec3(value.position[0], value.position[1], value.position[2]);
-                let rotation = glam::Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);
-                let scale = vec3(value.scale[0], value.scale[1], value.scale[2]);
-                transform.set_model_matrix(&mut app.world, position, rotation.normalize(), scale);                
-            }
-        }
+        // let start = Instant::now();
+
+        // // Rotate non-static transforms
+        // let time = app.command_engine.start.unwrap().elapsed().as_secs_f32();
+        // let transforms: Vec<Transform> = app.world.query::<Transform>().iter().map(|r| r.0.clone()).collect();
+        // for transform in transforms {
+        //     if !transform.is_static() {
+        //         let value = transform.get_quantized_model_matrix(&app.world).unwrap();
+        //         let position = vec3(value.position[0], value.position[1], value.position[2]);
+        //         let rotation = glam::Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);
+        //         let scale = vec3(value.scale[0], value.scale[1], value.scale[2]);
+        //         transform.set_model_matrix(&mut app.world, position, rotation.normalize(), scale);                
+        //     }
+        // }
+
+        // let duration = start.elapsed();
+        // println!("Rotating dynamic tranforms took: {:?}", duration);
 
         // Save cpu model matrix changes to gpu
         //Arc::make_mut(&mut app.model_engine).save_all_model_matrices_changes(app.device_context.as_ref().clone().unwrap().device);
 
-        // benchmark getting indirect draw data
-//        let start = Instant::now();
+///////////////////////////////////////////////////////////
+        //let start = Instant::now();
+        //let test_query = app.world.query_opt::<Transform>();
+        //println!("Get transforms query took: {:?}", start.elapsed());
+
+        // Benchmark getting indirect draw data
+        let start = Instant::now();
 
         let (indirect_draws, instances) = CommandEngine::get_indirect_data(app);
 
-//        let duration = start.elapsed();
-//        println!("Getting indirect draw data took: {:?}", duration);
+        println!("Getting indirect draw data took: {:?}", start.elapsed());
+        let start = Instant::now();
 
         unsafe {
             let context = app.device_context.as_ref().clone().unwrap();
@@ -167,6 +178,9 @@ impl CommandEngine {
             let in_flight_fence = app.command_engine.in_flight_fences[app.command_engine.current_frame];
 
             device.wait_for_fences(&[in_flight_fence], true, u64::MAX)?;
+
+            println!("wait before swap took: {:?}", start.elapsed());
+            let start = Instant::now();
             
             let result = device.acquire_next_image_khr(
                 app.present_engine.swapchain,
@@ -191,12 +205,18 @@ impl CommandEngine {
 
             Arc::make_mut(&mut app.command_engine).images_in_flight[image_index] = in_flight_fence;
 
+            println!("Swapchain took: {:?}", start.elapsed());
+            let start = Instant::now();
+
             app.command_engine.update_uniform_buffer(
                 device.clone(),
                 app.present_engine.as_ref().clone(),
                 app.model_engine.as_ref().clone(),
                 app.command_engine.current_frame,
             )?;
+
+            println!("Uniform buffer took: {:?}", start.elapsed());
+            let start = Instant::now();
 
             let (command_buffer, current_frame, indirect_draw_buffer, max_frames_in_flight) = {
                 let command_engine = Arc::make_mut(&mut app.command_engine);
@@ -238,6 +258,9 @@ impl CommandEngine {
             let info = vk::CommandBufferBeginInfo::builder();
             device.begin_command_buffer(command_buffer, &info)?;
 
+            println!("Draw, instance, and command buffer update took: {:?}", start.elapsed());
+            let start = Instant::now();
+
             let render_area = vk::Rect2D::builder()
                 .offset(vk::Offset2D::default())
                 .extent(app.present_engine.swapchain_extent);
@@ -261,6 +284,9 @@ impl CommandEngine {
                 .framebuffer(app.rp_engine.framebuffers[image_index])
                 .render_area(render_area)
                 .clear_values(clear_values);
+
+            println!("Clearing took: {:?}", start.elapsed());
+            let start = Instant::now();
 
             device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, app.rp_engine.pipeline);
@@ -289,6 +315,9 @@ impl CommandEngine {
             device.cmd_end_render_pass(command_buffer);
             device.end_command_buffer(command_buffer)?;
 
+            println!("Indirect drawing took: {:?}", start.elapsed());
+            let start = Instant::now();
+
             let wait_semaphores = &[app.command_engine.image_available_semaphores[current_frame]];
             let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let command_buffers = &[command_buffer];
@@ -302,6 +331,9 @@ impl CommandEngine {
             device.reset_fences(&[in_flight_fence])?;
 
             device.queue_submit(context.graphics_queue, &[submit_info], in_flight_fence)?;
+
+            println!("Sem and fences took: {:?}", start.elapsed());
+            let start = Instant::now();
 
             let swapchains = &[app.present_engine.swapchain];
             let image_indices = &[image_index as u32];
@@ -323,24 +355,27 @@ impl CommandEngine {
             }
 
             Arc::make_mut(&mut app.command_engine).current_frame = (current_frame + 1) % max_frames_in_flight;
+            println!("Finishing took: {:?}", start.elapsed());
 
             Ok(())
         }
     }
-
+    
     /// Gets the IndirectDrawData and PerInstanceData from the render and transform components
     fn get_indirect_data(app: &mut App) -> (Vec<IndirectDrawData>, Vec<PerInstanceData>) {
+        // Group instances by model data       
+
+        let mut model_batches: [Vec<PerInstanceData>; COUNT_ENUM_V] = array::from_fn(|_| Vec::with_capacity(10000));
+
         //let start = Instant::now();
 
-        // Group instances by model data
-        let mut model_batches: [Vec<PerInstanceData>; COUNT_ENUM_V] = array::from_fn(|_| Vec::with_capacity(10000));
-        for (render, _) in app.world.query::<Render>() {
+        let render_components = app.world.query_opt::<Render>().unwrap();
+        for render in render_components {
             let batch_index = render.model_vertices as usize - START_ENUM_V;
             model_batches[batch_index].push(render.instance_data);
         }
 
-        //let duration = start.elapsed();
-        //println!("Grouping render instance data took: {:?}", duration);
+        //println!("Grouping render instance data took: {:?}", start.elapsed());
 
         let mut indirect_draws = Vec::<IndirectDrawData>::new();
         let mut instances = Vec::<PerInstanceData>::new();
@@ -359,13 +394,12 @@ impl CommandEngine {
                     first_instance: base_instance_index,
                 });
 
-                instances.extend(per_instance_data.iter());
+                instances.extend(per_instance_data);
                 base_instance_index += count;
             }
         }
 
-        //let duration = start.elapsed();
-        //println!("Filling instance and draws took: {:?}", duration);
+        //println!("Filling instance and draws took: {:?}", start.elapsed());
 
         (indirect_draws, instances)
     }
