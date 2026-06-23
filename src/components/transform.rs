@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use glam::{Quat, Vec3};
 use std::sync::Arc;
+//use std::time::Instant;
 use crate::{ecs::Component, engine::{ModelEngine, model_engine::QuantizedModelMatrix}};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -32,14 +33,25 @@ impl Transform {
     pub fn set_model_matrix(&self, world: &mut crate::ecs::World, position: Vec3, rotation: Quat, scale: Vec3) {
         unsafe {
             let app = world.app.as_mut().unwrap();
-            Arc::make_mut(&mut app.model_engine).set_model_matrix(
+            let model_engine = Arc::make_mut(&mut app.model_engine);
+
+            model_engine.set_model_matrix(
                 self.get_model_matrix_index(),
                 position,
                 rotation,
                 scale,
                 self.is_static(),
             ).unwrap();
-            self.save_transform_changes(world);
+
+            // let start = Instant::now();
+
+            // model_engine.save_model_matrix_changes(
+            //     app.device_context.as_ref().clone().unwrap().device,
+            //     self.get_model_matrix_index(),
+            //     self.is_static(),
+            // );
+
+            // println!("Saving model matrix changes took: {:?}", start.elapsed());
         }
     }
 

@@ -32,16 +32,26 @@ fn main() {
 
             // Add transform component
             let mut transform_component = Transform::new();
-            transform_component.set_is_static(true);
+            if true {
+                transform_component.set_is_static(true);
+            }
             app.world.add_component(entity, transform_component);
+
+            // let texture_id = if x % 2 == 0 { AssetId::BlankAlbedoTexture } else { AssetId::CuttlefishAlbedoTexture };
+            let verts_id = if x % 2 == 0 { AssetId::CubeVertices } else { AssetId::LimpetVertices };
+            let inds_id = if x % 2 == 0 { AssetId::CubeIndices } else { AssetId::LimpetIndices };
+
+            let texture_id = if false { AssetId::BlankAlbedoTexture } else { AssetId::CuttlefishAlbedoTexture };
+            // let verts_id = if true { AssetId::CubeVertices } else { AssetId::LimpetVertices };
+            // let inds_id = if true { AssetId::CubeIndices } else { AssetId::LimpetIndices };
 
             // Add render component
             let render_component = Render::new(
                 *app.world.get_component::<Transform>(entity).unwrap(),
-                AssetId::LimpetVertices,
-                AssetId::LimpetIndices,
+                verts_id,
+                inds_id,
                 Material {
-                    albedo: AssetId::CuttlefishAlbedoTexture,
+                    albedo: texture_id,
                     normal_ao: AssetId::None,
                     metallic_roughness_emissive: AssetId::None,
                     sampler_contents: SamplerContents::new(
@@ -58,7 +68,8 @@ fn main() {
             app.world.add_component(entity, render_component);
     
             let position = glam::vec3(x as f32 * placement_dist, 0.0, z as f32 * placement_dist);
-            let scale = glam::vec3(0.1, 0.1, 0.1);
+            let scale = if x % 2 == 0 { glam::vec3(0.01, 0.01, 0.01) } else { glam::vec3(0.01, 0.01, 0.01) };
+            //let scale = if true { glam::vec3(0.01, 0.01, 0.01) } else { glam::vec3(0.1, 0.1, 0.1) };
 
             let transform_component = *app.world.get_component::<Transform>(entity).unwrap();
             transform_component.set_model_matrix(&mut app.world, position, glam::Quat::IDENTITY, scale);

@@ -319,7 +319,7 @@ impl PresentEngineBuilder {
 
     pub unsafe fn set_default_msaa(&mut self, instance: Instance, physical_device: vk::PhysicalDevice) {
         let max_msaa = PresentEngine::get_max_msaa_samples(instance, physical_device);
-        let chosen_msaa = if max_msaa < vk::SampleCountFlags::_8 { max_msaa } else { vk::SampleCountFlags::_8 }; 
+        let chosen_msaa = if max_msaa < vk::SampleCountFlags::_4 { max_msaa } else { vk::SampleCountFlags::_4 }; 
         info!("Max msaa detected: {:?}", max_msaa);
         info!("Chosen msaa: {:?}", chosen_msaa);
         self.0.msaa_samples = chosen_msaa;

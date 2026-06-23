@@ -8,6 +8,7 @@
 )]
 
 use anyhow::{anyhow, Result};
+use bytemuck::Zeroable;
 use vulkanalia::prelude::v1_0::*;
 use core::slice;
 use std::collections::HashMap;
@@ -16,6 +17,8 @@ use std::mem::size_of;
 use std::ptr::copy_nonoverlapping as memcpy;
 use glam::{Mat4, Quat, Vec2, Vec3, vec2, vec3};
 
+use crate::engine::command_engine::{IndirectDrawData, PerInstanceData};
+use crate::engine::texture_engine::{SamplerContents};
 use crate::engine::{App, CommandEngine, RenderPipelineEngine};
 use crate::resources::{AssetId, get_asset_from_id};
 
@@ -35,7 +38,8 @@ pub struct ModelEngine {
     // Camera
     pub uniform_buffers: Vec<vk::Buffer>,
     pub uniform_buffers_memory: Vec<vk::DeviceMemory>,
-    
+    pub uniform_buffers_mapped: Vec<*mut c_void>,
+
     // Dynamic Transforms
     pub dyn_model_matrix_buffer: vk::Buffer,
     pub dyn_model_matrix_buffer_memory: vk::DeviceMemory,
@@ -66,7 +70,12 @@ impl ModelEngine {
             device.free_memory(self.index_buffer_memory, None);
             // Destroy ubo
             self.uniform_buffers.iter().for_each(|b| device.destroy_buffer(*b, None));
-            self.uniform_buffers_memory.iter().for_each(|m| device.free_memory(*m, None));
+            for i in 0..self.uniform_buffers_memory.len() {
+                if self.uniform_buffers_mapped[i] != std::ptr::null_mut() {
+                    device.unmap_memory(self.uniform_buffers_memory[i]);
+                }
+                device.free_memory(self.uniform_buffers_memory[i], None);
+            }
             // Destroy ssbos
             device.destroy_buffer(self.dyn_model_matrix_buffer, None);
             device.destroy_buffer(self.static_model_matrix_buffer, None);
@@ -86,9 +95,8 @@ impl ModelEngine {
             return Ok(())
         }
 
-        // Add one to the instance count if the model is already loaded and early exit
-        if let Some(model) = self.loaded_models.get_mut(&(vertex_asset_id, index_asset_id)) {
-            model.instance_count += 1;
+        // Do not load model if it is already loaded
+        if self.loaded_models.contains_key(&(vertex_asset_id, index_asset_id)) {
             return Ok(())
         }
         
@@ -116,17 +124,37 @@ impl ModelEngine {
         unsafe {
             self.add_vertex_buffer(context.clone(), &command_engine, vertices)?;
             self.add_index_buffer(context, &command_engine, indices)?;
+            let model = Model {
+                vertex_offset: self.get_vertex_count() as u32,
+                vertex_length: vertex_count as u32,
+                index_offset: self.get_index_count() as u32,
+                index_length: index_count as u32,
+                indirect_draw_data_ptr: command_engine.indirect_draw_buffer_mapped.add(self.loaded_models.len()),
+            };
+
+            let mut last_draw_data: *mut IndirectDrawData = std::ptr::null_mut();
+            for i in (0..command_engine.indirect_draw_capacity).rev() {
+                let draw_data = command_engine.indirect_draw_buffer_mapped.add(i);
+                if draw_data.read().instance_count > 0 {
+                    last_draw_data = draw_data;
+                    break;
+                }
+            }
+
+            let mut first_instance: u32 = 0;
+            if !last_draw_data.is_null() {
+                first_instance = last_draw_data.read().first_instance + last_draw_data.read().instance_count;
+            }
+
+            *model.indirect_draw_data_ptr = IndirectDrawData {
+                index_count: index_count as u32,
+                instance_count: 0,
+                first_index: self.get_index_count() as u32,
+                vertex_offset: self.get_vertex_count() as i32,
+                first_instance: first_instance,
+            };
+            self.loaded_models.insert((vertex_asset_id, index_asset_id), model);
         }
-
-        let model = Model {
-            vertex_offset: self.get_vertex_count() as u32,
-            vertex_length: vertex_count as u32,
-            index_offset: self.get_index_count() as u32,
-            index_length: index_count as u32,
-            instance_count: 1,
-        };
-
-        self.loaded_models.insert((vertex_asset_id, index_asset_id), model);
 
         Ok(())
     }
@@ -136,16 +164,10 @@ impl ModelEngine {
             return Ok(())
         }
 
-        let (unloading_model, fully_unloaded) = if let Some(model) = self.loaded_models.get_mut(&(vertex_asset_id, index_asset_id)) {
-            model.instance_count -= 1;
-            (*model, model.instance_count == 0)
-        } else {
-            return Err(anyhow!("Model not found"))
-        };
-        
+        let unloading_model = self.loaded_models.get_mut(&(vertex_asset_id, index_asset_id)).expect("Model not found").clone();        
+        let fully_unloaded = unsafe { unloading_model.indirect_draw_data_ptr.read().instance_count <= 1 };
+
         if fully_unloaded {
-            // Unload model from memory
-            self.loaded_models.remove(&(vertex_asset_id, index_asset_id));
             unsafe {
                 self.remove_vertex_buffer(context.clone(), &command_engine, unloading_model)?;
                 self.remove_index_buffer(context, &command_engine, unloading_model)?;
@@ -157,9 +179,135 @@ impl ModelEngine {
                 .for_each(|m| {
                     m.vertex_offset -= unloading_model.vertex_length;
                     m.index_offset -= unloading_model.index_length;
+                    let draw_data = unsafe { m.indirect_draw_data_ptr.as_mut().unwrap() };
+                    draw_data.vertex_offset = m.vertex_offset as i32;
+                    draw_data.first_index = m.index_length;
                 });
         }
         
+        Ok(())
+    }
+
+    pub fn create_instance(app: &mut App, vertex_asset_id: AssetId, index_asset_id: AssetId, texture_asset_id: AssetId, sampler_contents: SamplerContents, model_matrix_info: u32) -> Result<*mut PerInstanceData> {
+        // Potentially load model and texture
+        app.load_model(vertex_asset_id, index_asset_id)?;
+        app.load_texture(texture_asset_id, sampler_contents)?;
+
+        // Get model that the instance uses
+        let model = app.model_engine.loaded_models.get(&(vertex_asset_id, index_asset_id)).unwrap().clone();
+        
+        // Get bindless texture index
+        let tex_index = app.texture_engine
+            .get_texture_slot_index(texture_asset_id)
+            .unwrap_or(0);
+
+        // Get bindless sampler index
+        let sampler_index = app.texture_engine
+            .get_sampler_slot_index(sampler_contents)
+            .unwrap_or(0);
+
+        unsafe {
+            let affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
+                .iter()
+                .filter(|&(_, m)| m.indirect_draw_data_ptr > model.indirect_draw_data_ptr)
+                .map(|(_, m)| m.indirect_draw_data_ptr)
+                .collect();
+
+            // Add one to the instance offset for those found in the buffer after the new instance
+            // and continuously swap ends of instance buffer sections to make room for new instance
+            if affected_draw_data.len() > 0 {
+                let mut saved_instance: PerInstanceData = app.command_engine.instance_buffer_mapped.add(affected_draw_data[0].read().first_instance as usize).read();
+                for draw_data in affected_draw_data {
+                    let draw_data = draw_data.as_mut().unwrap();
+                    let next_instance_ptr = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize);
+    
+                    let next_instance = next_instance_ptr.read();
+                    *next_instance_ptr = saved_instance;
+                    saved_instance = next_instance;
+    
+                    draw_data.first_instance += 1;
+                }
+            }
+            
+            // Add instance to instance buffer
+            let new_instance = PerInstanceData {
+                model_matrix_info: model_matrix_info,
+                texture_index: tex_index,
+                sampler_index: sampler_index,
+                padding: 0,
+            };
+            let draw_data = model.indirect_draw_data_ptr.as_mut().unwrap();
+            let new_instance_ptr = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize);
+            *new_instance_ptr = new_instance;
+            draw_data.instance_count += 1;
+            Ok(new_instance_ptr)
+        }
+    }
+
+    pub fn remove_instance(app: &mut App, vertex_asset_id: AssetId, index_asset_id: AssetId, texture_asset_id: AssetId, sampler_contents: SamplerContents, instance: *mut PerInstanceData) -> Result<()> {
+        // Potentially unload model and texture
+        app.unload_model(vertex_asset_id, index_asset_id)?;
+        app.unload_texture(texture_asset_id, sampler_contents)?;
+        
+        // Get model that the instance uses
+        let model = app.model_engine.loaded_models.get(&(vertex_asset_id, index_asset_id)).unwrap().clone();
+
+        let draw_data = unsafe { model.indirect_draw_data_ptr.as_mut().unwrap() };
+        
+        unsafe {
+            // Replace the removed instance with the instance at the end of the instance buffer section
+            draw_data.instance_count -= 1;
+            *instance = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize).read();
+        
+            // Get draw datas affected by this removal
+            let affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
+                .iter()
+                .filter(|&(_, m)| m.indirect_draw_data_ptr > model.indirect_draw_data_ptr)
+                .map(|(_, m)| m.indirect_draw_data_ptr)
+                .collect();
+
+            // Remove one from the instance offset for those found in the buffer after the new instance
+            // and continuously overwrite beginnings of instance buffer sections with their ends to cover the empty instance
+            let mut instance_to_overwrite: *mut PerInstanceData = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize);
+            for draw_data in affected_draw_data {
+                let draw_data = draw_data.as_mut().unwrap();
+                draw_data.first_instance -= 1;
+
+                let this_instance = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize);
+                *instance_to_overwrite = this_instance.read();
+                *this_instance = PerInstanceData {
+                    model_matrix_info: u32::MAX,
+                    texture_index: u32::MAX,
+                    sampler_index: u32::MAX,
+                    padding: u32::MAX,
+                };
+                instance_to_overwrite = this_instance;
+            }
+
+            // Unload model if there are no more instances using it
+            if draw_data.instance_count == 0 {
+                let mut last_draw_data: *mut IndirectDrawData = std::ptr::null_mut();
+                for i in (0..app.command_engine.indirect_draw_capacity).rev() {
+                    let draw_data = app.command_engine.indirect_draw_buffer_mapped.add(i);
+                    if draw_data.read().instance_count > 0 {
+                        last_draw_data = draw_data;
+                        break;
+                    }
+                }
+
+                let model_engine = std::sync::Arc::make_mut(&mut app.model_engine);
+                model_engine.loaded_models
+                    .iter_mut()
+                    .find(|(_, m)| m.indirect_draw_data_ptr == last_draw_data)
+                    .map(|(_, m)| m.indirect_draw_data_ptr = model.indirect_draw_data_ptr);
+
+                *model.indirect_draw_data_ptr = last_draw_data.read();
+                *last_draw_data = IndirectDrawData::zeroed();
+
+                model_engine.loaded_models.remove(&(vertex_asset_id, index_asset_id));
+            }
+        }
+
         Ok(())
     }
 
@@ -695,9 +843,15 @@ impl ModelEngineBuilder {
 
     pub unsafe fn create_uniform_buffers(&mut self, context: DeviceContext, command_engine: CommandEngine) -> Result<()> {
         self.0.uniform_buffers.iter().for_each(|b| context.device.destroy_buffer(*b, None));
-        self.0.uniform_buffers_memory.iter().for_each(|m| context.device.free_memory(*m, None));
+        for i in 0..self.0.uniform_buffers_memory.len() {
+            if self.0.uniform_buffers_mapped[i] != std::ptr::null_mut() {
+                context.device.unmap_memory(self.0.uniform_buffers_memory[i]);
+            }
+            context.device.free_memory(self.0.uniform_buffers_memory[i], None);
+        }
         self.0.uniform_buffers.clear();
         self.0.uniform_buffers_memory.clear();
+        self.0.uniform_buffers_mapped.clear();
 
         for _ in 0..command_engine.max_frames_in_flight {
             let (uniform_buffer, uniform_buffer_memory) = ModelEngine::create_buffer(
@@ -709,6 +863,14 @@ impl ModelEngineBuilder {
     
             self.0.uniform_buffers.push(uniform_buffer);
             self.0.uniform_buffers_memory.push(uniform_buffer_memory);
+            
+            let mapped_memory = context.device.map_memory(
+                uniform_buffer_memory,
+                0,
+                size_of::<UniformBufferObject>() as u64,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            self.0.uniform_buffers_mapped.push(mapped_memory);
         }
     
         Ok(())
@@ -904,7 +1066,7 @@ pub struct Model {
     pub vertex_length: u32,
     pub index_offset: u32,
     pub index_length: u32,
-    pub instance_count: u32,
+    pub indirect_draw_data_ptr: *mut IndirectDrawData,
 }
 
 #[repr(C)]

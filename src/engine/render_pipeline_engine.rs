@@ -16,7 +16,7 @@ use std::mem::size_of;
 use crate::engine::{CommandEngine, ModelEngine, PresentEngine, QuantizedVertex, TextureEngine, UniformBufferObject};
 use super::device_context::DeviceContext;
 
-const BINDLESS_TEXTURE_COUNT: u32 = 10_000;
+const BINDLESS_TEXTURE_COUNT: u32 = 5_000;
 
 #[derive(Clone, Default)]
 pub struct RenderPipelineEngine {
@@ -228,11 +228,13 @@ impl RenderPipelineEngineBuilder {
     
         let texture_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::SAMPLED_IMAGE)
-            .descriptor_count(BINDLESS_TEXTURE_COUNT * present_engine.swapchain_images.len() as u32);
+            // .descriptor_count(BINDLESS_TEXTURE_COUNT * present_engine.swapchain_images.len() as u32);
+            .descriptor_count(BINDLESS_TEXTURE_COUNT * command_engine.max_frames_in_flight as u32);
 
         let sampler_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::SAMPLER)
-            .descriptor_count(BINDLESS_TEXTURE_COUNT * present_engine.swapchain_images.len() as u32);
+            // .descriptor_count(BINDLESS_TEXTURE_COUNT * present_engine.swapchain_images.len() as u32);
+            .descriptor_count(BINDLESS_TEXTURE_COUNT * command_engine.max_frames_in_flight as u32);
     
         let pool_sizes = &[ubo_size, texture_size, static_model_matrix_size, dyn_model_matrix_size, indirect_draw_size, instance_data_size, sampler_size];
         let info = vk::DescriptorPoolCreateInfo::builder()
