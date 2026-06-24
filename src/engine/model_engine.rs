@@ -209,14 +209,15 @@ impl ModelEngine {
             .unwrap_or(0);
 
         unsafe {
-            let affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
+            let mut affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
                 .iter()
                 .filter(|&(_, m)| m.indirect_draw_data_ptr.read().first_instance > model.indirect_draw_data_ptr.read().first_instance)
                 .map(|(_, m)| m.indirect_draw_data_ptr)
                 .collect();
+            affected_draw_data.sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
 
             // Add one to the instance offset for those found in the buffer after the new instance
-            // and continuously swap ends of instance buffer sections to make room for new instance
+            // and continuously swap beginnings of instance buffer sections to make room for new instance
             if affected_draw_data.len() > 0 {
                 let mut saved_instance: PerInstanceData = app.command_engine.instance_buffer_mapped.add(affected_draw_data[0].read().first_instance as usize).read();
                 for draw_data in affected_draw_data {
@@ -236,17 +237,24 @@ impl ModelEngine {
                 model_matrix_info: model_matrix_info,
                 texture_index: tex_index,
                 sampler_index: sampler_index,
-                padding: 0,
+                padding: if vertex_asset_id == AssetId::CubeVertices { 0 } else if vertex_asset_id == AssetId::LimpetVertices { 1 } else { 2 },
             };
             let draw_data = model.indirect_draw_data_ptr.as_mut().unwrap();
             let new_instance_ptr = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize);
             *new_instance_ptr = new_instance;
             draw_data.instance_count += 1;
 
-            for i in 0..app.command_engine.indirect_draw_capacity {
-                println!("after instance created {:?}: {:?}", vertex_asset_id, app.command_engine.indirect_draw_buffer_mapped.add(i).read());
-            }
-            println!();
+            // for i in 0..app.command_engine.indirect_draw_capacity {
+            //     println!("after instance created {:?}: {:?}", vertex_asset_id, app.command_engine.indirect_draw_buffer_mapped.add(i).read());
+            // }
+
+            // for i in 0..app.command_engine.instance_capacity {
+            //     if i % 4 == 0 {
+            //         println!();
+            //     }
+            //     println!("{:?}", app.command_engine.instance_buffer_mapped.add(i).read());
+            // }
+            // println!();
 
             Ok(new_instance_ptr)
         }
@@ -268,11 +276,12 @@ impl ModelEngine {
             *instance = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize).read();
         
             // Get draw datas affected by this removal
-            let affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
+            let mut affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
                 .iter()
                 .filter(|&(_, m)| m.indirect_draw_data_ptr.read().first_instance > model.indirect_draw_data_ptr.read().first_instance)
                 .map(|(_, m)| m.indirect_draw_data_ptr)
                 .collect();
+            affected_draw_data.sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
 
             // Remove one from the instance offset for those found in the buffer after the new instance
             // and continuously overwrite beginnings of instance buffer sections with their ends to cover the empty instance
@@ -318,7 +327,15 @@ impl ModelEngine {
             for i in 0..app.command_engine.indirect_draw_capacity {
                 println!("after instance removed {:?}: {:?}", vertex_asset_id, app.command_engine.indirect_draw_buffer_mapped.add(i).read());
             }
+
+            for i in 0..app.command_engine.instance_capacity {
+                if i % 4 == 0 {
+                    println!();
+                }
+                println!("{:?}", app.command_engine.instance_buffer_mapped.add(i).read());
+            }
             println!();
+
         }
 
         Ok(())

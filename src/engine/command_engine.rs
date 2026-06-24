@@ -26,7 +26,8 @@ use super::device_context::DeviceContext;
 /// The maximum number of frames that can be processed concurrently
 const MAX_FRAMES_IN_FLIGHT: usize = 4;
 const MAX_INDIRECT_DRAWS: usize = 6;
-const MAX_INSTANCES: usize = 262_144;
+//const MAX_INSTANCES: usize = 262_144;
+const MAX_INSTANCES: usize = 25;
 
 const DEG_TO_RAD: f32 = PI / 180.0;
 
@@ -157,7 +158,7 @@ impl CommandEngine {
             let start = Instant::now();
 
             for transform in transforms {
-                if !transform.is_static() {
+                if transform.is_static() {
                     let value = transform.get_quantized_model_matrix(&app.world).unwrap();
                     let position = vec3(value.position[0], value.position[1], value.position[2]);
                     let rotation = glam::Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);

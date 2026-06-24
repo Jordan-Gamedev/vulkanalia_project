@@ -32,7 +32,7 @@ fn main() {
 
             // Add transform component
             let mut transform_component = Transform::new();
-            if true {
+            if false {
                 transform_component.set_is_static(true);
             }
             app.world.add_component(entity, transform_component);
