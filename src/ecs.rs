@@ -627,7 +627,7 @@ impl World {
         if entity >= self.entity_count {
             return
         }
-        
+
         // Call on_remove method implementation for this component
         if let Some(component) = self.get_component::<T>(entity) {
             component.clone().on_remove(self);
@@ -652,7 +652,7 @@ impl World {
 }
 
 pub struct EntityRef {
-    entity: u32,
+    pub entity: u32,
 }
 
 impl EntityRef {

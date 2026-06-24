@@ -35,7 +35,7 @@ impl Component for Render {
 
     fn on_remove(&self, world: &mut crate::ecs::World) {
         unsafe {
-            let app = &mut *world.app;        
+            let app = &mut *world.app;
             ModelEngine::remove_instance(app, self.model_vertices, self.model_indices, self.material.albedo, self.material.sampler_contents, self.instance_ptr).unwrap();
         }
     }

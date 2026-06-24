@@ -11,20 +11,21 @@ use anyhow::{anyhow, Result};
 use glam::{Mat4, vec3};
 use std::mem::size_of;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{f32::consts::PI, time::Instant};
 use std::ptr::copy_nonoverlapping as memcpy;
 use bytemuck::{Pod, Zeroable};
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::vk::KhrSwapchainExtensionDeviceCommands;
 
+use crate::components::render::Render;
 use crate::components::transform::Transform;
 use crate::engine::{App, ModelEngine, PresentEngine, RenderPipelineEngine, UniformBufferObject};
-use crate::resources::*;
 use super::device_context::DeviceContext;
 
 /// The maximum number of frames that can be processed concurrently
 const MAX_FRAMES_IN_FLIGHT: usize = 4;
-const MAX_INDIRECT_DRAWS: usize = 1024;
+const MAX_INDIRECT_DRAWS: usize = 6;
 const MAX_INSTANCES: usize = 262_144;
 
 const DEG_TO_RAD: f32 = PI / 180.0;
@@ -44,7 +45,6 @@ pub struct CommandEngine {
     pub indirect_draw_buffer_memory: vk::DeviceMemory,
     pub indirect_draw_buffer_mapped: *mut IndirectDrawData,
     pub indirect_draw_capacity: usize,
-    pub indirect_draws_cpu: Vec<(AssetId, IndirectDrawData)>,
     // Instance
     pub instance_buffer: vk::Buffer,
     pub instance_buffer_memory: vk::DeviceMemory,
@@ -132,6 +132,18 @@ impl CommandEngine {
     /// Renders a frame for the Vulkan app
     pub fn render(app: &mut App) -> Result<()> {
 
+        if app.command_engine.start.unwrap().elapsed() < Duration::from_secs(6) && app.command_engine.start.unwrap().elapsed() >= Duration::from_secs(5) {
+            let query: Vec<(Render, u32)> = app.world.query::<Render>().iter().map(|q| (q.0.clone(), q.1)).collect();
+            
+            for (r, entity) in query {
+                if r.model_vertices == crate::resources::AssetId::LimpetVertices {
+                    println!("BRO: {:?}", app.command_engine.start.unwrap().elapsed());
+                    app.world.remove_component::<Render>(entity);
+                    app.world.remove_component::<Transform>(entity);
+                }
+            }
+        }
+
         let start = Instant::now();
 
         // Rotate non-static transforms
@@ -162,19 +174,6 @@ impl CommandEngine {
     
             //println!("Saving changes to tranforms took: {:?}", start.elapsed());
         }
-
-///////////////////////////////////////////////////////////
-        //let start = Instant::now();
-        //let test_query = app.world.query_opt::<Transform>();
-        //println!("Get transforms query took: {:?}", start.elapsed());
-
-        // // Benchmark getting indirect draw data
-        // let start = Instant::now();
-
-        // let (indirect_draws, instances) = CommandEngine::get_indirect_data(app);
-
-        // println!("Getting indirect draw data took: {:?}", start.elapsed());
-        // let start = Instant::now();
 
         unsafe {
             let context = app.device_context.as_ref().clone().unwrap();
@@ -280,26 +279,24 @@ impl CommandEngine {
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, app.rp_engine.pipeline);
 
             let command_engine = Arc::make_mut(&mut app.command_engine);
-            if !command_engine.indirect_draws_cpu.is_empty() {
-                device.cmd_bind_vertex_buffers(command_buffer, 0, &[app.model_engine.vertex_buffer], &[0]);
-                device.cmd_bind_index_buffer(command_buffer, app.model_engine.index_buffer, 0, vk::IndexType::UINT32);
-                device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    app.rp_engine.pipeline_layout,
-                    0,
-                    &[app.rp_engine.descriptor_sets[current_frame]],
-                    &[],
-                );
-                
-                device.cmd_draw_indexed_indirect(
-                    command_buffer,
-                    indirect_draw_buffer,
-                    0,
-                    command_engine.indirect_draws_cpu.len() as u32,
-                    size_of::<IndirectDrawData>() as u32,
-                );
-            }
+            device.cmd_bind_vertex_buffers(command_buffer, 0, &[app.model_engine.vertex_buffer], &[0]);
+            device.cmd_bind_index_buffer(command_buffer, app.model_engine.index_buffer, 0, vk::IndexType::UINT32);
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                app.rp_engine.pipeline_layout,
+                0,
+                &[app.rp_engine.descriptor_sets[current_frame]],
+                &[],
+            );
+            
+            device.cmd_draw_indexed_indirect(
+                command_buffer,
+                indirect_draw_buffer,
+                0,
+                command_engine.indirect_draw_capacity as u32,
+                size_of::<IndirectDrawData>() as u32,
+            );
 
             device.cmd_end_render_pass(command_buffer);
             device.end_command_buffer(command_buffer)?;

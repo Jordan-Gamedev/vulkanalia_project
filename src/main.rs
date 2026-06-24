@@ -25,8 +25,8 @@ fn main() {
 
     let placement_dist: f32 = 0.1;
 
-    for x in -128..128 {
-        for z in -128..128 {
+    for x in -2i32..4 {
+        for z in -2..2 {
             // Create entity
             let entity = app.world.create_entity();
 
@@ -37,13 +37,43 @@ fn main() {
             }
             app.world.add_component(entity, transform_component);
 
-            // let texture_id = if x % 2 == 0 { AssetId::BlankAlbedoTexture } else { AssetId::CuttlefishAlbedoTexture };
-            let verts_id = if x % 2 == 0 { AssetId::CubeVertices } else { AssetId::LimpetVertices };
-            let inds_id = if x % 2 == 0 { AssetId::CubeIndices } else { AssetId::LimpetIndices };
+            let texture_id = if x % 2 == 0 { AssetId::BlankAlbedoTexture } else { AssetId::CuttlefishAlbedoTexture };
+            //let verts_id = if x % 2 == 0 { AssetId::CubeVertices } else { AssetId::LimpetVertices };
+            //let inds_id = if x % 2 == 0 { AssetId::CubeIndices } else { AssetId::LimpetIndices };
 
-            let texture_id = if false { AssetId::BlankAlbedoTexture } else { AssetId::CuttlefishAlbedoTexture };
-            // let verts_id = if true { AssetId::CubeVertices } else { AssetId::LimpetVertices };
-            // let inds_id = if true { AssetId::CubeIndices } else { AssetId::LimpetIndices };
+            // let texture_id = if false { AssetId::BlankAlbedoTexture } else { AssetId::CuttlefishAlbedoTexture };
+            // let verts_id = if false { AssetId::CubeVertices } else { AssetId::LimpetVertices };
+            // let inds_id = if false { AssetId::CubeIndices } else { AssetId::LimpetIndices };
+
+            let verts_id = match x.abs() % 3 {
+                0 => {
+                    AssetId::CubeVertices
+                },
+                1 => {
+                    AssetId::LimpetVertices
+                },
+                2 => {
+                    AssetId::MonkeyVertices
+                },
+                _ => {
+                    AssetId::CubeVertices
+                }
+            };
+
+            let inds_id = match x.abs() % 3 {
+                0 => {
+                    AssetId::CubeIndices
+                },
+                1 => {
+                    AssetId::LimpetIndices
+                },
+                2 => {
+                    AssetId::MonkeyIndices
+                },
+                _ => {
+                    AssetId::CubeIndices
+                }
+            };
 
             // Add render component
             let render_component = Render::new(
@@ -76,69 +106,8 @@ fn main() {
         }
     }
 
-    
     let duration = start.elapsed();
     println!("Creating entities took: {:?}", duration);
-
-    // {
-    //     // Create entity with a renderer
-    //     let entity = app.world.create_entity();
-    //     let render_component = Render::new(
-    //         "assets/models_compressed/Limpet".to_string(),
-    //         Material {
-    //             albedo_name: "assets/textures/cuttlefish_albedo".to_string(),
-    //             normal_ao_name: String::new(),
-    //             metallic_roughness_emissive_name: String::new(),
-    //             sampler_contents: SamplerContents::new(
-    //                 vk::Filter::LINEAR,
-    //                 vk::SamplerAddressMode::REPEAT,
-    //                 vk::SamplerAddressMode::REPEAT,
-    //                 vk::SamplerAddressMode::REPEAT,
-    //                 vk::SamplerMipmapMode::LINEAR,
-    //             ),
-    //         },
-    //         true,
-    //         true,
-    //     );
-    //     let mut transform_component = Transform::new();
-    //     transform_component.set_is_static(true);
-        
-    //     app.world.add_component(entity, render_component);
-    //     app.world.add_component(entity, transform_component);
-
-    //     let transform_component = *app.world.get_component::<Transform>(entity).unwrap();
-    //     transform_component.set_model_matrix(&mut app.world, glam::vec3(-2.0, 0.0, 0.0), glam::Quat::IDENTITY, glam::Vec3::ONE);
-    // }
-
-    // {
-    //     // Create entity with a renderer
-    //     let entity = app.world.create_entity();
-    //     let render_component = Render::new(
-    //         "assets/models_compressed/Cube".to_string(),
-    //         Material {
-    //             albedo_name: "assets/textures/blank_albedo".to_string(),
-    //             normal_ao_name: String::new(),
-    //             metallic_roughness_emissive_name: String::new(),
-    //             sampler_contents: SamplerContents::new(
-    //                 vk::Filter::LINEAR,
-    //                 vk::SamplerAddressMode::REPEAT,
-    //                 vk::SamplerAddressMode::REPEAT,
-    //                 vk::SamplerAddressMode::REPEAT,
-    //                 vk::SamplerMipmapMode::LINEAR,
-    //             ),
-    //         },
-    //         true,
-    //         true,
-    //     );
-    //     let mut transform_component = Transform::new();
-    //     transform_component.set_is_static(false);
-        
-    //     app.world.add_component(entity, render_component);
-    //     app.world.add_component(entity, transform_component);
-
-    //     let transform_component = *app.world.get_component::<Transform>(entity).unwrap();
-    //     transform_component.set_model_matrix(&mut app.world, glam::vec3(0.0, 0.0, 0.0), glam::Quat::IDENTITY, glam::Vec3::ONE);
-    // }
 
     // Run the app
     app.run();

@@ -43,7 +43,7 @@ pub struct ModelEngine {
     // Dynamic Transforms
     pub dyn_model_matrix_buffer: vk::Buffer,
     pub dyn_model_matrix_buffer_memory: vk::DeviceMemory,
-    pub dyn_model_matrix_buffer_mapped: *mut c_void,
+    pub dyn_model_matrix_buffer_mapped: *mut QuantizedModelMatrix,
     pub dyn_active_model_matrix_count: u32,
     pub dyn_available_model_matrix_indices: Vec<u32>,
     pub dyn_model_matrices_buffer_contents: Vec<QuantizedModelMatrix>,
@@ -51,7 +51,7 @@ pub struct ModelEngine {
     // Static Transforms
     pub static_model_matrix_buffer: vk::Buffer,
     pub static_model_matrix_buffer_memory: vk::DeviceMemory,
-    pub static_model_matrix_buffer_mapped: *mut c_void,
+    pub static_model_matrix_buffer_mapped: *mut QuantizedModelMatrix,
     pub static_active_model_matrix_count: u32,
     pub static_available_model_matrix_indices: Vec<u32>,
     pub static_model_matrices_buffer_contents: Vec<QuantizedModelMatrix>,
@@ -146,6 +146,8 @@ impl ModelEngine {
                 first_instance = last_draw_data.read().first_instance + last_draw_data.read().instance_count;
             }
 
+            println!("FIRST INSTANCE FOR {:?}: {:?}", vertex_asset_id, first_instance);
+
             *model.indirect_draw_data_ptr = IndirectDrawData {
                 index_count: index_count as u32,
                 instance_count: 0,
@@ -181,7 +183,7 @@ impl ModelEngine {
                     m.index_offset -= unloading_model.index_length;
                     let draw_data = unsafe { m.indirect_draw_data_ptr.as_mut().unwrap() };
                     draw_data.vertex_offset = m.vertex_offset as i32;
-                    draw_data.first_index = m.index_length;
+                    draw_data.first_index = m.index_offset;
                 });
         }
         
@@ -209,7 +211,7 @@ impl ModelEngine {
         unsafe {
             let affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
                 .iter()
-                .filter(|&(_, m)| m.indirect_draw_data_ptr > model.indirect_draw_data_ptr)
+                .filter(|&(_, m)| m.indirect_draw_data_ptr.read().first_instance > model.indirect_draw_data_ptr.read().first_instance)
                 .map(|(_, m)| m.indirect_draw_data_ptr)
                 .collect();
 
@@ -240,6 +242,12 @@ impl ModelEngine {
             let new_instance_ptr = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize);
             *new_instance_ptr = new_instance;
             draw_data.instance_count += 1;
+
+            for i in 0..app.command_engine.indirect_draw_capacity {
+                println!("after instance created {:?}: {:?}", vertex_asset_id, app.command_engine.indirect_draw_buffer_mapped.add(i).read());
+            }
+            println!();
+
             Ok(new_instance_ptr)
         }
     }
@@ -262,7 +270,7 @@ impl ModelEngine {
             // Get draw datas affected by this removal
             let affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
                 .iter()
-                .filter(|&(_, m)| m.indirect_draw_data_ptr > model.indirect_draw_data_ptr)
+                .filter(|&(_, m)| m.indirect_draw_data_ptr.read().first_instance > model.indirect_draw_data_ptr.read().first_instance)
                 .map(|(_, m)| m.indirect_draw_data_ptr)
                 .collect();
 
@@ -306,6 +314,11 @@ impl ModelEngine {
 
                 model_engine.loaded_models.remove(&(vertex_asset_id, index_asset_id));
             }
+        
+            for i in 0..app.command_engine.indirect_draw_capacity {
+                println!("after instance removed {:?}: {:?}", vertex_asset_id, app.command_engine.indirect_draw_buffer_mapped.add(i).read());
+            }
+            println!();
         }
 
         Ok(())
@@ -796,7 +809,12 @@ impl ModelEngine {
             0,
             size as u64 * size_of::<QuantizedModelMatrix>() as u64,
             vk::MemoryMapFlags::empty(),
-        )?;
+        )?.cast::<QuantizedModelMatrix>();
+
+        for i in 0..size {
+            *self.dyn_model_matrix_buffer_mapped.add(i as usize) = QuantizedModelMatrix::default();
+        }
+
         Ok(())
     }
 
@@ -829,7 +847,12 @@ impl ModelEngine {
             0,
             size as u64 * size_of::<QuantizedModelMatrix>() as u64,
             vk::MemoryMapFlags::empty(),
-        )?;
+        )?.cast::<QuantizedModelMatrix>();
+
+        for i in 0..size {
+            *self.static_model_matrix_buffer_mapped.add(i as usize) = QuantizedModelMatrix::default();
+        }
+
         Ok(())
     }
 }
