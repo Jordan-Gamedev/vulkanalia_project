@@ -19,7 +19,6 @@ use vulkanalia::prelude::v1_0::*;
 use vulkanalia::vk::KhrSwapchainExtensionDeviceCommands;
 
 use crate::components::render::Render;
-use crate::components::transform::Transform;
 use crate::engine::{App, ModelEngine, PresentEngine, RenderPipelineEngine, UniformBufferObject};
 use super::device_context::DeviceContext;
 
@@ -140,7 +139,6 @@ impl CommandEngine {
                 if r.model_vertices == crate::resources::AssetId::LimpetVertices {
                     println!("BRO: {:?}", app.command_engine.start.unwrap().elapsed());
                     app.world.remove_component::<Render>(entity);
-                    app.world.remove_component::<Transform>(entity);
                 }
             }
         }
@@ -149,21 +147,22 @@ impl CommandEngine {
 
         // Rotate non-static transforms
         let time = app.command_engine.start.unwrap().elapsed().as_secs_f32();
-        let transforms = app.world.query_opt::<Transform>();
+        let renderers = app.world.query_opt::<Render>();
         
-        if let Some(transforms) = transforms {
-            let transforms = transforms.clone();
+        if let Some(renderers) = renderers {
+            let renderers = renderers.clone();
 
             //println!("Getting tranforms took: {:?}", start.elapsed());
             let start = Instant::now();
 
-            for transform in transforms {
-                if transform.is_static() {
-                    let value = transform.get_quantized_model_matrix(&app.world).unwrap();
+            for renderer in renderers {
+                //if !renderer.is_static() {
+                if renderer.is_static() {
+                    let value = renderer.get_quantized_model_matrix(&app.world).unwrap();
                     let position = vec3(value.position[0], value.position[1], value.position[2]);
                     let rotation = glam::Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);
                     let scale = vec3(value.scale[0], value.scale[1], value.scale[2]);
-                    transform.set_model_matrix(&mut app.world, position, rotation.normalize(), scale);
+                    renderer.set_model_matrix(&mut app.world, position, rotation.normalize(), scale, false);
                 }
             }
             

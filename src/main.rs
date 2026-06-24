@@ -4,7 +4,6 @@ use std::time::Instant;
 
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia_project::components::render::Render;
-use vulkanalia_project::components::transform::Transform;
 use vulkanalia_project::engine::App;
 use vulkanalia_project::engine::texture_engine::{Material, SamplerContents};
 use vulkanalia_project::resources::AssetId;
@@ -29,13 +28,6 @@ fn main() {
         for z in -2..2 {
             // Create entity
             let entity = app.world.create_entity();
-
-            // Add transform component
-            let mut transform_component = Transform::new();
-            if false {
-                transform_component.set_is_static(true);
-            }
-            app.world.add_component(entity, transform_component);
 
             let texture_id = if x % 2 == 0 { AssetId::BlankAlbedoTexture } else { AssetId::CuttlefishAlbedoTexture };
             //let verts_id = if x % 2 == 0 { AssetId::CubeVertices } else { AssetId::LimpetVertices };
@@ -76,8 +68,7 @@ fn main() {
             };
 
             // Add render component
-            let render_component = Render::new(
-                *app.world.get_component::<Transform>(entity).unwrap(),
+            let mut render_component = Render::new(
                 verts_id,
                 inds_id,
                 Material {
@@ -95,14 +86,14 @@ fn main() {
                 true,
                 true,
             );
-            app.world.add_component(entity, render_component);
-    
+
             let position = glam::vec3(x as f32 * placement_dist, 0.0, z as f32 * placement_dist);
             let scale = if x % 2 == 0 { glam::vec3(0.01, 0.01, 0.01) } else { glam::vec3(0.01, 0.01, 0.01) };
             //let scale = if true { glam::vec3(0.01, 0.01, 0.01) } else { glam::vec3(0.1, 0.1, 0.1) };
 
-            let transform_component = *app.world.get_component::<Transform>(entity).unwrap();
-            transform_component.set_model_matrix(&mut app.world, position, glam::Quat::IDENTITY, scale);
+            render_component.set_is_static(false);
+            render_component.set_model_matrix(&mut app.world, position, glam::Quat::IDENTITY, scale, false);
+            app.world.add_component(entity, render_component);
         }
     }
 

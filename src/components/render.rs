@@ -1,4 +1,8 @@
-use crate::{components::transform::Transform, ecs::Component, engine::{ModelEngine, command_engine::{PerInstanceData}, texture_engine::Material}, resources::AssetId};
+use anyhow::{Result, anyhow};
+use glam::{Quat, Vec3};
+use std::sync::Arc;
+
+use crate::{ecs::Component, engine::{ModelEngine, command_engine::PerInstanceData, model_engine::QuantizedModelMatrix, texture_engine::Material}, resources::AssetId};
 
 #[derive(Clone, Debug, Default)]
 pub struct Render {
@@ -12,16 +16,100 @@ pub struct Render {
 }
 
 impl Render {
-    pub fn new(transform: Transform, model_vertices: AssetId, model_indices: AssetId, material: Material, receives_shadows: bool, casts_shadows: bool) -> Self {      
+    pub fn new(model_vertices: AssetId, model_indices: AssetId, material: Material, receives_shadows: bool, casts_shadows: bool) -> Self {      
         Self {
             model_vertices,
             model_indices,
             material,
             instance_ptr: std::ptr::null_mut(),
-            model_matrix_info: transform.model_matrix_info,
+            model_matrix_info: u32::MAX,
             is_receiving_shadows: receives_shadows,
             is_casting_shadows: casts_shadows,
         }
+    }
+
+    pub fn set_model_matrix(&self, world: &mut crate::ecs::World, position: Vec3, rotation: Quat, scale: Vec3, save_changes: bool) {
+        unsafe {
+            let app = world.app.as_mut().unwrap();
+            let model_engine = Arc::make_mut(&mut app.model_engine);
+
+            model_engine.set_model_matrix(
+                self.get_model_matrix_index(),
+                position,
+                rotation,
+                scale,
+                self.is_static(),
+            ).unwrap();
+
+            if save_changes {
+                model_engine.save_model_matrix_changes(
+                    app.device_context.as_ref().clone().unwrap().device,
+                    self.get_model_matrix_index(),
+                    self.is_static(),
+                );
+            }
+        }
+    }
+
+    pub fn get_quantized_model_matrix(&self, world: &crate::ecs::World) -> Result<QuantizedModelMatrix> {
+        unsafe {
+            let buffer_contents = if self.is_static() {
+                &world.app.as_ref().unwrap().model_engine.static_model_matrices_buffer_contents
+            } else {
+                &world.app.as_ref().unwrap().model_engine.dyn_model_matrices_buffer_contents
+            };
+
+            if let Some(&model_matrix) = buffer_contents.get(self.get_model_matrix_index() as usize) {
+                Ok(model_matrix)
+            } else {
+                Err(anyhow!("Error: failed to get model matrix (index out of bounds)"))
+            }
+        }
+    }
+
+    pub fn get_quantized_model_matrix_mut(&self, world: &crate::ecs::World) -> Result<&mut QuantizedModelMatrix> {
+        unsafe {
+            let buffer_contents = if self.is_static() {
+                &mut Arc::get_mut(&mut world.app.as_mut().unwrap().model_engine).unwrap().static_model_matrices_buffer_contents
+            } else {
+                &mut Arc::get_mut(&mut world.app.as_mut().unwrap().model_engine).unwrap().dyn_model_matrices_buffer_contents
+            };
+
+            if let Some(model_matrix) = buffer_contents.get_mut(self.get_model_matrix_index() as usize) {
+                Ok(model_matrix)
+            } else {
+                Err(anyhow!("Error: failed to get model matrix (index out of bounds)"))
+            }
+        }
+    }
+
+    pub fn save_transform_changes(&self, world: &mut crate::ecs::World) {
+        unsafe {
+            let app = world.app.as_mut().unwrap();
+            Arc::make_mut(&mut app.model_engine).save_model_matrix_changes(
+                app.device_context.as_ref().clone().unwrap().device,
+                self.get_model_matrix_index(),
+                self.is_static(),
+            );
+        }
+    }
+
+    pub fn is_static(&self) -> bool {
+        self.model_matrix_info & 0x80000000 > 0
+    }
+
+    /// Mark this render transform as static (only works before adding component)
+    pub fn set_is_static(&mut self, is_static: bool) {
+        self.model_matrix_info &= 0x7FFFFFFF;
+        self.model_matrix_info |= (is_static as u32) << 31;
+    }
+
+    pub fn get_model_matrix_index(&self) -> u32 {
+        self.model_matrix_info & 0x7FFFFFFF
+    }
+
+    fn set_model_matrix_index(&mut self, val: u32) {
+        self.model_matrix_info = (self.model_matrix_info & 0x80000000) | val;
     }
 }
 
@@ -30,6 +118,7 @@ impl Component for Render {
         unsafe {
             let app = &mut *world.app;
             self.instance_ptr = ModelEngine::create_instance(app, self.model_vertices, self.model_indices, self.material.albedo, self.material.sampler_contents, self.model_matrix_info).unwrap();
+            self.set_model_matrix_index(ModelEngine::create_model_matrix(app, self.is_static()).unwrap());
         }
     }
 
@@ -37,6 +126,7 @@ impl Component for Render {
         unsafe {
             let app = &mut *world.app;
             ModelEngine::remove_instance(app, self.model_vertices, self.model_indices, self.material.albedo, self.material.sampler_contents, self.instance_ptr).unwrap();
+            ModelEngine::remove_model_matrix(app, self.get_model_matrix_index(), self.is_static()).unwrap();
         }
     }
 }

@@ -33,3 +33,80 @@ Blog on optimizing shadow volumes -> https://lukaskalbertodt.github.io/2023/11/1
 
 An alternative approach to textures is to use SDF "textures" (similar to svg images but gpu usable),
     which TREMENDOUSLY saves vram and allows for infinitely perfect textures
+
+Texture Compression and Packing Scheme Resource -> https://www.youtube.com/watch?v=N6sLJhI_Fmg&t=313s
+
+
+Foliage rendering advice from the internet:
+
+1.
+    Some things you can do to further optimize this,Instead of having a single blade per unit of grass have multiple,
+    This means you have significantly fewer objects to render. 
+
+    Also over distance start randomly culling The shorter blades, they are very unlikely to be seen so you can just remove those.
+    This removes the harsh edge at the end of the grass as well because we are slowly fading in the grass instead of there being a harsh line all of a sudden.
+
+    Also put most of your detail at the top of the blade and less at the bottom, we’re not very likely to see the bottom of the blade because of the blades in front of it.
+    Greets someone who spent too much time on game foliage.
+
+2.
+    You actually don’t even need the whole mesh past a few meters.
+    Instead of swapping it out for an entire lower mesh count model,
+    you can just plug in the grass tops, on top of this past a certain distance you don’t even have to apply a skew,
+    as you can only see the tips just revert back to a simple lateral translation.
+
+3.
+    You can use a division structure(think 1 chunk has 4 sub chunks that each have 4 sub chunks) then frustum cull the chunks instead of individual blades for way faster culling.
+
+4.
+    Have you thought about replacing far-away grass clumps with the first method (quad+texture)?
+
+5.
+    A thought occurred to me when culling and chunks were mentioned.
+    Would it be possible to further optimize by reducing the number of grass blades relative to distance each chunk is from the camera?
+    While this may not reduce overall GPU load considering the extra calculations it could at the very least extend the range of which grass is visible,
+    while simultaneously allowing for a gradient fall-off, which eliminates the need for a fog that could obstruct distant objects like mountains or buildings.
+
+6.
+    Another way of hiding the end of the grass is to reduce the height of the blades in the vertex shader as they approach the far distance.
+    If your grass is a similar color to the terrain you can't see where it ends and then you also don't need fog
+
+7 (AI).
+    To make 3D grass "pop" more, the most effective normals method is Upward Vertex Normals (Flattening the Normals). By forcing every vertex normal on your grass blades to point straight up (toward the sky) or radiate outward, you create softer, spherical lighting that makes the grass look full, lush, and naturally lit from all sides, regardless of the actual sun position. [1, 2]  
+    Top 3 Normals Methods for Grass 
+    1. Upward / Flat Normals (The "Anime / Stylized" Trick) 
+
+    • The Method: Force all vertex normals of your grass mesh to point directly upward (or toward the terrain normal). 
+    • The Result: Both sides of the grass blade are lit equally by the ambient light. It stops grass from turning completely black when the sun hits the "wrong" side of the blade, giving it a vibrant, stylized "pop." 
+    • How to do it in Blender: Use the Data Transfer modifier or a Normal Edit modifier to project the normals of an underlying surface (like a sphere or a flat ground plane) onto your grass blades. [1, 2, 3]  
+
+    2. Spherical / Radial Normals 
+
+    • The Method: Modify the normals to radiate outward from the center point of the grass clump or object origin. 
+    • The Result: This implies a roundness to the grass blades, making a flat 2D plane look like a 3D volume, and adding noticeable highlights and shadows along the curves. 
+    • How to do it in Blender: Use the Data Transfer modifier and select a cylinder or a sphere as your source object to transfer rounded normals. [3]  
+
+    3. Face Weighted Normals 
+
+    • The Method: Weight the vertex normals based on the size and angle of the surrounding faces. 
+    • The Result: This gives you beautifully shaded edges without having to build ultra-high poly models, making geometry pop naturally. 
+    • How to do it in Blender: Add a Bevel modifier (set to limit by angle) followed by the Harden Normals auto-smooth feature. [4, 5]  
+
+    Why Normals Alone Aren't Enough 
+    For your grass to truly pop, your normal manipulation should be paired with these environmental tweaks: 
+
+    • Translucency / Subsurface Scattering: Plug a Translucent BSDF node into a mix shader so light passes through the tips of the grass. 
+    • Color Variation: Add a node that randomizes the hue and saturation based on object info. 
+    • Frosted / Lighter Tips: Fade the very top of the grass texture to a bright, almost white/yellow-green to mimic natural sun-bleaching. [6, 7, 8]  
+
+    If you are working in a specific program, tell me if you are using Blender, Unity, Unreal Engine, or Godot. I can give you the exact node setups or modifier stacks needed for your engine. 
+    AI responses may include mistakes.
+
+    [1] https://torque3d.org/forums/topic/3663-the-manfisher-public-alpha-has-been-released-on-itchio/
+    [2] https://discussions.unity.com/t/the-great-grass-dilemma/770055?page=4
+    [3] https://hexaquo.at/pages/grass-rendering-series-part-2-full-geometry-grass-in-godot/
+    [4] https://80.lv/articles/using-blender-substance-3d-designer-to-make-a-stylized-diorama-in-unreal-engine-5
+    [5] https://80.lv/articles/001agt-002mrs-004adk-creating-a-slaughterhouse-in-ue4-part-1
+    [6] https://polycount.com/discussion/169096/low-poly-foliage
+    [7] https://www.youtube.com/shorts/K6Gc1viyDPo
+    [8] https://www.reddit.com/r/gamedev/comments/ipqj9q/a_minitutorial_i_made_about_blending_grass_into_a/
