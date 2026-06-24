@@ -261,6 +261,8 @@ impl ModelEngine {
     }
 
     pub fn remove_instance(app: &mut App, vertex_asset_id: AssetId, index_asset_id: AssetId, texture_asset_id: AssetId, sampler_contents: SamplerContents, instance: *mut PerInstanceData) -> Result<()> {
+        let temp_instance_model_info = unsafe { instance.read().model_matrix_info };
+        
         // Potentially unload model and texture
         app.unload_model(vertex_asset_id, index_asset_id)?;
         app.unload_texture(texture_asset_id, sampler_contents)?;
@@ -278,13 +280,13 @@ impl ModelEngine {
             // Get draw datas affected by this removal
             let mut affected_draw_data: Vec<*mut IndirectDrawData> = app.model_engine.loaded_models
                 .iter()
-                .filter(|&(_, m)| m.indirect_draw_data_ptr.read().first_instance > model.indirect_draw_data_ptr.read().first_instance)
+                .filter(|&(_, m)| m.indirect_draw_data_ptr.read().first_instance > draw_data.first_instance)
                 .map(|(_, m)| m.indirect_draw_data_ptr)
                 .collect();
             affected_draw_data.sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
 
             // Remove one from the instance offset for those found in the buffer after the new instance
-            // and continuously overwrite beginnings of instance buffer sections with their ends to cover the empty instance
+            // and continuously overwrite ends of instance buffer sections with the next ends to cover the empty instance
             let mut instance_to_overwrite: *mut PerInstanceData = app.command_engine.instance_buffer_mapped.add((draw_data.first_instance + draw_data.instance_count) as usize);
             for draw_data in affected_draw_data {
                 let draw_data = draw_data.as_mut().unwrap();
@@ -324,18 +326,17 @@ impl ModelEngine {
                 model_engine.loaded_models.remove(&(vertex_asset_id, index_asset_id));
             }
         
-            for i in 0..app.command_engine.indirect_draw_capacity {
-                println!("after instance removed {:?}: {:?}", vertex_asset_id, app.command_engine.indirect_draw_buffer_mapped.add(i).read());
-            }
+            // for i in 0..app.command_engine.indirect_draw_capacity {
+            //     println!("after instance {temp_instance_model_info} removed {:?}: {:?}", vertex_asset_id, app.command_engine.indirect_draw_buffer_mapped.add(i).read());
+            // }
 
-            for i in 0..app.command_engine.instance_capacity {
-                if i % 4 == 0 {
-                    println!();
-                }
-                println!("{:?}", app.command_engine.instance_buffer_mapped.add(i).read());
-            }
-            println!();
-
+            // for i in 0..app.command_engine.instance_capacity {
+            //     if i % 4 == 0 {
+            //         println!();
+            //     }
+            //     println!("{:?}", app.command_engine.instance_buffer_mapped.add(i).read());
+            // }
+            // println!();
         }
 
         Ok(())
@@ -346,7 +347,7 @@ impl ModelEngine {
         
         if is_static {
             if let Some(available_index) = model_engine.static_available_model_matrix_indices.pop() {
-                model_engine.static_model_matrices_buffer_contents[available_index as usize];
+                model_engine.static_model_matrices_buffer_contents[available_index as usize] = QuantizedModelMatrix::default();
                 model_engine.static_active_model_matrix_count += 1;
                 return Ok(available_index)
             } else {
@@ -360,7 +361,7 @@ impl ModelEngine {
             }    
         } else {
             if let Some(available_index) = model_engine.dyn_available_model_matrix_indices.pop() {
-                model_engine.dyn_model_matrices_buffer_contents[available_index as usize];
+                model_engine.dyn_model_matrices_buffer_contents[available_index as usize] = QuantizedModelMatrix::default();
                 model_engine.dyn_active_model_matrix_count += 1;
                 return Ok(available_index)
             } else {

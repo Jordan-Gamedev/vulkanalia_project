@@ -117,16 +117,39 @@ impl Component for Render {
     fn on_add(&mut self, world: &mut crate::ecs::World) {
         unsafe {
             let app = &mut *world.app;
-            self.instance_ptr = ModelEngine::create_instance(app, self.model_vertices, self.model_indices, self.material.albedo, self.material.sampler_contents, self.model_matrix_info).unwrap();
             self.set_model_matrix_index(ModelEngine::create_model_matrix(app, self.is_static()).unwrap());
+            self.instance_ptr = ModelEngine::create_instance(app, self.model_vertices, self.model_indices, self.material.albedo, self.material.sampler_contents, self.model_matrix_info).unwrap();
+
+            let query = world.query_opt::<Render>().unwrap();
+            for render in query {
+                for i in 0..app.command_engine.instance_capacity {
+                    let instance_ptr = app.command_engine.instance_buffer_mapped.add(i);
+                    if render.model_matrix_info == instance_ptr.read().model_matrix_info {
+                        render.instance_ptr = instance_ptr;
+                        break;
+                    }
+                }
+            }
         }
     }
 
     fn on_remove(&self, world: &mut crate::ecs::World) {
         unsafe {
             let app = &mut *world.app;
+            println!("model matrix: {}, instance matrix: {}", self.model_matrix_info, self.instance_ptr.read().model_matrix_info);
             ModelEngine::remove_instance(app, self.model_vertices, self.model_indices, self.material.albedo, self.material.sampler_contents, self.instance_ptr).unwrap();
             ModelEngine::remove_model_matrix(app, self.get_model_matrix_index(), self.is_static()).unwrap();
+        
+            let query = world.query_opt::<Render>().unwrap();
+            for render in query {
+                for i in 0..app.command_engine.instance_capacity {
+                    let instance_ptr = app.command_engine.instance_buffer_mapped.add(i);
+                    if render.model_matrix_info == instance_ptr.read().model_matrix_info {
+                        render.instance_ptr = instance_ptr;
+                        break;
+                    }
+                }
+            }
         }
     }
 }

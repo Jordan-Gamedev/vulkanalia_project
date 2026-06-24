@@ -24,7 +24,7 @@ use super::device_context::DeviceContext;
 
 /// The maximum number of frames that can be processed concurrently
 const MAX_FRAMES_IN_FLIGHT: usize = 4;
-const MAX_INDIRECT_DRAWS: usize = 6;
+const MAX_INDIRECT_DRAWS: usize = 4;
 //const MAX_INSTANCES: usize = 262_144;
 const MAX_INSTANCES: usize = 25;
 

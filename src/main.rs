@@ -92,8 +92,9 @@ fn main() {
             //let scale = if true { glam::vec3(0.01, 0.01, 0.01) } else { glam::vec3(0.1, 0.1, 0.1) };
 
             render_component.set_is_static(false);
+            app.world.add_component(entity, render_component.clone());
+            let render_component = app.world.get_component::<Render>(entity).unwrap().clone();
             render_component.set_model_matrix(&mut app.world, position, glam::Quat::IDENTITY, scale, false);
-            app.world.add_component(entity, render_component);
         }
     }
 
