@@ -24,9 +24,8 @@ use super::device_context::DeviceContext;
 
 /// The maximum number of frames that can be processed concurrently
 const MAX_FRAMES_IN_FLIGHT: usize = 4;
-const MAX_INDIRECT_DRAWS: usize = 4;
-//const MAX_INSTANCES: usize = 262_144;
-const MAX_INSTANCES: usize = 25;
+const MAX_INDIRECT_DRAWS: usize = 1024;
+const MAX_INSTANCES: usize = 262_144;
 
 const DEG_TO_RAD: f32 = PI / 180.0;
 
@@ -132,48 +131,44 @@ impl CommandEngine {
     /// Renders a frame for the Vulkan app
     pub fn render(app: &mut App) -> Result<()> {
 
-        if app.command_engine.start.unwrap().elapsed() < Duration::from_secs(6) && app.command_engine.start.unwrap().elapsed() >= Duration::from_secs(5) {
-            let query: Vec<(Render, u32)> = app.world.query::<Render>().iter().map(|q| (q.0.clone(), q.1)).collect();
+        // if app.command_engine.start.unwrap().elapsed() < Duration::from_secs(6) && app.command_engine.start.unwrap().elapsed() >= Duration::from_secs(5) {
+        //     let query: Vec<(Render, u32)> = app.world.query::<Render>().iter().map(|q| (q.0.clone(), q.1)).collect();
             
-            for (r, entity) in query {
-                if r.model_vertices == crate::resources::AssetId::LimpetVertices {
-                    println!("BRO: {:?}", app.command_engine.start.unwrap().elapsed());
-                    app.world.remove_component::<Render>(entity);
-                }
-            }
-        }
+        //     for (r, entity) in query {
+        //         if r.model_vertices == crate::resources::AssetId::LimpetVertices {
+        //             app.world.remove_component::<Render>(entity);
+        //         }
+        //     }
+        // }
 
-        let start = Instant::now();
+        // let start = Instant::now();
 
-        // Rotate non-static transforms
-        let time = app.command_engine.start.unwrap().elapsed().as_secs_f32();
-        let renderers = app.world.query_opt::<Render>();
+        // // Rotate non-static transforms
+        // let time = app.command_engine.start.unwrap().elapsed().as_secs_f32();
+        // let renderers = app.world.query_opt::<Render>();
         
-        if let Some(renderers) = renderers {
-            let renderers = renderers.clone();
+        // if let Some(renderers) = renderers {
+        //     let renderers = renderers.clone();
 
-            //println!("Getting tranforms took: {:?}", start.elapsed());
-            let start = Instant::now();
+        //     //println!("Getting tranforms took: {:?}", start.elapsed());
+        //     let start = Instant::now();
 
-            for renderer in renderers {
-                //if !renderer.is_static() {
-                if renderer.is_static() {
-                    let value = renderer.get_quantized_model_matrix(&app.world).unwrap();
-                    let position = vec3(value.position[0], value.position[1], value.position[2]);
-                    let rotation = glam::Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);
-                    let scale = vec3(value.scale[0], value.scale[1], value.scale[2]);
-                    renderer.set_model_matrix(&mut app.world, position, rotation.normalize(), scale, false);
-                }
-            }
+        //     for renderer in renderers {
+        //         //if !renderer.is_static() {
+        //         if renderer.is_static() {
+        //             let value = renderer.get_quantized_model_matrix(&app.world).unwrap();
+        //             let position = vec3(value.position[0], value.position[1], value.position[2]);
+        //             let rotation = glam::Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 90.0 * DEG_TO_RAD * time);
+        //             let scale = vec3(value.scale[0], value.scale[1], value.scale[2]);
+        //             renderer.set_model_matrix(&mut app.world, position, rotation.normalize(), scale);
+        //         }
+        //     }
             
-            //println!("Rotating dynamic tranforms took: {:?}", start.elapsed());
-            let start = Instant::now();
+        //     //println!("Rotating dynamic tranforms took: {:?}", start.elapsed());
+        //     let start = Instant::now();
 
-            // Save cpu model matrix changes to gpu
-            Arc::make_mut(&mut app.model_engine).save_all_model_matrices_changes(app.device_context.as_ref().clone().unwrap().device);
-    
-            //println!("Saving changes to tranforms took: {:?}", start.elapsed());
-        }
+        //     //println!("Saving changes to tranforms took: {:?}", start.elapsed());
+        // }
 
         unsafe {
             let context = app.device_context.as_ref().clone().unwrap();

@@ -24,8 +24,8 @@ fn main() {
 
     let placement_dist: f32 = 0.1;
 
-    for x in -2i32..4 {
-        for z in -2..2 {
+    for z in -256i32..256 {
+        for x in -256i32..256 {
             // Create entity
             let entity = app.world.create_entity();
 
@@ -37,7 +37,7 @@ fn main() {
             // let verts_id = if false { AssetId::CubeVertices } else { AssetId::LimpetVertices };
             // let inds_id = if false { AssetId::CubeIndices } else { AssetId::LimpetIndices };
 
-            let verts_id = match x.abs() % 3 {
+            let verts_id = match z.abs() % 3 {
                 0 => {
                     AssetId::CubeVertices
                 },
@@ -52,7 +52,7 @@ fn main() {
                 }
             };
 
-            let inds_id = match x.abs() % 3 {
+            let inds_id = match z.abs() % 3 {
                 0 => {
                     AssetId::CubeIndices
                 },
@@ -88,13 +88,13 @@ fn main() {
             );
 
             let position = glam::vec3(x as f32 * placement_dist, 0.0, z as f32 * placement_dist);
-            let scale = if x % 2 == 0 { glam::vec3(0.01, 0.01, 0.01) } else { glam::vec3(0.01, 0.01, 0.01) };
+            let scale = if z % 2 == 0 { glam::vec3(0.01, 0.01, 0.01) } else { glam::vec3(0.01, 0.01, 0.01) };
             //let scale = if true { glam::vec3(0.01, 0.01, 0.01) } else { glam::vec3(0.1, 0.1, 0.1) };
 
             render_component.set_is_static(false);
             app.world.add_component(entity, render_component.clone());
             let render_component = app.world.get_component::<Render>(entity).unwrap().clone();
-            render_component.set_model_matrix(&mut app.world, position, glam::Quat::IDENTITY, scale, false);
+            render_component.set_model_matrix(&mut app.world, position, glam::Quat::IDENTITY, scale);
         }
     }
 

@@ -45,16 +45,16 @@ pub struct ModelEngine {
     pub dyn_model_matrix_buffer_memory: vk::DeviceMemory,
     pub dyn_model_matrix_buffer_mapped: *mut QuantizedModelMatrix,
     pub dyn_active_model_matrix_count: u32,
+    pub dyn_model_matrix_buffer_capacity: u32,
     pub dyn_available_model_matrix_indices: Vec<u32>,
-    pub dyn_model_matrices_buffer_contents: Vec<QuantizedModelMatrix>,
 
     // Static Transforms
     pub static_model_matrix_buffer: vk::Buffer,
     pub static_model_matrix_buffer_memory: vk::DeviceMemory,
     pub static_model_matrix_buffer_mapped: *mut QuantizedModelMatrix,
     pub static_active_model_matrix_count: u32,
+    pub static_model_matrix_buffer_capacity: u32,
     pub static_available_model_matrix_indices: Vec<u32>,
-    pub static_model_matrices_buffer_contents: Vec<QuantizedModelMatrix>,
 
     // Actively loaded models
     pub loaded_models: HashMap<(AssetId, AssetId), Model>,
@@ -145,8 +145,6 @@ impl ModelEngine {
             if !last_draw_data.is_null() {
                 first_instance = last_draw_data.read().first_instance + last_draw_data.read().instance_count;
             }
-
-            println!("FIRST INSTANCE FOR {:?}: {:?}", vertex_asset_id, first_instance);
 
             *model.indirect_draw_data_ptr = IndirectDrawData {
                 index_count: index_count as u32,
@@ -347,28 +345,40 @@ impl ModelEngine {
         
         if is_static {
             if let Some(available_index) = model_engine.static_available_model_matrix_indices.pop() {
-                model_engine.static_model_matrices_buffer_contents[available_index as usize] = QuantizedModelMatrix::default();
                 model_engine.static_active_model_matrix_count += 1;
                 return Ok(available_index)
             } else {
                 // Increase allocation if the threshold is already reached
                 if model_engine.static_active_model_matrix_count % MODEL_MATRIX_ALLOCATE_THRESHOLD == 0 {
-                    unsafe { model_engine.create_static_model_matrix_buffer(app.device_context.as_ref().clone().unwrap(), model_engine.static_active_model_matrix_count as u64 + MODEL_MATRIX_ALLOCATE_THRESHOLD as u64)?; }
-                    model_engine.update_model_matrix_buffer_descriptors(app.device_context.as_ref().clone().unwrap().device, app.rp_engine.as_ref().clone(), app.command_engine.as_ref().clone())?;
+                    let mut model_matrices: Vec<QuantizedModelMatrix> = Vec::with_capacity(model_engine.static_active_model_matrix_count as usize);
+                    
+                    unsafe {
+                        for i in 0..model_engine.static_active_model_matrix_count as usize {
+                            model_matrices.push(model_engine.static_model_matrix_buffer_mapped.add(i).read());
+                        }
+                        model_engine.create_static_model_matrix_buffer(app.device_context.as_ref().clone().unwrap(), model_engine.static_active_model_matrix_count as u64 + MODEL_MATRIX_ALLOCATE_THRESHOLD as u64, model_matrices)?;
+                        model_engine.update_model_matrix_buffer_descriptors(app.device_context.as_ref().clone().unwrap().device, app.rp_engine.as_ref().clone(), app.command_engine.as_ref().clone())?;
+                    }
                 }
                 model_engine.static_active_model_matrix_count += 1;
                 return Ok(app.model_engine.static_active_model_matrix_count - 1)
             }    
         } else {
             if let Some(available_index) = model_engine.dyn_available_model_matrix_indices.pop() {
-                model_engine.dyn_model_matrices_buffer_contents[available_index as usize] = QuantizedModelMatrix::default();
                 model_engine.dyn_active_model_matrix_count += 1;
                 return Ok(available_index)
             } else {
                 // Increase allocation if the threshold is already reached
                 if model_engine.dyn_active_model_matrix_count % MODEL_MATRIX_ALLOCATE_THRESHOLD == 0 {
-                    unsafe { model_engine.create_dyn_model_matrix_buffer(app.device_context.as_ref().clone().unwrap(), model_engine.dyn_active_model_matrix_count as u64 + MODEL_MATRIX_ALLOCATE_THRESHOLD as u64)?; }
-                    model_engine.update_model_matrix_buffer_descriptors(app.device_context.as_ref().clone().unwrap().device, app.rp_engine.as_ref().clone(), app.command_engine.as_ref().clone())?;
+                    let mut model_matrices: Vec<QuantizedModelMatrix> = Vec::with_capacity(model_engine.dyn_active_model_matrix_count as usize);
+                    
+                    unsafe {
+                        for i in 0..model_engine.dyn_active_model_matrix_count as usize {
+                            model_matrices.push(model_engine.dyn_model_matrix_buffer_mapped.add(i).read());
+                        }
+                        model_engine.create_dyn_model_matrix_buffer(app.device_context.as_ref().clone().unwrap(), model_engine.dyn_active_model_matrix_count as u64 + MODEL_MATRIX_ALLOCATE_THRESHOLD as u64, model_matrices)?;
+                        model_engine.update_model_matrix_buffer_descriptors(app.device_context.as_ref().clone().unwrap().device, app.rp_engine.as_ref().clone(), app.command_engine.as_ref().clone())?;
+                    }
                 }
                 model_engine.dyn_active_model_matrix_count += 1;
                 return Ok(app.model_engine.dyn_active_model_matrix_count - 1)
@@ -380,84 +390,75 @@ impl ModelEngine {
         let model_engine = std::sync::Arc::make_mut(&mut app.model_engine);
         
         if is_static { 
-            model_engine.static_model_matrices_buffer_contents[model_matrix_index as usize] = QuantizedModelMatrix::default();
             model_engine.static_available_model_matrix_indices.push(model_matrix_index);
             model_engine.static_active_model_matrix_count -= 1;
             
             // Deallocate if there is too much unused allocation at the end of the buffer
-            let max_available_index = *model_engine.static_available_model_matrix_indices.iter().max().unwrap() as usize;
-            if model_engine.static_active_model_matrix_count > 0 && model_engine.static_model_matrices_buffer_contents.len() - 1 - max_available_index >= MODEL_MATRIX_ALLOCATE_THRESHOLD as usize {
-                model_engine.static_model_matrices_buffer_contents.truncate(model_engine.static_model_matrices_buffer_contents.len() - MODEL_MATRIX_ALLOCATE_THRESHOLD as usize);
-                unsafe { model_engine.create_static_model_matrix_buffer(app.device_context.as_ref().clone().unwrap(), model_engine.static_model_matrices_buffer_contents.len() as u64)? };
-                model_engine.update_model_matrix_buffer_descriptors(app.device_context.as_ref().clone().unwrap().device, app.rp_engine.as_ref().clone(), app.command_engine.as_ref().clone())?;
+            let max_available_index = *model_engine.static_available_model_matrix_indices.iter().max().unwrap();
+            if model_engine.static_active_model_matrix_count > 0 && model_engine.static_model_matrix_buffer_capacity - 1 - max_available_index >= MODEL_MATRIX_ALLOCATE_THRESHOLD {
+                let mut model_matrices: Vec<QuantizedModelMatrix> = Vec::with_capacity(model_engine.static_active_model_matrix_count as usize);
+                    
+                unsafe {
+                    for i in 0..model_engine.static_active_model_matrix_count as usize {
+                        model_matrices.push(model_engine.static_model_matrix_buffer_mapped.add(i).read());
+                    }
+                    model_engine.create_static_model_matrix_buffer(app.device_context.as_ref().clone().unwrap(), model_engine.static_model_matrix_buffer_capacity as u64 - MODEL_MATRIX_ALLOCATE_THRESHOLD as u64, model_matrices)?;
+                    model_engine.update_model_matrix_buffer_descriptors(app.device_context.as_ref().clone().unwrap().device, app.rp_engine.as_ref().clone(), app.command_engine.as_ref().clone())?;
+                }
             }
         } else {
-            model_engine.dyn_model_matrices_buffer_contents[model_matrix_index as usize] = QuantizedModelMatrix::default();
             model_engine.dyn_available_model_matrix_indices.push(model_matrix_index);
             model_engine.dyn_active_model_matrix_count -= 1;
             
             // Deallocate if there is too much unused allocation at the end of the buffer
-            let max_available_index = *model_engine.dyn_available_model_matrix_indices.iter().max().unwrap() as usize;
-            if model_engine.dyn_active_model_matrix_count > 0 && model_engine.dyn_model_matrices_buffer_contents.len() - 1 - max_available_index >= MODEL_MATRIX_ALLOCATE_THRESHOLD as usize {
-                model_engine.dyn_model_matrices_buffer_contents.truncate(model_engine.dyn_model_matrices_buffer_contents.len() - MODEL_MATRIX_ALLOCATE_THRESHOLD as usize);
-                unsafe { model_engine.create_dyn_model_matrix_buffer(app.device_context.as_ref().clone().unwrap(), model_engine.dyn_model_matrices_buffer_contents.len() as u64)? };
-                model_engine.update_model_matrix_buffer_descriptors(app.device_context.as_ref().clone().unwrap().device, app.rp_engine.as_ref().clone(), app.command_engine.as_ref().clone())?;
+            let max_available_index = *model_engine.dyn_available_model_matrix_indices.iter().max().unwrap();
+            if model_engine.dyn_active_model_matrix_count > 0 && model_engine.dyn_model_matrix_buffer_capacity - 1 - max_available_index >= MODEL_MATRIX_ALLOCATE_THRESHOLD {
+                let mut model_matrices: Vec<QuantizedModelMatrix> = Vec::with_capacity(model_engine.dyn_active_model_matrix_count as usize);
+                    
+                unsafe {
+                    for i in 0..model_engine.dyn_active_model_matrix_count as usize {
+                        model_matrices.push(model_engine.dyn_model_matrix_buffer_mapped.add(i).read());
+                    }
+                    model_engine.create_dyn_model_matrix_buffer(app.device_context.as_ref().clone().unwrap(), model_engine.dyn_model_matrix_buffer_capacity as u64 - MODEL_MATRIX_ALLOCATE_THRESHOLD as u64, model_matrices)?;
+                    model_engine.update_model_matrix_buffer_descriptors(app.device_context.as_ref().clone().unwrap().device, app.rp_engine.as_ref().clone(), app.command_engine.as_ref().clone())?;
+                }
             }
         }
         
         Ok(())
     }
 
-    pub fn set_model_matrix(&mut self, model_matrix_index: u32, position: Vec3, rotation: Quat, scale: Vec3, is_static: bool) -> Result<()> {
-        let buffer_contents = if is_static { &mut self.static_model_matrices_buffer_contents } else { &mut self.dyn_model_matrices_buffer_contents };
-        
-        if let Some(model_matrix) = buffer_contents.get_mut(model_matrix_index as usize) {
-            model_matrix.position = position.to_array();
-            model_matrix.scale = scale.to_array();
-            let rotation_i16: [i16; 4] = [
-                (rotation.x * i16::MAX as f32) as i16,
-                (rotation.y * i16::MAX as f32) as i16,
-                (rotation.z * i16::MAX as f32) as i16,
-                (rotation.w * i16::MAX as f32) as i16,
-            ];
-            model_matrix.rotation = rotation_i16;
-            Ok(())
+    pub fn get_model_matrix(&self, model_matrix_index: u32, is_static: bool) -> QuantizedModelMatrix {
+        if is_static {
+            unsafe { self.static_model_matrix_buffer_mapped.add(model_matrix_index as usize).read() }
         } else {
-            Err(anyhow!("Error: Failed to update model matrix (index out of bounds)"))
+            unsafe { self.dyn_model_matrix_buffer_mapped.add(model_matrix_index as usize).read() }
         }
     }
 
-    pub fn save_model_matrix_changes(&mut self, device: Device, model_matrix_index: u32, is_static: bool) {
-        unsafe {
-            if is_static && self.static_model_matrices_buffer_contents.len() > 0 {
-                *self
-                    .static_model_matrix_buffer_mapped
-                    .cast::<QuantizedModelMatrix>()
-                    .add(model_matrix_index as usize) = self.static_model_matrices_buffer_contents[model_matrix_index as usize];
-            } else if !is_static && self.dyn_model_matrices_buffer_contents.len() > 0 {
-                *self.dyn_model_matrix_buffer_mapped.cast::<QuantizedModelMatrix>().add(model_matrix_index as usize) = self.dyn_model_matrices_buffer_contents[model_matrix_index as usize];
-            }
+    pub fn get_model_matrix_mut(&self, model_matrix_index: u32, is_static: bool) -> &mut QuantizedModelMatrix {
+        if is_static {
+            unsafe { self.static_model_matrix_buffer_mapped.add(model_matrix_index as usize).as_mut().unwrap() }
+        } else {
+            unsafe { self.dyn_model_matrix_buffer_mapped.add(model_matrix_index as usize).as_mut().unwrap() }
         }
     }
 
-    pub fn save_all_model_matrices_changes(&mut self, device: Device) {
-        unsafe {
-            if self.dyn_model_matrices_buffer_contents.len() > 0 {
-                memcpy(
-                    self.dyn_model_matrices_buffer_contents.as_ptr(),
-                    self.dyn_model_matrix_buffer_mapped.cast(),
-                    self.dyn_model_matrices_buffer_contents.len(),
-                );
-            }
-    
-            if self.static_model_matrices_buffer_contents.len() > 0 {
-                memcpy(
-                    self.static_model_matrices_buffer_contents.as_ptr(),
-                    self.static_model_matrix_buffer_mapped.cast(),
-                    self.static_model_matrices_buffer_contents.len(),
-                );
-            }    
-        }
+    pub fn set_model_matrix(&mut self, model_matrix_index: u32, position: Vec3, rotation: Quat, scale: Vec3, is_static: bool) -> Result<()> {
+        let buffer_ptr = if is_static { self.static_model_matrix_buffer_mapped } else { self.dyn_model_matrix_buffer_mapped };        
+        let model_matrix = unsafe { buffer_ptr.add(model_matrix_index as usize).as_mut().unwrap() };
+
+        model_matrix.position = position.to_array();
+        model_matrix.scale = scale.to_array();
+        let rotation_i16: [i16; 4] = [
+            (rotation.x * i16::MAX as f32) as i16,
+            (rotation.y * i16::MAX as f32) as i16,
+            (rotation.z * i16::MAX as f32) as i16,
+            (rotation.w * i16::MAX as f32) as i16,
+        ];
+        model_matrix.rotation = rotation_i16;
+
+        Ok(())
     }
 
     pub fn get_supported_vertex_format(
@@ -618,8 +619,6 @@ impl ModelEngine {
                 );
             }
         }
-
-        self.save_all_model_matrices_changes(device);
 
         Ok(())
     }
@@ -800,7 +799,7 @@ impl ModelEngine {
         Ok(())
     }
 
-    unsafe fn create_dyn_model_matrix_buffer(&mut self, context: DeviceContext, size: vk::DeviceSize) -> Result<()> {
+    unsafe fn create_dyn_model_matrix_buffer(&mut self, context: DeviceContext, size: vk::DeviceSize, model_matrices: Vec<QuantizedModelMatrix>) -> Result<()> {
         if !self.dyn_model_matrix_buffer.is_null() {
             context.device.destroy_buffer(self.dyn_model_matrix_buffer, None);
         }
@@ -811,7 +810,7 @@ impl ModelEngine {
             self.dyn_model_matrix_buffer_mapped = std::ptr::null_mut();
         }
 
-        self.dyn_model_matrices_buffer_contents.resize(size as usize, QuantizedModelMatrix::default());
+        self.dyn_model_matrix_buffer_capacity = size as u32;
 
         let (ssbo, ssbo_memory) = ModelEngine::create_buffer(
             context.clone(),
@@ -829,14 +828,16 @@ impl ModelEngine {
             vk::MemoryMapFlags::empty(),
         )?.cast::<QuantizedModelMatrix>();
 
-        for i in 0..size {
-            *self.dyn_model_matrix_buffer_mapped.add(i as usize) = QuantizedModelMatrix::default();
+        // Set data
+        memcpy(model_matrices.as_ptr(), self.dyn_model_matrix_buffer_mapped, model_matrices.len());
+        for i in model_matrices.len()..size as usize {
+            *self.dyn_model_matrix_buffer_mapped.add(i) = QuantizedModelMatrix::default();
         }
 
         Ok(())
     }
 
-    unsafe fn create_static_model_matrix_buffer(&mut self, context: DeviceContext, size: vk::DeviceSize) -> Result<()> {
+    unsafe fn create_static_model_matrix_buffer(&mut self, context: DeviceContext, size: vk::DeviceSize, model_matrices: Vec<QuantizedModelMatrix>) -> Result<()> {
         if !self.static_model_matrix_buffer.is_null() {
             context.device.destroy_buffer(self.static_model_matrix_buffer, None);
         }
@@ -849,7 +850,7 @@ impl ModelEngine {
             context.device.free_memory(self.static_model_matrix_buffer_memory, None);
         }
         
-        self.static_model_matrices_buffer_contents.resize(size as usize, QuantizedModelMatrix::default());
+        self.static_model_matrix_buffer_capacity = size as u32;
 
         let (ssbo, ssbo_memory) = ModelEngine::create_buffer(
             context.clone(),
@@ -867,8 +868,10 @@ impl ModelEngine {
             vk::MemoryMapFlags::empty(),
         )?.cast::<QuantizedModelMatrix>();
 
-        for i in 0..size {
-            *self.static_model_matrix_buffer_mapped.add(i as usize) = QuantizedModelMatrix::default();
+        // Set data
+        memcpy(model_matrices.as_ptr(), self.static_model_matrix_buffer_mapped, model_matrices.len());
+        for i in model_matrices.len()..size as usize {
+            *self.static_model_matrix_buffer_mapped.add(i) = QuantizedModelMatrix::default();
         }
 
         Ok(())
@@ -918,8 +921,8 @@ impl ModelEngineBuilder {
     }
 
     pub unsafe fn create_model_matrix_buffers(&mut self, context: DeviceContext) -> Result<()> {
-        self.0.create_dyn_model_matrix_buffer(context.clone(), MODEL_MATRIX_ALLOCATE_THRESHOLD as u64)?;
-        self.0.create_static_model_matrix_buffer(context, MODEL_MATRIX_ALLOCATE_THRESHOLD as u64)?;
+        self.0.create_dyn_model_matrix_buffer(context.clone(), MODEL_MATRIX_ALLOCATE_THRESHOLD as u64, Vec::new())?;
+        self.0.create_static_model_matrix_buffer(context, MODEL_MATRIX_ALLOCATE_THRESHOLD as u64, Vec::new())?;
         Ok(())
     }
 }
