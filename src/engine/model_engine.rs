@@ -12,11 +12,11 @@ use bytemuck::Zeroable;
 use vulkanalia::prelude::v1_0::*;
 use core::slice;
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::copy_nonoverlapping as memcpy;
 use glam::{Mat4, Quat, Vec2, Vec3, vec2, vec3};
 
+use crate::engine::buffers::Buffer;
 use crate::engine::command_engine::{IndirectDrawData, PerInstanceData};
 use crate::engine::texture_engine::{SamplerContents};
 use crate::engine::{App, CommandEngine, RenderPipelineEngine};
@@ -30,15 +30,11 @@ const MODEL_MATRIX_ALLOCATE_THRESHOLD: u32 = 1024;
 #[derive(Clone, Default)]
 pub struct ModelEngine {
     // Model Shape
-    pub vertex_buffer: vk::Buffer,
-    pub vertex_buffer_memory: vk::DeviceMemory,
-    pub index_buffer: vk::Buffer,
-    pub index_buffer_memory: vk::DeviceMemory,
+    pub vertex_buffer: Buffer<QuantizedVertex>,
+    pub index_buffer: Buffer<u32>,
     
     // Camera
-    pub uniform_buffers: Vec<vk::Buffer>,
-    pub uniform_buffers_memory: Vec<vk::DeviceMemory>,
-    pub uniform_buffers_mapped: Vec<*mut c_void>,
+    pub uniform_buffers: Vec<Buffer<UniformBufferObject>>,
 
     // Dynamic Transforms
     pub dyn_model_matrix_buffer: vk::Buffer,
@@ -64,18 +60,10 @@ impl ModelEngine {
     pub fn destroy(&mut self, device: Device) {
         unsafe {
             // Destroy vertex and index
-            device.destroy_buffer(self.vertex_buffer, None);
-            device.free_memory(self.vertex_buffer_memory, None);
-            device.destroy_buffer(self.index_buffer, None);
-            device.free_memory(self.index_buffer_memory, None);
+            self.vertex_buffer.destroy(device.clone());
+            self.index_buffer.destroy(device.clone());
             // Destroy ubo
-            self.uniform_buffers.iter().for_each(|b| device.destroy_buffer(*b, None));
-            for i in 0..self.uniform_buffers_memory.len() {
-                if self.uniform_buffers_mapped[i] != std::ptr::null_mut() {
-                    device.unmap_memory(self.uniform_buffers_memory[i]);
-                }
-                device.free_memory(self.uniform_buffers_memory[i], None);
-            }
+            self.uniform_buffers.iter_mut().for_each(|b| b.destroy(device.clone()));
             // Destroy ssbos
             device.destroy_buffer(self.dyn_model_matrix_buffer, None);
             device.destroy_buffer(self.static_model_matrix_buffer, None);
@@ -122,12 +110,14 @@ impl ModelEngine {
         };
 
         unsafe {
-            self.add_vertex_buffer(context.clone(), &command_engine, vertices)?;
-            self.add_index_buffer(context, &command_engine, indices)?;
+            let prev_vertex_count = self.vertex_buffer.element_count;
+            let prev_index_count = self.index_buffer.element_count;
+            self.vertex_buffer.add_contents(context.clone(), &command_engine, vertices)?;
+            self.index_buffer.add_contents(context, &command_engine, indices)?;
             let model = Model {
-                vertex_offset: self.get_vertex_count() as u32,
+                vertex_offset: prev_vertex_count,
                 vertex_length: vertex_count as u32,
-                index_offset: self.get_index_count() as u32,
+                index_offset: prev_index_count,
                 index_length: index_count as u32,
                 indirect_draw_data_ptr: command_engine.indirect_draw_buffer_mapped.add(self.loaded_models.len()),
             };
@@ -149,8 +139,8 @@ impl ModelEngine {
             *model.indirect_draw_data_ptr = IndirectDrawData {
                 index_count: index_count as u32,
                 instance_count: 0,
-                first_index: self.get_index_count() as u32,
-                vertex_offset: self.get_vertex_count() as i32,
+                first_index: prev_index_count,
+                vertex_offset: prev_vertex_count as i32,
                 first_instance: first_instance,
             };
             self.loaded_models.insert((vertex_asset_id, index_asset_id), model);
@@ -168,10 +158,8 @@ impl ModelEngine {
         let fully_unloaded = unsafe { unloading_model.indirect_draw_data_ptr.read().instance_count <= 1 };
 
         if fully_unloaded {
-            unsafe {
-                self.remove_vertex_buffer(context.clone(), &command_engine, unloading_model)?;
-                self.remove_index_buffer(context, &command_engine, unloading_model)?;
-            }
+            self.vertex_buffer.remove_contents(context.clone(), &command_engine, unloading_model.vertex_offset, unloading_model.vertex_offset + unloading_model.vertex_length)?;
+            self.index_buffer.remove_contents(context.clone(), &command_engine, unloading_model.index_offset, unloading_model.index_offset + unloading_model.index_length)?;
 
             // Update other model offsets
             self.loaded_models.values_mut()
@@ -476,22 +464,6 @@ impl ModelEngine {
             })
             .ok_or_else(|| anyhow!("Failed to find supported vertex attribute format"))
     }
-
-    pub fn get_vertex_count(&self) -> u64 {
-        let mut count: u64 = 0;
-        for model in self.loaded_models.values() {
-            count += model.vertex_length as u64;
-        }
-        count
-    }
-
-    pub fn get_index_count(&self) -> u64 {
-        let mut count: u64 = 0;
-        for model in self.loaded_models.values() {
-            count += model.index_length as u64;
-        }
-        count
-    }
     
     pub fn get_buffer_contents<T: std::fmt::Debug + Clone>(context: DeviceContext, command_engine: &CommandEngine, buffer: vk::Buffer, content_length: usize) -> Result<Vec<T>> {
         unsafe {
@@ -622,183 +594,7 @@ impl ModelEngine {
 
         Ok(())
     }
-
-    unsafe fn create_vertex_buffer(&mut self, context: DeviceContext, command_engine: &CommandEngine, vertices: Vec<QuantizedVertex>) -> Result<()> {
-        let device = context.clone().device;
-
-        // Destroy old vertex buffer
-
-        if !self.vertex_buffer.is_null() {
-            device.destroy_buffer(self.vertex_buffer, None);
-            device.free_memory(self.vertex_buffer_memory, None);
-        }
-
-        // Set the buffer to null if there are no vertices to make the buffer out of
-
-        if vertices.len() == 0 {
-            self.vertex_buffer = vk::Buffer::null();
-            return Ok(())
-        }
-
-        // Create (staging)
     
-        let size = (size_of::<QuantizedVertex>() * vertices.len()) as u64;
-    
-        let (staging_buffer, staging_buffer_memory) = ModelEngine::create_buffer(
-            context.clone(),
-            size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )?;
-    
-        // Copy (staging)
-    
-        let memory = device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())?;
-        memcpy(vertices.as_ptr(), memory.cast(), vertices.len());
-        device.unmap_memory(staging_buffer_memory);
-    
-        // Create (vertex)
-    
-        let (vertex_buffer, vertex_buffer_memory) = ModelEngine::create_buffer(
-            context.clone(),
-            size,
-            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )?;
-        self.vertex_buffer = vertex_buffer;
-        self.vertex_buffer_memory = vertex_buffer_memory;
-    
-        // Copy (vertex)
-    
-        ModelEngine::copy_buffer(context, command_engine, staging_buffer, vertex_buffer, size)?;
-    
-        // Cleanup
-    
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_buffer_memory, None);
-    
-        Ok(())
-    }
-    
-    unsafe fn create_index_buffer(&mut self, context: DeviceContext, command_engine: &CommandEngine, indices: Vec<u32>) -> Result<()> {
-        let device = context.clone().device;
-
-        // Destroy old index buffer
-
-        if !self.index_buffer.is_null() {
-            device.destroy_buffer(self.index_buffer, None);
-            device.free_memory(self.index_buffer_memory, None);
-        }
-
-        // Set the buffer to null if there are no indices to make the buffer out of
-
-        if indices.len() == 0 {
-            self.index_buffer = vk::Buffer::null();
-            return Ok(())
-        }
-
-        // Create (staging)
-    
-        let size = (size_of::<u32>() * indices.len()) as u64;
-    
-        let (staging_buffer, staging_buffer_memory) = ModelEngine::create_buffer(
-            context.clone(),
-            size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )?;
-    
-        // Copy (staging)
-    
-        let memory = device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())?;
-        memcpy(indices.as_ptr(), memory.cast(), indices.len());
-        device.unmap_memory(staging_buffer_memory);
-    
-        // Create (index)
-    
-        let (index_buffer, index_buffer_memory) = ModelEngine::create_buffer(
-            context.clone(),
-            size,
-            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )?;
-        self.index_buffer = index_buffer;
-        self.index_buffer_memory = index_buffer_memory;
-    
-        // Copy (index)
-    
-        ModelEngine::copy_buffer(context, command_engine, staging_buffer, self.index_buffer, size)?;
-    
-        // Cleanup
-    
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_buffer_memory, None);
-    
-        Ok(())
-    }
-    
-    unsafe fn add_vertex_buffer(&mut self, context: DeviceContext, command_engine: &CommandEngine, vertices: Vec<QuantizedVertex>) -> Result<()> {
-        // Create a vertex buffer for the vertices if none was yet made
-        if self.vertex_buffer.is_null() {
-            return self.create_vertex_buffer(context, command_engine, vertices)
-        }
-        
-        // Get vertices from current vertex buffer
-        let mut total_vertices = ModelEngine::get_buffer_contents::<QuantizedVertex>(context.clone(), command_engine, self.vertex_buffer, self.get_vertex_count() as usize)?;
-
-        // Combine old and new vertices
-        total_vertices.extend(vertices.iter());
-
-        // Create a new vertex buffer with all the vertices
-        self.create_vertex_buffer(context.clone(), command_engine, total_vertices)?;
-
-        Ok(())
-    }
-
-    unsafe fn add_index_buffer(&mut self, context: DeviceContext, command_engine: &CommandEngine, indices: Vec<u32>) -> Result<()> {
-        // Create an index buffer for the indices if none was yet made
-        if self.index_buffer.is_null() {
-            return self.create_index_buffer(context, command_engine, indices)
-        }
-        
-        // Get indices from current index buffer
-        let mut total_indices = ModelEngine::get_buffer_contents::<u32>(context.clone(), command_engine, self.index_buffer, self.get_index_count() as usize)?;
-
-        // Combine old and new indices
-        total_indices.extend(indices);
-
-        // Create a new index buffer with all the indices
-        self.create_index_buffer(context.clone(), command_engine, total_indices)?;
-
-        Ok(())
-    }
-
-    unsafe fn remove_vertex_buffer(&mut self, context: DeviceContext, command_engine: &CommandEngine, model: Model) -> Result<()> {        
-        // Get vertices from current vertex buffer
-        let mut vertices = ModelEngine::get_buffer_contents::<QuantizedVertex>(context.clone(), command_engine, self.vertex_buffer, self.get_vertex_count() as usize)?;
-        
-        // Remove designated vertices
-        vertices.drain((model.vertex_offset as usize)..((model.vertex_offset + model.vertex_length) as usize));
-
-        // Create a new vertex buffer with the remaining vertices
-        self.create_vertex_buffer(context, command_engine, vertices)?;
-
-        Ok(())
-    }
-
-    unsafe fn remove_index_buffer(&mut self, context: DeviceContext, command_engine: &CommandEngine, model: Model) -> Result<()> {        
-        // Get indices from current index buffer
-        let mut indices = ModelEngine::get_buffer_contents::<u32>(context.clone(), command_engine, self.index_buffer, self.get_index_count() as usize)?;
-        
-        // Remove designated indices
-        indices.drain((model.index_offset as usize)..((model.index_offset + model.index_length) as usize));
-
-        // Create a new index buffer with the remaining indices
-        self.create_index_buffer(context, command_engine, indices)?;
-
-        Ok(())
-    }
-
     unsafe fn create_dyn_model_matrix_buffer(&mut self, context: DeviceContext, size: vk::DeviceSize, model_matrices: Vec<QuantizedModelMatrix>) -> Result<()> {
         if !self.dyn_model_matrix_buffer.is_null() {
             context.device.destroy_buffer(self.dyn_model_matrix_buffer, None);
@@ -885,36 +681,19 @@ impl ModelEngineBuilder {
         Self(ModelEngine::default())
     }
 
+    pub fn create_vertex_index_buffers(&mut self, context: DeviceContext, command_engine: &CommandEngine) {
+        self.0.vertex_buffer = Buffer::new(context.clone(), command_engine, 1, vk::BufferUsageFlags::VERTEX_BUFFER, vk::MemoryPropertyFlags::DEVICE_LOCAL, 0, Vec::new());
+        self.0.index_buffer = Buffer::new(context, command_engine, 1, vk::BufferUsageFlags::INDEX_BUFFER, vk::MemoryPropertyFlags::DEVICE_LOCAL, 0, Vec::new());
+    }
+
     pub unsafe fn create_uniform_buffers(&mut self, context: DeviceContext, command_engine: CommandEngine) -> Result<()> {
-        self.0.uniform_buffers.iter().for_each(|b| context.device.destroy_buffer(*b, None));
-        for i in 0..self.0.uniform_buffers_memory.len() {
-            if self.0.uniform_buffers_mapped[i] != std::ptr::null_mut() {
-                context.device.unmap_memory(self.0.uniform_buffers_memory[i]);
-            }
-            context.device.free_memory(self.0.uniform_buffers_memory[i], None);
-        }
+        let device = context.clone().device;
+        self.0.uniform_buffers.iter_mut().for_each(|b| b.destroy(device.clone()));
         self.0.uniform_buffers.clear();
-        self.0.uniform_buffers_memory.clear();
-        self.0.uniform_buffers_mapped.clear();
 
         for _ in 0..command_engine.max_frames_in_flight {
-            let (uniform_buffer, uniform_buffer_memory) = ModelEngine::create_buffer(
-                context.clone(),
-                size_of::<UniformBufferObject>() as u64,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-            )?;
-    
-            self.0.uniform_buffers.push(uniform_buffer);
-            self.0.uniform_buffers_memory.push(uniform_buffer_memory);
-            
-            let mapped_memory = context.device.map_memory(
-                uniform_buffer_memory,
-                0,
-                size_of::<UniformBufferObject>() as u64,
-                vk::MemoryMapFlags::empty(),
-            )?;
-            self.0.uniform_buffers_mapped.push(mapped_memory);
+            let buffer: Buffer<UniformBufferObject> = Buffer::new(context.clone(), &command_engine, 1, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE, 0, Vec::new());
+            self.0.uniform_buffers.push(buffer);
         }
     
         Ok(())
@@ -928,7 +707,7 @@ impl ModelEngineBuilder {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct UniformBufferObject {
     pub view: Mat4,
     pub proj: Mat4,

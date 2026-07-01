@@ -11,14 +11,13 @@ use anyhow::{anyhow, Result};
 use glam::{Mat4, vec3};
 use std::mem::size_of;
 use std::sync::Arc;
-use std::time::Duration;
+//use std::time::Duration;
 use std::{f32::consts::PI, time::Instant};
 use std::ptr::copy_nonoverlapping as memcpy;
 use bytemuck::{Pod, Zeroable};
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::vk::KhrSwapchainExtensionDeviceCommands;
 
-use crate::components::render::Render;
 use crate::engine::{App, ModelEngine, PresentEngine, RenderPipelineEngine, UniformBufferObject};
 use super::device_context::DeviceContext;
 
@@ -274,8 +273,8 @@ impl CommandEngine {
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, app.rp_engine.pipeline);
 
             let command_engine = Arc::make_mut(&mut app.command_engine);
-            device.cmd_bind_vertex_buffers(command_buffer, 0, &[app.model_engine.vertex_buffer], &[0]);
-            device.cmd_bind_index_buffer(command_buffer, app.model_engine.index_buffer, 0, vk::IndexType::UINT32);
+            device.cmd_bind_vertex_buffers(command_buffer, 0, &[app.model_engine.vertex_buffer.buffer], &[0]);
+            device.cmd_bind_index_buffer(command_buffer, app.model_engine.index_buffer.buffer, 0, vk::IndexType::UINT32);
             device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -374,7 +373,7 @@ impl CommandEngine {
         //     vk::MemoryMapFlags::empty(),
         // )?;
 
-        memcpy(&ubo, model_engine.uniform_buffers_mapped[frame_index].cast::<UniformBufferObject>(), 1);
+        memcpy(&ubo, model_engine.uniform_buffers[frame_index].mapped, 1);
 
         //device.unmap_memory(model_engine.uniform_buffers_memory[frame_index]);
 

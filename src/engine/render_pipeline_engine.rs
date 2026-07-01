@@ -261,7 +261,7 @@ impl RenderPipelineEngineBuilder {
     
         for i in 0..command_engine.max_frames_in_flight {
             let info = vk::DescriptorBufferInfo::builder()
-                .buffer(model_engine.uniform_buffers[i])
+                .buffer(model_engine.uniform_buffers[i].buffer)
                 .offset(0)
                 .range(size_of::<UniformBufferObject>() as u64);
     

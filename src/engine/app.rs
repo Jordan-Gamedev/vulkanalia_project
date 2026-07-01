@@ -85,6 +85,9 @@ impl App {
             // Create instance data buffer
             command_engine_builder.create_instance_buffer(app.device_context.as_ref().clone().unwrap())?;
 
+            // Create vertex and index buffers
+            model_engine_builder.create_vertex_index_buffers(app.device_context.as_ref().clone().unwrap(), &command_engine_builder.0);
+
             // Create uniform buffer objects
             model_engine_builder.create_uniform_buffers(app.device_context.as_ref().clone().unwrap(), command_engine_builder.0.clone())?;
 
