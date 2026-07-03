@@ -92,7 +92,7 @@ impl App {
             model_engine_builder.create_uniform_buffers(app.device_context.as_ref().clone().unwrap(), command_engine_builder.0.clone())?;
 
             // Create model matrix storage buffer
-            model_engine_builder.create_model_matrix_buffers(app.device_context.as_ref().clone().unwrap())?;
+            model_engine_builder.create_model_matrix_buffers(app.device_context.as_ref().clone().unwrap(), &app.command_engine)?;
 
             // Create descriptor sets
             rp_engine_builder.create_descriptor_sets(

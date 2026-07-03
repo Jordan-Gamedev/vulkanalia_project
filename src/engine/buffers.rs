@@ -18,10 +18,12 @@ use crate::engine::CommandEngine;
 use super::device_context::DeviceContext;
 
 #[derive(Clone, Default)]
-pub struct Buffer<T: Clone + Default> {
+pub struct Buffer<T: Clone + std::fmt::Debug + Default> {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub mapped: *mut T,
+    //pub available_indices: std::collections::VecDeque<u32>,
+    pub available_indices: std::collections::BTreeSet<u32>,
     pub element_count: u32,
     pub element_capacity: u32,
     pub alloc_dealloc_threshold: u32,
@@ -30,7 +32,7 @@ pub struct Buffer<T: Clone + Default> {
     pub is_host_visible: bool,
 }
 
-impl<T: Clone + Default> Buffer<T> {
+impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     pub fn new(
         context: DeviceContext,
         command_engine: &CommandEngine,
@@ -81,6 +83,7 @@ impl<T: Clone + Default> Buffer<T> {
                     buffer: device_buffer,
                     memory: device_buffer_memory,
                     mapped: std::ptr::null_mut(),
+                    available_indices: std::collections::BTreeSet::new(),
                     element_count: initial_contents.len() as u32,
                     element_capacity: initial_capacity as u32,
                     alloc_dealloc_threshold: alloc_dealloc_threshold,
@@ -97,6 +100,7 @@ impl<T: Clone + Default> Buffer<T> {
                     buffer: buffer,
                     memory: memory,
                     mapped: mapped,
+                    available_indices: (initial_contents.len() as u32..initial_capacity as u32).collect(),
                     element_count: initial_contents.len() as u32,
                     element_capacity: initial_capacity as u32,
                     alloc_dealloc_threshold: alloc_dealloc_threshold,
@@ -108,8 +112,10 @@ impl<T: Clone + Default> Buffer<T> {
         }
     }
 
-    pub fn destroy(&mut self, device: Device) {
+    pub fn destroy(&mut self, device: &Device) {
         unsafe {
+            device.device_wait_idle().unwrap();
+
             if self.mapped != std::ptr::null_mut() {
                 device.unmap_memory(self.memory);
                 self.mapped = std::ptr::null_mut();
@@ -121,15 +127,17 @@ impl<T: Clone + Default> Buffer<T> {
                 self.buffer = vk::Buffer::null();
                 self.memory = vk::DeviceMemory::null();
             }
+
+            self.available_indices.clear();
         }
     }
 
     pub fn recreate(&mut self, context: DeviceContext, command_engine: &CommandEngine, contents: Vec<T>) {
         // Destroy old buffer
-        self.destroy(context.clone().device);
+        self.destroy(&context.device);
 
         // Calculate initial capacity
-        let initial_capacity: u32 = (contents.len() as u32).max(self.alloc_dealloc_threshold * (contents.len() as f32 / self.alloc_dealloc_threshold as f32).ceil() as u32);
+        let initial_capacity: u32 = (contents.len() as u32).max(self.alloc_dealloc_threshold * (contents.len() as f32 / self.alloc_dealloc_threshold as f32).ceil() as u32).max(self.alloc_dealloc_threshold);
 
         // Create the new buffer
         *self = Buffer::new(
@@ -162,14 +170,14 @@ impl<T: Clone + Default> Buffer<T> {
         }
     }
 
-    pub fn get_buffer_contents(&self, context: DeviceContext, command_engine: &CommandEngine, include_empty: bool) -> Result<Vec<T>> {
+    pub fn get_buffer_items(&self, context: DeviceContext, command_engine: &CommandEngine, include_empty: bool) -> Result<Vec<T>> {
         unsafe {
-            let end = if include_empty { self.element_capacity } else { self.element_count };
-
             let mut contents: Vec<T> = Vec::with_capacity(self.element_capacity as usize);
             if self.is_host_visible {
-                for i in 0..end {
-                    contents.push(self.mapped.add(i as usize).read());
+                for i in 0..self.element_capacity {
+                    if include_empty || !self.available_indices.contains(&i) {
+                        contents.push(self.mapped.add(i as usize).read());
+                    }
                 }
                 return Ok(contents)
             }
@@ -196,7 +204,7 @@ impl<T: Clone + Default> Buffer<T> {
             .cast::<T>();
 
             // Create a Vector out of the memory
-            let vec: Vec<T> = slice::from_raw_parts(memory.cast(), end as usize).to_vec();
+            let vec: Vec<T> = slice::from_raw_parts(memory.cast(), self.element_capacity as usize).to_vec();
 
             // Cleanup
             context.device.destroy_buffer(staging_buffer, None);
@@ -207,60 +215,89 @@ impl<T: Clone + Default> Buffer<T> {
         }
     }
 
-    pub fn add_contents(&mut self, context: DeviceContext, command_engine: &CommandEngine, contents: Vec<T>) -> Result<()> {
-        // Create a buffer for the content if none was yet made
-        if self.buffer.is_null() {
-            self.recreate(context, command_engine, contents);
-            return Ok(())
+    pub fn add_items(&mut self, context: DeviceContext, command_engine: &CommandEngine, mut items: Vec<T>) -> Result<()> {
+        while self.is_host_visible && items.len() > 0 && let Some(available_index) = self.available_indices.pop_first() && let Some(next_content) = items.pop() {
+            unsafe { *self.mapped.add(available_index as usize) = next_content };
+            self.element_count += 1;
         }
-        
-        let new_content_count = contents.len() as u32;
 
-        if self.is_host_visible && self.element_count + new_content_count <= self.element_capacity {
-            // Write changes without recreating the buffer
-            unsafe { memcpy(contents.as_ptr(), self.mapped.add(self.element_count as usize), contents.len()); }
-            self.element_count += new_content_count;
-        } else {
-            // Get content from current buffer
-            let mut total_contents: Vec<T> = self.get_buffer_contents(context.clone(), command_engine, false)?;
+        if items.len() > 0 {
+            // Get items from current buffer
+            let mut total_items: Vec<T> = self.get_buffer_items(context.clone(), command_engine, false)?;
     
-            // Combine old and new contents
-            total_contents.extend(contents);
-            self.recreate(context, command_engine, total_contents);
+            // Combine old and new items
+            total_items.extend(items);
+
+            self.recreate(context, command_engine, total_items);
         }
 
         Ok(())
     }
 
-    pub fn remove_contents(&mut self, context: DeviceContext, command_engine: &CommandEngine, start_remove_index: u32, stop_remove_index: u32) -> Result<()> {
-        // Create a buffer for the content if none was yet made
-        if self.buffer.is_null() {
-            return Ok(())
+    pub fn remove_items(&mut self, context: DeviceContext, command_engine: &CommandEngine, start_remove_index: u32, stop_remove_index: u32) -> Result<()> {       
+        if self.is_host_visible {
+            self.element_count -= stop_remove_index - start_remove_index;
+            self.available_indices.extend(start_remove_index..stop_remove_index);
+
+            // Get furthest element index used
+            let mut furthest_used_index: u32 = self.element_capacity - 1;
+
+            if let Some(mut prev_val) = self.available_indices.iter().last() {
+                for i in self.available_indices.iter().rev() {
+                    if prev_val - i > 1 {
+                        break;
+                    }
+                    prev_val = i;
+                }
+                furthest_used_index = *prev_val - 1;
+            }
+
+            // Get furthest element index not used
+            let furthest_empty_index = *self.available_indices.last().unwrap_or(&(self.element_capacity - 1));
+
+            let num_empty_end_indices = furthest_empty_index - furthest_used_index;
+
+            if num_empty_end_indices >= self.alloc_dealloc_threshold {
+                // Get items from current buffer
+                let mut total_items: Vec<T> = self.get_buffer_items(context.clone(), command_engine, true)?;
+                
+                for _ in furthest_used_index + 1..=furthest_empty_index {
+                    total_items.pop();
+                    self.available_indices.pop_last();
+                }
+
+                // Create a new buffer with all the items
+                let available_indices = self.available_indices.clone();
+                self.recreate(context, command_engine, total_items);
+                self.available_indices = available_indices;
+            }
+        } else {
+            // Get items from current buffer
+            let mut total_items: Vec<T> = self.get_buffer_items(context.clone(), command_engine, false)?;    
+            
+            // Remove in between items
+            total_items.drain(start_remove_index as usize..stop_remove_index as usize);
+            
+            // Create a new buffer with all the items
+            self.recreate(context, command_engine, total_items);
         }
         
-        // Get content from current buffer
-        let mut total_contents: Vec<T> = self.get_buffer_contents(context.clone(), command_engine, false)?;
-
-        // Combine old and new contents
-        total_contents.drain(start_remove_index as usize..stop_remove_index as usize);
-
-        if !self.is_host_visible || self.element_count <= self.element_capacity - self.alloc_dealloc_threshold {
-            // Create a new buffer with all the contents
-            self.recreate(context, command_engine, total_contents);
-        }
-        else {
-            // Write changes without recreating the buffer
-            unsafe {
-                for i in (total_contents.len() - 1)..self.element_capacity as usize {
-                    *self.mapped.add(i) = T::default();
-                }
-                memcpy(total_contents.as_ptr(), self.mapped, total_contents.len());
-                self.element_count -= stop_remove_index - start_remove_index;
-            }
-        }
-
         Ok(())
     }
+
+    /// Adds item and returns the index chosen to place the item
+    pub fn add_item(&mut self, context: DeviceContext, command_engine: &CommandEngine, item: T) -> Result<u32> {
+        let available_indices_size = self.available_indices.len();
+        let chosen_index = if self.available_indices.len() > 0 { self.available_indices.first() } else { Some(&self.element_count) };
+        let chosen_index = *chosen_index.unwrap();
+        self.add_items(context, command_engine, vec![item])?;
+        Ok(chosen_index)
+    }
+
+    pub fn remove_item_at(&mut self, context: DeviceContext, command_engine: &CommandEngine, index: u32) -> Result<()> {
+        self.remove_items(context, command_engine, index, index + 1)?;
+        Ok(())
+    }    
 
     pub fn create_buffer(
         context: DeviceContext,
@@ -272,7 +309,7 @@ impl<T: Clone + Default> Buffer<T> {
             // Buffer
         
             let buffer_info = vk::BufferCreateInfo::builder()
-                .size(size * size_of::<T>() as u64)
+                .size(size.max(1) * size_of::<T>() as u64)
                 .usage(usage)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
         

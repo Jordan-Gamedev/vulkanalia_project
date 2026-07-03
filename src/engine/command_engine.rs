@@ -18,6 +18,7 @@ use bytemuck::{Pod, Zeroable};
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia::vk::KhrSwapchainExtensionDeviceCommands;
 
+//use crate::components::render::Render;
 use crate::engine::{App, ModelEngine, PresentEngine, RenderPipelineEngine, UniformBufferObject};
 use super::device_context::DeviceContext;
 
@@ -27,6 +28,8 @@ const MAX_INDIRECT_DRAWS: usize = 1024;
 const MAX_INSTANCES: usize = 262_144;
 
 const DEG_TO_RAD: f32 = PI / 180.0;
+
+//static mut RUN_ONCE: bool = false;
 
 #[derive(Clone, Default)]
 pub struct CommandEngine {
@@ -127,17 +130,20 @@ impl CommandEngine {
         }
     }
 
+
     /// Renders a frame for the Vulkan app
     pub fn render(app: &mut App) -> Result<()> {
-
-        // if app.command_engine.start.unwrap().elapsed() < Duration::from_secs(6) && app.command_engine.start.unwrap().elapsed() >= Duration::from_secs(5) {
-        //     let query: Vec<(Render, u32)> = app.world.query::<Render>().iter().map(|q| (q.0.clone(), q.1)).collect();
-            
-        //     for (r, entity) in query {
-        //         if r.model_vertices == crate::resources::AssetId::LimpetVertices {
-        //             app.world.remove_component::<Render>(entity);
+        // unsafe {
+        //     if !RUN_ONCE && app.command_engine.start.unwrap().elapsed() < Duration::from_secs(6) && app.command_engine.start.unwrap().elapsed() >= Duration::from_secs(5) {
+        //         let query: Vec<(Render, u32)> = app.world.query::<Render>().iter().map(|q| (q.0.clone(), q.1)).collect();
+                
+        //         for (r, entity) in query {
+        //             if r.model_vertices == crate::resources::AssetId::LimpetVertices {
+        //                 app.world.remove_component::<Render>(entity);
+        //                 RUN_ONCE = true;
+        //             }
         //         }
-        //     }
+        //     }    
         // }
 
         // let start = Instant::now();

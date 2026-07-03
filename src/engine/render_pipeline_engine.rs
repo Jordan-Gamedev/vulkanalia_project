@@ -274,7 +274,7 @@ impl RenderPipelineEngineBuilder {
                 .buffer_info(buffer_info);
 
             let static_model_matrix_info = vk::DescriptorBufferInfo::builder()
-                .buffer(model_engine.static_model_matrix_buffer)
+                .buffer(model_engine.static_model_matrix_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE);
 
@@ -287,7 +287,7 @@ impl RenderPipelineEngineBuilder {
                 .buffer_info(&static_model_matrix_buffer_info);
 
             let dyn_model_matrix_info = vk::DescriptorBufferInfo::builder()
-                .buffer(model_engine.dyn_model_matrix_buffer)
+                .buffer(model_engine.dyn_model_matrix_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE);
 

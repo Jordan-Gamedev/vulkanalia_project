@@ -80,7 +80,7 @@ impl Component for Render {
     fn on_add(&mut self, world: &mut crate::ecs::World) {
         unsafe {
             let app = &mut *world.app;
-            self.set_model_matrix_index(ModelEngine::create_model_matrix(app, self.is_static()).unwrap());
+            self.set_model_matrix_index(ModelEngine::create_model_matrix(app, QuantizedModelMatrix::default(), self.is_static()).unwrap());
             ModelEngine::create_instance(app, self.model_vertices, self.model_indices, self.material.albedo, self.material.sampler_contents, self.model_matrix_info).unwrap();
         }
     }

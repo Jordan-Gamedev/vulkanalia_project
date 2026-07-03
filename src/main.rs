@@ -24,8 +24,8 @@ fn main() {
 
     let placement_dist: f32 = 0.1;
 
-    for z in -10i32..10 {
-        for x in -256i32..256 {
+    for z in -100i32..100 {
+        for x in -100i32..100 {
             // Create entity
             let entity = app.world.create_entity();
 
