@@ -36,6 +36,9 @@ An alternative approach to textures is to use SDF "textures" (similar to svg ima
 
 Texture Compression and Packing Scheme Resource -> https://www.youtube.com/watch?v=N6sLJhI_Fmg&t=313s
 
+Use cpu bvh frustum culling first, and then gpu compute frustum culling for the remainder
+
+Forward+ can have a depth prepass for large occluders and tiled sorting for large amounts of smaller objects like grass blades
 
 Foliage rendering advice from the internet:
 

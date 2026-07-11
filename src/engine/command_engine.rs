@@ -175,6 +175,8 @@ impl CommandEngine {
         //     //println!("Saving changes to tranforms took: {:?}", start.elapsed());
         // }
 
+        
+
         unsafe {
             let context = app.device_context.as_ref().clone().unwrap();
             let device = context.device;
@@ -372,16 +374,7 @@ impl CommandEngine {
 
         // Copy
 
-        // let memory = device.map_memory(
-        //     model_engine.uniform_buffers_memory[frame_index],
-        //     0,
-        //     size_of::<UniformBufferObject>() as u64,
-        //     vk::MemoryMapFlags::empty(),
-        // )?;
-
         memcpy(&ubo, model_engine.uniform_buffers[frame_index].mapped, 1);
-
-        //device.unmap_memory(model_engine.uniform_buffers_memory[frame_index]);
 
         Ok(())
     }

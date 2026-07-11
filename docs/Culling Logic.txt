@@ -1,0 +1,9 @@
+when loading model:
+    1) find out the aabb and store it for that model
+    2) calculate a bvh for all static instances (also useful for physics pruning)
+    
+when rendering:
+    1) cull by bvh
+       move culled instances in instance buffer to the next back index of the space by swapping
+       temporarily subtract current indirect_draw_data instance count
+    2) call gpu compute shader for smaller static objects and dynamic objects

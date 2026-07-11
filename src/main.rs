@@ -22,10 +22,10 @@ fn main() {
 
     let start = Instant::now();
 
-    let placement_dist: f32 = 0.1;
+    let placement_dist: f32 = 0.05;
 
-    for z in -100i32..100 {
-        for x in -100i32..100 {
+    for z in -5i32..5 {
+        for x in -5i32..5 {
             // Create entity
             let entity = app.world.create_entity();
 

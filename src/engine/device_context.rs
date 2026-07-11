@@ -345,6 +345,8 @@ impl DeviceContextBuilder {
     
         // Enforce shader draw parameters for slang shaders
         extensions.push(vk::KHR_SHADER_DRAW_PARAMETERS_EXTENSION.name.as_ptr());
+
+        // Enable descriptor indexing for bindless rendering
         extensions.push(vk::EXT_DESCRIPTOR_INDEXING_EXTENSION.name.as_ptr());
 
         // Features

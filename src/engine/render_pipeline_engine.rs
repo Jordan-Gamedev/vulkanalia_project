@@ -387,7 +387,6 @@ impl RenderPipelineEngineBuilder {
         // Rasterization State
     
         let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
-            .depth_bias_enable(false)
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
@@ -399,7 +398,7 @@ impl RenderPipelineEngineBuilder {
     
         let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
             .sample_shading_enable(true)
-            .min_sample_shading(0.2)
+            .min_sample_shading(0.5)
             .rasterization_samples(present_engine.msaa_samples);
     
         let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()

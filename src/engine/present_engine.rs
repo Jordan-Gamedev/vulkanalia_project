@@ -211,7 +211,7 @@ impl PresentEngine {
         .unwrap_or(vk::SampleCountFlags::_1)
     }
 
-    unsafe fn get_swapchain_surface_format(context: &DeviceContext, surface: vk::SurfaceKHR) -> vk::SurfaceFormatKHR {
+    unsafe fn get_swapchain_surface_format(context: &DeviceContext, surface: vk::SurfaceKHR) -> vk::SurfaceFormatKHR {      
         let formats = context.instance.get_physical_device_surface_formats_khr(context.physical_device, surface).unwrap();
         let format = formats
             .iter()
@@ -227,7 +227,7 @@ impl PresentEngine {
         info!("Selected swapchain format: {:?}, color space: {:?}", format.format, format.color_space);
         format
     }
-    
+
     unsafe fn get_swapchain_present_mode(context: &DeviceContext, surface: vk::SurfaceKHR) -> vk::PresentModeKHR {
         let present_modes = context.instance.get_physical_device_surface_present_modes_khr(context.physical_device, surface).unwrap();
         
@@ -302,9 +302,16 @@ impl PresentEngineBuilder {
         if with_fullscreen && let Some(monitor) = self.0.window.as_ref().unwrap().current_monitor().or_else(|| self.0.window.as_ref().unwrap().primary_monitor()) {
             if let Some(video_mode) = monitor
                 .video_modes()
-                .max_by_key(|mode| (mode.refresh_rate_millihertz(), mode.size().width * mode.size().height))
+                //.max_by_key(|mode| mode.refresh_rate_millihertz() + mode.size().width * mode.size().height)
+                .find(|mode| {
+                    mode.refresh_rate_millihertz() / 1000 == 240 &&
+                    mode.size().width == 1920 &&
+                    mode.size().height == 1200
+                })
             {
-                self.0.window.as_mut().unwrap().set_fullscreen(Some(Fullscreen::Exclusive(video_mode)));
+                self.0.window.as_mut().unwrap().set_fullscreen(Some(Fullscreen::Exclusive(video_mode.clone())));
+
+                println!("\nDisplay: {}x{}@{}Hz\n", video_mode.size().width, video_mode.size().height, video_mode.refresh_rate_millihertz() / 1000);
             }
         }
 
