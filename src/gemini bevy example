@@ -1,0 +1,63 @@
+use bevy_app::{App, Update};
+use bevy_ecs::prelude::*;
+
+// 1. A dummy struct representing your existing Vulkan setup
+struct VulkanRenderer {
+    // device, queue, swapchain, command_pools, etc.
+}
+
+impl VulkanRenderer {
+    fn init() -> Self { Self {} }
+    fn should_close(&self) -> bool { false }
+    fn poll_events(&mut self) {}
+    fn render_frame(&mut self, positions: &Query<&Position>) {
+        // Your custom Vulkan rendering commands go here (vkCmdDraw, etc.)
+    }
+}
+
+// 2. Simple ECS component
+#[derive(Component)]
+struct Position { x: f32, y: f32 }
+
+fn game_logic_system(mut query: Query<&mut Position>) {
+    for mut pos in &mut query {
+        pos.x += 0.1;
+    }
+}
+
+fn main() {
+    // A. Initialize your custom Vulkan engine first
+    let mut vulkan_engine = VulkanRenderer::init();
+
+    // B. Build your Bevy App
+    let mut app = App::new();
+    
+    app
+        // Register your custom logic systems
+        .add_systems(Update, game_logic_system)
+        // Spawn initial entities
+        .setup(|world| {
+            world.spawn(Position { x: 0.0, y: 0.0 });
+        })
+        // C. Override Bevy's runner to use your custom Vulkan loop
+        .set_runner(move |mut app: App| {
+            
+            // This is your engine's actual main loop
+            while !vulkan_engine.should_close() {
+                // Handle OS/Window events
+                vulkan_engine.poll_events();
+
+                // Run Bevy's internal schedules (Update, PostUpdate, etc.)
+                app.update();
+
+                // Extract a direct read-only query from the world for Vulkan
+                let mut query_state = app.world_mut().query::<&Position>();
+                
+                // Render using your Vulkan backend
+                vulkan_engine.render_frame(&query_state);
+            }
+        });
+
+    // D. This starts your custom runner block defined above
+    app.run();
+}

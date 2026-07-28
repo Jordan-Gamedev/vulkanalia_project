@@ -1,7 +1,10 @@
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::time::Instant;
 
+use bevy_app::{Update};
+use bevy_ecs::prelude::*;
+use std::time::Instant;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia_project::components::render::Render;
 use vulkanalia_project::engine::App;
@@ -19,6 +22,7 @@ fn main() {
     let duration = start.elapsed();
     println!("Creating app took: {:?}", duration);
 
+    let mut bevy_app = bevy_app::App::new();
 
     let start = Instant::now();
 

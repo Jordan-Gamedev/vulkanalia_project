@@ -13,9 +13,9 @@ pub const START_ENUM_T: usize = 1;
 pub const END_ENUM_T: usize = 2;
 pub const COUNT_ENUM_T: usize = 2;
 
-// 682 B
+// 670 B
 pub const BLANK_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/blank_albedo.ktx2").as_slice());
-// 220.63 KiB
+// 221.05 KiB
 pub const CUTTLEFISH_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/cuttlefish_albedo.ktx2").as_slice());
 
 // ------------Model Vertices-----------

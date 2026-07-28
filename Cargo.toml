@@ -31,6 +31,10 @@ winres = "0.1.12"
 # Errors
 anyhow = "1.0.102"
 
+# Ecs
+bevy_app = "0.19"
+bevy_ecs = "0.19"
+
 # Byte conversion
 bytemuck = { version = "1.25.0", features = ["derive"] }
 
@@ -52,6 +56,9 @@ pretty_env_logger = "0.5.0"
 
 # Parallel processing
 rayon = "1.12.0"
+
+# Jolt Physics
+rolt = "0.2.0"
 
 # Enum converter
 strum = { version = "0.27.2", features = ["derive"]}

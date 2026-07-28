@@ -262,13 +262,14 @@ fn convert_textures() -> Result<()> {
         _ => { "ktx" }
     };
     let base_args = vec![
-        "--genmipmap",
-        "--filter", "mitchell",
-        "--t2"
+        "create",
+        "--generate-mipmap",
+        "--mipmap-filter", "mitchell",
+        "--format", "R8G8B8A8_SRGB",
     ];
 
     let etc1s_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { vec!["--clevel", "5"] } else { vec!["--clevel", "1"] };
-    let uastc_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { vec!["--zcmp", "16"] } else { vec!["--zcmp", "3"] };
+    let uastc_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { vec!["--zstd", "16"] } else { vec!["--zstd", "3"] };
 
     let mut failed_conversions: Vec<&str> = Vec::new();
 
@@ -277,16 +278,16 @@ fn convert_textures() -> Result<()> {
 
         let encode_args = match tex_path {
             s if s.contains("_albedo") => {
-                vec!["--encode", "uastc", "--uastc_quality", "3", "--uastc_rdo_l", "1.0", uastc_quality[0], uastc_quality[1]]
+                vec!["--encode", "uastc", "--uastc-quality", "3", "--uastc-rdo", "--uastc-rdo-l", "1.0", uastc_quality[0], uastc_quality[1]]
             },
             s if s.contains("_normal") => {
-                vec!["--encode", "uastc", "--uastc_quality", "4", "--uastc_rdo_l", "0.75", uastc_quality[0], uastc_quality[1]]
+                vec!["--encode", "uastc", "--uastc-quality", "4", "--uastc-rdo", "--uastc-rdo-l", "0.75", uastc_quality[0], uastc_quality[1]]
             },
             s if s.contains("_metallic") || s.contains("_roughness") => {
                 vec!["--encode", "etc1s", "--qlevel", "128", etc1s_quality[0], etc1s_quality[1]]
             },
             s if s.contains("_ao") => {
-                vec!["--encode", "uastc", "--uastc_quality", "2", "--uastc_rdo_l", "2.0", uastc_quality[0], uastc_quality[1]]
+                vec!["--encode", "uastc", "--uastc-quality", "2", "--uastc-rdo", "--uastc-rdo-l", "2.0", uastc_quality[0], uastc_quality[1]]
             },
             s if s.contains("_emissive") => {
                 vec!["--encode", "etc1s", "--qlevel", "64", etc1s_quality[0], etc1s_quality[1]]
@@ -299,8 +300,8 @@ fn convert_textures() -> Result<()> {
         let mut final_args = base_args.clone();
         final_args.extend(encode_args);
         let file_output = format!("{}.ktx2", tex_path.split(".").next().unwrap());
-        final_args.push(file_output.as_str());
         final_args.push(tex_path);
+        final_args.push(file_output.as_str());
 
         match Command::new(ktx_command).args(final_args).output() {
                 Ok(m) => {
