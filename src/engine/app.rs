@@ -9,7 +9,6 @@
 
 use anyhow::Result;
 use vulkanalia::vk::DeviceV1_0;
-use crate::ecs::World;
 use crate::engine::texture_engine::SamplerContents;
 use crate::engine::{CommandEngine, CommandEngineBuilder};
 use crate::engine::DeviceContext;
@@ -122,8 +121,8 @@ impl App {
         Ok(app)
     }
 
-    pub fn run(&mut self) {
-        PresentEngine::update_window(self).unwrap();
+    pub fn run(&mut self, bevy_app: &mut bevy_app::App) {
+        PresentEngine::update_window(self, bevy_app).unwrap();
     }
 
     pub fn destroy(&mut self) {

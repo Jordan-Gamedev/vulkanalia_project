@@ -60,7 +60,7 @@ impl PresentEngine {
         }
     }
 
-    pub fn update_window(app: &mut App) -> Result<()> {
+    pub fn update_window(app: &mut App, bevy_app: &mut bevy_app::App) -> Result<()> {
         let event_loop = Arc::into_inner(
             Arc::make_mut(&mut app.present_engine).event_loop.take().unwrap()
         ).unwrap();
@@ -73,6 +73,8 @@ impl PresentEngine {
                     
                     // Render a frame if the Vulkan app is not being destroyed
                     WindowEvent::RedrawRequested if !elwt.exiting() => {
+                        // TODO: Jolt physics should update here as well
+                        bevy_app.update();
                         CommandEngine::render(app).unwrap();
                     },
                     

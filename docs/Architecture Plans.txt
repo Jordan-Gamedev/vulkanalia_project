@@ -1,45 +1,94 @@
-For 10,000s of entities, the "Gold Standard" architecture is a Bindless Indirect Multi-Draw approach.
-This combination virtually eliminates CPU bottlenecks by offloading command generation and resource binding to the GPU.
+Forward+ Pipeline
+______________________
 
-The "Best" Combined Architecture
-The most efficient modern Vulkan renderer for your scale typically combines these concepts as follows:
+┌─────────────┐
+│ GPU Culling │ → Cull geometry by GPU-visible surfaces first
+└──────┬──────┘
+       ▼
+┌──────────────┐
+│ Light Culling│ → Reduce active lights per object
+└──────┬───────┘
+       ▼
+┌─────────────┐
+│ Gather Pass │ → Gather info used for Reflections and Shadows
+└──────┬──────┘
+       │
+       ├── Planar Reflections gather
+       └── Shadow gather pass (for SSS depth prepass + volumetric shadows)
+       ▼
+┌──────────────┐
+│ Depth Prepass│ → SSS on important objects only + occluder depths
+└──────┬───────┘
+       ▼
+┌─────────────┐
+│ Base Pass   │ → Forward rendering of cullable geometry
+└──────┬──────┘
+       ▼
+┌─────────┐
+│ VXGI    │ → Render Voxel Global Illumination and Irradiance
+└──────┬──┘
+       ▼       
+┌──────────────────────┐
+│ Screen Space Shadows │ → Gather → Depth Prepass (SSS) → Render
+└──────┬───────────────┘
+       ▼
+┌─────────────┐
+│ Shadow Maps │ → High-res for close-to-medium distance geometry
+└──────┬──────┘
+       ▼
+┌───────────────┐
+│ Shadow Volumes│ → Medium-to-far + large-volumed objects (PSSM/CS)
+└──────┬────────┘
+       ▼
+┌─────────────┐
+│ Resolve Pass│ → Combine shadow depth/stencil into render target
+└──────┬──────┘
+       ▼
+┌───────────────────┐
+│ Planar Reflections│ → Render planar reflections
+└──────┬────────────┘
+       ▼
+┌──────────────────────┐
+│ Realtime Reflection  │ → Update/Read reflection probe & blend into scene
+│    Probe             │
+└──────┬───────────────┘
+       ▼
+┌────────────────┐
+│ Post Processing│ → Tone mapping, color grading, FXAA/SSAO
+└────────────────┘
+       │
+       ├── Bloom, Lens Flares
+       └── Tone Mapping and Color Grading
 
+Notes:
 
+Depth prepass only used on important objects (for SSS) and likely occluders/large objects
 
+Shadow scheme:
 
-Geometry: Use one large Vertex and Index buffer (Combined/Mega-Buffers).
-    Instead of binding a new buffer for every mesh,
-    you bind one mega-buffer at the start of the frame and use offsets in your draw calls.
-    
-Draw Strategy: Use Multi-Draw Indirect (MDI).
-    You record all your draw parameters into a single GPU buffer and issue one vkCmdDrawIndexedIndirect call.
-    This allows the GPU to process 10,000s of objects without any CPU-side loops.
-    
-Resource Access: Implement Bindless Rendering (Descriptor Indexing).
-    Instead of binding textures per object, put all textures into a single large array in a global descriptor set.
-    
-Metadata: Use Push Constants to pass a single uint "Global Offset" or "Object ID".
-    The shader uses this ID to look up the specific material, transform, and texture indices from global SSBOs.
-    
-Memory Management:
-    Static Entities: Keep in Device-Local memory. Upload once and never touch again.
-    Dynamic Entities: Keep in Host-Visible/Coherent memory (or use a staging buffer) for frequent CPU updates.
-    
+    Screen Space Shadows for important geometry
+    High Resolution shadow maps for close-to-medium distance geometry
+    Shadow volumes for medium-to-far geometry as well as large-volumed geometry
 
+Texture-based AO for the smooth cel-shaded rendering
 
+There will be one realtime reflection probe following the player for great close-medium distance reflections,
+while planar reflections will handle all the flat surface reflections
 
-Why this combination wins:
-    CPU Efficiency: Multithreading becomes simple because you only have one or two massive draw calls to record rather than 10,000.
-    GPU Throughput: The GPU never stalls waiting for the CPU to bind new textures or buffers.
-    Low Latency: Using Direct Buffer Addresses (VK_KHR_buffer_device_address) allows shaders to fetch vertex data directly without even needing bound vertex buffers.
+VXGI scheme:
 
-Mega-Buffers
-    Minimizes vkCmdBindVertexBuffers calls.
-Multi-Draw Indirect
-    Executes thousands of draws with 1 API call.
-Bindless Textures
-    Removes per-material texture binding overhead.
-Push Constants
-    Acts as the "key" to fetch all per-object data in the shader.
-Separate Heaps
-    Optimizes bandwidth for static vs. moving objects.
+       Use Sparse Voxel Octree Global Illumination (SVOGI)
+
+       Toroidal Addressing: Use modular arithmetic (wrap-around addressing) in your shader lookups for the voxel grid center.
+       This allows the physical memory allocation of the 3D texture to stay fixed while logically shifting around the player
+       
+       Partial Re-voxelization: Only re-voxelize the newly exposed slices/columns of the grid that enter the player's vicinity as they move,
+       leaving the overlapping interior intact.
+
+       Sparse Structures: Store your voxel representation in a Sparse Voxel Octree (SVO) or pointer-based lists.
+       Empty space consumes zero or negligible leaf allocations,
+       dropping memory overhead from gigabytes down to manageable megabytes depending on scene complexity
+
+       Use clipmap cascades for better detail close to the camera
+
+       Use wider voxel cones for smoother, less blocky diffuse lighting

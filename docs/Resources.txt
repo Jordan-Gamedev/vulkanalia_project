@@ -1,0 +1,7 @@
+Shadow Map/Volume Hybrid -> https://people.csail.mit.edu/ericchan/papers/smapSV/smapSV-electronic.pdf
+
+Blog on optimizing shadow volumes -> https://lukaskalbertodt.github.io/2023/11/18/tiled-soft-shadow-volumes.html
+
+
+
+Texture Compression and Packing Scheme Resource -> https://www.youtube.com/watch?v=N6sLJhI_Fmg&t=313s

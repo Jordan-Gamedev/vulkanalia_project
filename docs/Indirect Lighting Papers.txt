@@ -1,0 +1,56 @@
+Voxel-based indirect lighting and global illumination (GI) are foundational techniques in real-time computer graphics, primarily used to simulate how light bounces between surfaces without relying on heavy precomputation. [1]  
+Here are the key foundational and influential papers in voxel-based indirect lighting: 
+1. The Foundation: Voxel Cone Tracing 
+
+• "Interactive Indirect Illumination Using Voxel Cone Tracing" (2011) – Cyril Crassin, Fabrice Neyret, Sylvain Lefebvre, Elmar Eisemann 
+
+	• Why it’s important: This is the landmark paper that popularized voxel-based global illumination. It introduced a method to generate a Sparse Voxel Octree (SVO) dynamically on the GPU. By storing directional radiance and occlusion in the octree, it uses "cone tracing" to approximate diffuse and glossy indirect lighting in real-time. 
+	• See also: Crassin's 2011 follow-up insight paper, "Interactive Indirect Illumination Using Voxel-Based Cone Tracing: An Insight". [2, 3, 4, 5, 6]  
+
+2. Industry Adaptation (VXGI) 
+
+• "Dynamic Global Illumination for Games" (2015) – Evan Hart (NVIDIA) 
+
+	• Why it’s important: Presented at GDC, this paper outlines NVIDIA's VXGI (Voxel Cone Tracing) technology. It adapted Crassin's octree approach to use voxel clip-maps, which proved more practical and performant for large, open-world game environments. [5, 6, 7]  
+
+3. Voxel-Based Path Tracing & Multi-Bounce GI 
+
+• "VGI: Voxel-based Global Illumination" (2015) – Tobias Ritschel et al. 
+
+	• Why it’s important: This paper expanded on voxel techniques to create a scalable system that ranges from near-field ambient occlusion to multi-bounce global illumination using instant radiosity and path tracing. [8]  
+
+• "Octree-based Sparse Voxelization for Global Illumination" (2012) – J. Pantaleoni et al. 
+
+	• Why it’s important: Introduced a high-performance, GPU-accelerated sparse voxelization algorithm to calculate single and multi-bounce indirect illumination for complex dynamic scenes. [9]  
+
+4. Memory-Optimized & Hybrid Approaches 
+
+• "Layered Reflective Shadow Maps for Voxel-based Indirect Illumination" (2014) – Y. Dong et al. 
+
+	• Why it’s important: A method that decouples occlusion data (stored in voxels) from lighting/geometric data (stored in layered reflective shadow maps), drastically reducing memory footprint while allowing high-quality dynamic lighting. [10]  
+
+• "Lighting-driven voxels for memory-efficient computation of indirect illumination" (2016) – J. Dong et al. 
+
+	• Why it’s important: Addresses the memory issues of previous voxel algorithms by only generating voxels that significantly contribute to the indirect lighting, resulting in an order of magnitude of memory savings. [11]  
+
+• "Including Reflections in Real-Time Voxel-Based Global Illumination" (2025/2026) 
+
+	• Why it’s important: A recent optimization that combines voxelized scene representations with screen-space ray tracing to achieve high-quality diffuse and specular inter-reflections with better temporal stability and reduced memory overhead. [12]  
+
+Are you looking to implement one of these algorithms (such as Voxel Cone Tracing) in a specific game engine like Unity or Unreal Engine, or are you researching theoretical improvements to voxel representations? 
+
+AI responses may include mistakes.
+
+[1] https://kth.diva-portal.org/smash/get/diva2:1886204/FULLTEXT01.pdf
+[2] https://research.nvidia.com/sites/default/files/publications/GIVoxels-pg2011-authors.pdf
+[3] https://www.semanticscholar.org/paper/Interactive-indirect-illumination-using-voxel-based-Crassin-Neyret/77d5a5e51e4c4f057d54c2b443a1fbef4553034e
+[4] https://dl.acm.org/doi/abs/10.1145/2037826.2037853
+[5] https://maverick.inria.fr/Publications/2011/CNSGE11a/GIVoxels_Siggraph_Talk.pdf
+[6] https://www.youtube.com/watch?v=dQSzmngTbtw
+[7] https://docs.huihoo.com/gputechconf/gtc2015/S5670-NVIDIA-VXGI-Dynamic-Global-Illumination-for-Games.pdf
+[8] https://www2.in.tu-clausthal.de/~cgstore/publications/old/VoxelGI.pdf
+[9] https://developer.download.nvidia.com/assets/events/GDC15/GEFORCE/VXGI_Dynamic_Global_Illumination_GDC15.pdf
+[10] https://diglib.eg.org/handle/10.2312/hpg.20141100.117-125
+[11] https://dl.acm.org/doi/10.1007/s00371-016-1235-y
+[12] https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5220480
+

@@ -27,7 +27,15 @@ Models
 
 
 
-No need to allocate shadow maps when shadow volumes are an option!
+Incredible shadows:
+
+    Screen Space Shadows for important geometry
+    High Resolution shadow maps for close-to-medium distance geometry
+    Shadow volumes for medium-to-far geometry as well as large-volumed geometry
+
+Shadow maps are terrible for microdetail shadows, large shadows, and shadows that are too far away
+SSS takes care of microdetail shadows
+Shadow volumes takes care of shadows that shadow maps would normally make blocky and low resolution
 
 Blog on optimizing shadow volumes -> https://lukaskalbertodt.github.io/2023/11/18/tiled-soft-shadow-volumes.html
 

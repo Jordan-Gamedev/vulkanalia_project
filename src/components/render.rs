@@ -1,10 +1,11 @@
 use anyhow::{Result};
+use bevy_ecs::component::Component;
 use glam::{Quat, Vec3};
 use std::sync::Arc;
 
-use crate::{ecs::Component, engine::{ModelEngine, model_engine::QuantizedModelMatrix, texture_engine::Material}, resources::AssetId};
+use crate::{engine::{ModelEngine, model_engine::QuantizedModelMatrix, texture_engine::Material}, resources::AssetId};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Component)]
 pub struct Render {
     pub model_vertices: AssetId, // An asset reference to the chosen model's vertices
     pub model_indices: AssetId, // An asset reference to the chosen model's indices
