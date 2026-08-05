@@ -36,7 +36,7 @@ pub struct Buffer<T: Clone + std::fmt::Debug + Default> {
 
 impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     pub fn new(
-        device_context: DeviceContext,
+        device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         initial_capacity: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
@@ -88,7 +88,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 // Copy (device local)
 
                 Buffer::<T>::copy_buffer(
-                    device_context,
+                    &device_context,
                     command_pool,
                     staging_buffer,
                     device_buffer,
@@ -170,7 +170,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
     pub fn recreate(
         &mut self,
-        device_context: DeviceContext,
+        device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         contents: Vec<T>,
     ) {
@@ -199,14 +199,14 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
     pub fn copy(
         &self,
-        device_context: DeviceContext,
+        device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         destination: vk::Buffer,
         size: vk::DeviceSize,
     ) -> Result<()> {
         unsafe {
             let command_buffer =
-                begin_single_time_commands(command_pool, device_context.device.clone())?;
+                begin_single_time_commands(command_pool, device_context.clone().device)?;
 
             let regions = vk::BufferCopy::builder().size(size);
             device_context.device.cmd_copy_buffer(
@@ -219,8 +219,8 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             end_single_time_commands(
                 command_pool,
                 command_buffer,
-                device_context.device,
-                device_context.device_queue_handle,
+                device_context.device.clone(),
+                device_context.device_queue_handle.clone(),
             )?;
 
             Ok(())
@@ -229,7 +229,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
     pub fn get_buffer_items(
         &self,
-        device_context: DeviceContext,
+        device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         include_empty: bool,
     ) -> Result<Vec<T>> {
@@ -254,7 +254,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
             // Copy buffer contents to staging buffer to make the contents readable
             Buffer::<T>::copy_buffer(
-                device_context.clone(),
+                device_context,
                 command_pool,
                 self.buffer,
                 staging_buffer,
@@ -288,7 +288,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
     pub fn add_items(
         &mut self,
-        device_context: DeviceContext,
+        device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         mut items: Vec<T>,
     ) -> Result<()> {
@@ -304,7 +304,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         if items.len() > 0 {
             // Get items from current buffer
             let mut total_items: Vec<T> =
-                self.get_buffer_items(device_context.clone(), command_pool, false)?;
+                self.get_buffer_items(device_context, command_pool, false)?;
 
             // Combine old and new items
             total_items.extend(items);
@@ -317,7 +317,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
     pub fn remove_items(
         &mut self,
-        device_context: DeviceContext,
+        device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         start_remove_index: u32,
         stop_remove_index: u32,
@@ -351,7 +351,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             if num_empty_end_indices >= self.alloc_dealloc_threshold {
                 // Get items from current buffer
                 let mut total_items: Vec<T> =
-                    self.get_buffer_items(device_context.clone(), command_pool, true)?;
+                    self.get_buffer_items(device_context, command_pool, true)?;
 
                 for _ in furthest_used_index + 1..=furthest_empty_index {
                     total_items.pop();
@@ -366,7 +366,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         } else {
             // Get items from current buffer
             let mut total_items: Vec<T> =
-                self.get_buffer_items(device_context.clone(), command_pool, false)?;
+                self.get_buffer_items(device_context, command_pool, false)?;
 
             // Remove in between items
             total_items.drain(start_remove_index as usize..stop_remove_index as usize);
@@ -381,7 +381,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     /// Adds item and returns the index chosen to place the item
     pub fn add_item(
         &mut self,
-        context: DeviceContext,
+        context: &DeviceContext,
         command_pool: vk::CommandPool,
         item: T,
     ) -> Result<u32> {
@@ -398,7 +398,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
     pub fn remove_item_at(
         &mut self,
-        device_context: DeviceContext,
+        device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         index: u32,
     ) -> Result<()> {
@@ -446,7 +446,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     }
 
     pub fn copy_buffer(
-        device_context: DeviceContext,
+        device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         source: vk::Buffer,
         destination: vk::Buffer,
@@ -457,18 +457,15 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 begin_single_time_commands(command_pool, device_context.device.clone())?;
 
             let regions = vk::BufferCopy::builder().size(size * size_of::<T>() as u64);
-            device_context.device.clone().cmd_copy_buffer(
-                command_buffer,
-                source,
-                destination,
-                &[regions],
-            );
+            device_context
+                .device
+                .cmd_copy_buffer(command_buffer, source, destination, &[regions]);
 
             end_single_time_commands(
                 command_pool,
                 command_buffer,
-                device_context.device,
-                device_context.device_queue_handle,
+                device_context.device.clone(),
+                device_context.device_queue_handle.clone(),
             )?;
 
             Ok(())

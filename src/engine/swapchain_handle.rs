@@ -1,5 +1,6 @@
 use vulkanalia::prelude::v1_0::*;
 
+#[derive(Clone)]
 pub struct SwapchainHandle {
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,

@@ -1,28 +1,16 @@
-
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 
 use bevy_app::{Startup, Update};
 use bevy_ecs::prelude::*;
-use std::time::Instant;
-use vulkanalia::prelude::v1_0::*;
-use vulkanalia_project::components::render::Render;
-use vulkanalia_project::engine::App;
-use vulkanalia_project::engine::texture_engine::{Material, SamplerContents};
-use vulkanalia_project::resources::AssetId;
+use vulkanalia_project::engine::VulkanRenderer;
 
 // Runs exactly once at startup
-fn init_spawn(mut commands: Commands) {
+fn init_spawn(mut commands: Commands) {}
 
-}
-
-fn gameplay_update(mut commands: Commands) {
-
-}
+fn gameplay_update(mut commands: Commands) {}
 
 fn main() {
-
-    let mut vulkan_app = App::new().unwrap();
+    let mut vulkan_renderer = VulkanRenderer::new().unwrap();
 
     let mut bevy_app = bevy_app::App::new();
 
@@ -30,9 +18,9 @@ fn main() {
         .add_systems(Startup, init_spawn)
         .add_systems(Update, gameplay_update)
         .set_runner(move |mut bevy_app: bevy_app::App| {
-        vulkan_app.run(&mut bevy_app);
-        bevy_app.should_exit().unwrap()
-    });
+            vulkan_renderer.run(&mut bevy_app);
+            bevy_app.should_exit().unwrap()
+        });
 
     bevy_app.run();
 

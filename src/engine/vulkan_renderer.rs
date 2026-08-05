@@ -7,23 +7,37 @@
     clippy::unnecessary_wraps
 )]
 
+use crate::engine::CommandHandle;
 use crate::engine::DescriptorHandle;
 use crate::engine::DeviceContext;
 use crate::engine::DeviceQueueHandle;
+use crate::engine::IndirectDrawBuffer;
 use crate::engine::IndirectDrawData;
+use crate::engine::InstanceBuffer;
 use crate::engine::Mesh;
+use crate::engine::ModelHandle;
 use crate::engine::PerInstanceData;
+use crate::engine::PresentHandle;
+use crate::engine::PushConstant;
 use crate::engine::QuantizedModelMatrix;
 use crate::engine::QuantizedVertex;
+use crate::engine::RenderPipelineHandle;
+use crate::engine::SamplerContents;
+use crate::engine::SamplerUsage;
 use crate::engine::SwapchainHandle;
 use crate::engine::SyncHandle;
 use crate::engine::Texture;
+use crate::engine::TextureHandle;
+use crate::engine::TextureUsage;
 use crate::engine::UniformBufferObject;
 use crate::engine::WindowHandle;
 use crate::engine::buffers::Buffer;
 use crate::resources::AssetId;
+use crate::resources::get_asset_from_id;
 use anyhow::{Result, anyhow};
 use bytemuck::Zeroable;
+use glam::Quat;
+use glam::Vec3;
 use glam::{Mat4, vec3};
 use log::*;
 use std::collections::HashMap;
@@ -32,6 +46,7 @@ use std::f32::consts::PI;
 use std::ffi::CStr;
 use std::fmt::Debug;
 use std::os::raw::c_void;
+use std::ptr::copy_nonoverlapping as memcpy;
 use std::sync::Arc;
 use thiserror::Error;
 use vulkanalia::Version;
@@ -46,55 +61,20 @@ use winit::event::{Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, Window, WindowBuilder};
 
+/// The maximum number of frames that can be processed concurrently
+const MAX_FRAMES_IN_FLIGHT: u32 = 4;
+
 #[derive(Debug, Error)]
 #[error("{0}")]
 struct SuitabilityError(&'static str);
 
 pub struct VulkanRenderer {
-    // Device Context
-    device_context: DeviceContext,
-
-    // Present Engine
-    pub window_handle: WindowHandle,
-    pub swapchain_handle: SwapchainHandle,
-    pub color_texture: Texture,
-    pub depth_texture: Texture,
-    pub msaa_samples: vk::SampleCountFlags,
-
-    // Render Pipeline Engine
-    pub base_render_pass: vk::RenderPass,
-    pub descriptor_handle: DescriptorHandle,
-    pub pipeline_layout: vk::PipelineLayout,
-    pub pipeline: vk::Pipeline,
-    pub framebuffers: Vec<vk::Framebuffer>,
-
-    // Command Engine
-    pub command_pool: vk::CommandPool,
-    pub command_buffers: Vec<vk::CommandBuffer>,
-    pub sync_handle: SyncHandle
-    pub indirect_draw_buffer: vk::Buffer,
-    pub indirect_draw_buffer_memory: vk::DeviceMemory,
-    pub indirect_draw_buffer_mapped: *mut IndirectDrawData,
-    pub indirect_draw_capacity: usize,
-
-    pub instance_buffer: vk::Buffer,
-    pub instance_buffer_memory: vk::DeviceMemory,
-    pub instance_buffer_mapped: *mut PerInstanceData,
-    pub instance_capacity: usize,
-
-    // Model Engine
-    pub vertex_buffer: Buffer<QuantizedVertex>,
-    pub index_buffer: Buffer<u32>,
-    pub uniform_buffers: Vec<Buffer<UniformBufferObject>>,
-    pub dyn_model_matrix_buffer: Buffer<QuantizedModelMatrix>,
-    pub static_model_matrix_buffer: Buffer<QuantizedModelMatrix>,
-    pub loaded_models: HashMap<(AssetId, AssetId), Mesh>,
-
-    // Texture Engine
-    loaded_textures: HashMap<AssetId, Texture>,
-    available_texture_slots: Vec<u32>,
-    samplers: HashMap<SamplerContents, SamplerUsage>,
-    available_sampler_slots: Vec<u32>,
+    pub device_context: DeviceContext,
+    pub present_handle: PresentHandle,
+    pub render_pipeline_handle: RenderPipelineHandle,
+    pub command_handle: CommandHandle,
+    pub model_handle: ModelHandle,
+    pub texture_handle: TextureHandle,
 }
 
 impl VulkanRenderer {
@@ -110,66 +90,78 @@ impl VulkanRenderer {
             let (instance, messenger) = create_instance(&window, &entry)?;
 
             // Create window surface
-            let surface = create_surface(instance, &window)?;
+            let surface = create_surface(instance.clone(), &window)?;
+
+            // Finalize window handle
+            let window_handle = WindowHandle {
+                window,
+                event_loop: Some(Arc::new(event_loop)),
+                surface,
+                is_resized: false,
+            };
 
             // Get physical Device
-            let physical_device = pick_physical_device(instance, surface)?;
+            let physical_device = pick_physical_device(instance.clone(), surface)?;
 
             // Create logical device
-            let device = create_logical_device(messenger, &entry, &instance, physical_device, surface)?;
+            let device =
+                create_logical_device(messenger, &entry, &instance, physical_device, surface)?;
 
             // Get device queues
-            let device_queue_handle = get_device_graphics_present_queues(device, &instance, physical_device, &surface)?;
+            let device_queue_handle =
+                get_device_graphics_present_queues(device.clone(), &instance, physical_device, &surface)?;
 
-            // Create device context
+            // Finalize device context
             let device_context = DeviceContext {
                 messenger,
                 entry,
-                instance,
-                device,
+                instance: instance.clone(),
+                device: device.clone(),
                 physical_device,
-                device_queue_handle,
+                device_queue_handle: device_queue_handle.clone(),
             };
 
             // Set a starting value for multisample antialiasing
-            let msaa_samples = set_default_msaa(instance, physical_device);
+            let msaa_samples = set_default_msaa(&device_context);
 
             // Create the window's swapchain
-            let swapchain_handle = create_swapchain(
-                instance,
-                &window,
-                physical_device,
-                device,
-                surface,
-                device_queue_handle,
-            )?;
+            let swapchain_handle = create_swapchain(&device_context, &window_handle.window, surface)?;
 
             // Create screen color texture
-            let color_texture = create_color_texture(&swapchain_handle, msaa_samples, device)?;
+            let color_texture = create_color_texture(
+                &device_context,
+                &swapchain_handle,
+                msaa_samples
+            )?;
 
             // Create screen depth texture
             let depth_texture = create_depth_texture(
-                instance,
+                &device_context,
                 &swapchain_handle,
                 msaa_samples,
-                device,
-                physical_device,
             )?;
+
+            // Finalize present handle
+            let present_handle = PresentHandle {
+                window_handle,
+                swapchain_handle: swapchain_handle.clone(),
+                color_texture,
+                depth_texture,
+                msaa_samples,
+            };
 
             // Create base render pass
             let base_render_pass = create_base_render_pass(
-                instance,
-                device,
-                physical_device,
+                &device_context,
                 &swapchain_handle,
                 msaa_samples,
             )?;
 
             // Create a descriptor set layout for gpu objects
-            let descriptor_set_layout = create_descriptor_set_layout(device)?;
+            let descriptor_set_layout = create_descriptor_set_layout(device.clone())?;
 
             // Create a descriptor pool
-            let descriptor_pool = create_descriptor_pool(device)?;
+            let descriptor_pool = create_descriptor_pool(device.clone())?;
 
             // Create the render pipeline
             let (pipeline, pipeline_layout) = create_pipeline(
@@ -177,9 +169,7 @@ impl VulkanRenderer {
                 msaa_samples,
                 descriptor_set_layout,
                 base_render_pass,
-                &instance,
-                &device,
-                physical_device,
+                &device_context,
             )?;
 
             // Create framebuffers
@@ -188,57 +178,1363 @@ impl VulkanRenderer {
                 color_texture,
                 depth_texture,
                 base_render_pass,
-                device,
+                device.clone(),
             )?;
 
             // Create command pool
-            let command_pool = create_command_pool(device, device_queue_handle)?;
+            let command_pool = create_command_pool(device.clone(), device_queue_handle)?;
 
             // Create indirect buffer
-
-
+            let indirect_draw_buffer = IndirectDrawBuffer::new(&device_context)?;
 
             // Create instance buffer
-
-
+            let instance_buffer = InstanceBuffer::new(&device_context)?;
 
             // Create mesh buffers
-            let vertex_buffer: Buffer<QuantizedVertex> = Buffer::new(device_context.clone(), command_pool, 1, vk::BufferUsageFlags::VERTEX_BUFFER, vk::MemoryPropertyFlags::DEVICE_LOCAL, 0, Vec::new());
-            let index_buffer: Buffer<u32> = Buffer::new(device_context.clone(), command_pool, 1, vk::BufferUsageFlags::INDEX_BUFFER, vk::MemoryPropertyFlags::DEVICE_LOCAL, 0, Vec::new());
+            let (vertex_buffer, index_buffer) =
+                create_mesh_buffers(device_context.clone(), command_pool);
 
             // Create uniform buffer objects
-            let uniform_buffers = create_uniform_buffers(device_context.clone(), command_pool)?;
+            let uniform_buffers = create_uniform_buffers(&device_context, command_pool);
 
             // Create both dynamic and static model matrix storage buffers
-            let (dyn_model_matrx_buffer, static_model_matrx_buffer) = create_model_matrix_buffers(device_context.clone(), command_pool)?;
-        
+            let (dyn_model_matrix_buffer, static_model_matrix_buffer) =
+                create_model_matrix_buffers(device_context.clone(), command_pool);
+
+            // Finalize model handle
+            let model_handle = ModelHandle {
+                vertex_buffer,
+                index_buffer,
+                uniform_buffers,
+                dyn_model_matrix_buffer,
+                static_model_matrix_buffer,
+                loaded_models: HashMap::new(),
+            };
+
+            // Create starting texture handle
+            let texture_handle = TextureHandle::default();
+
             // Create descriptor sets
-            let descriptor_sets = create_descriptor_sets(device, descriptor_set_layout, descriptor_pool)?;
+            let descriptor_sets = create_descriptor_sets(
+                &device_context,
+                &model_handle,
+                &texture_handle,
+                &indirect_draw_buffer,
+                &instance_buffer,
+                descriptor_set_layout,
+                descriptor_pool,
+            )?;
+
+            // Finalize descriptor handle
+            let descriptor_handle = DescriptorHandle {
+                descriptor_set_layout,
+                descriptor_pool,
+                descriptor_sets,
+            };
+
+            // Finalize render pipeline handle
+            let render_pipeline_handle = RenderPipelineHandle {
+                base_render_pass,
+                descriptor_handle,
+                pipeline,
+                pipeline_layout,
+                framebuffers: framebuffers.clone(),
+            };
 
             // Create command buffers
-            let command_buffers = create_command_buffers(device, command_pool, framebuffers.len());
+            let command_buffers = create_command_buffers(device.clone(), command_pool, framebuffers.len())?;
 
             // Create sync objects
             let sync_handle = create_sync_objects(device, &swapchain_handle)?;
-        }
 
-        Ok(app)
+            // Finalize command handle
+            let command_handle = CommandHandle {
+                command_pool,
+                command_buffers,
+                sync_handle,
+                indirect_draw_buffer,
+                instance_buffer,
+            };
+
+            Ok(Self {
+                device_context,
+                present_handle,
+                render_pipeline_handle,
+                command_handle,
+                model_handle,
+                texture_handle,
+            })
+        }
     }
 
-    pub fn run(&mut self, bevy_app: &mut bevy_app::App) {
-        PresentEngine::update_window(self, bevy_app).unwrap();
+    pub fn run(&mut self, bevy_app: &mut bevy_app::App) -> Result<()> {
+        let event_loop = Arc::into_inner(self.present_handle.window_handle.event_loop.take().unwrap()).unwrap();
+
+        event_loop.run(move |event, elwt| {
+            match event {
+                // Request a redraw after all events are processed
+                Event::AboutToWait => self
+                    .present_handle
+                    .window_handle
+                    .window
+                    .request_redraw(),
+                Event::WindowEvent { event, .. } => match event {
+                    // Render a frame if the Vulkan app is not being destroyed
+                    WindowEvent::RedrawRequested if !elwt.exiting() => {
+                        // TODO: Jolt physics should update here as well
+                        bevy_app.update();
+                        self.render().unwrap();
+                    }
+
+                    // Mark the window as having been resized
+                    WindowEvent::Resized(size) => {
+                        self.present_handle.window_handle.is_resized = true;
+                    }
+
+                    // Destroy the Vulkan app
+                    WindowEvent::CloseRequested => {
+                        self.present_handle.window_handle.window.set_visible(false);
+                        self.destroy();
+                        elwt.exit();
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        })?;
+
+        Ok(())
     }
 
     pub fn destroy(&mut self) {
-        let device = self.device_context.as_ref().clone().unwrap().device;
+        let device = self.device_context.device.clone();
+        
         unsafe {
             device.device_wait_idle().unwrap();
+
+            // Present Handle
+
+            self.present_handle.depth_texture.destroy(device.clone());
+            self.present_handle.color_texture.destroy(device.clone());
+            self.present_handle.swapchain_handle.image_views
+                .iter()
+                .for_each(|v| device.destroy_image_view(*v, None));
+            device.destroy_swapchain_khr(self.present_handle.swapchain_handle.swapchain, None);
+        
+            // Render Pipeline Handle
+
+            self.render_pipeline_handle.framebuffers
+                .iter()
+                .for_each(|f| device.destroy_framebuffer(*f, None));
+            device.destroy_pipeline(self.render_pipeline_handle.pipeline, None);
+            device.destroy_pipeline_layout(self.render_pipeline_handle.pipeline_layout, None);
+            device.destroy_descriptor_pool(self.render_pipeline_handle.descriptor_handle.descriptor_pool, None);
+            device.destroy_render_pass(self.render_pipeline_handle.base_render_pass, None);
+            device.destroy_descriptor_set_layout(self.render_pipeline_handle.descriptor_handle.descriptor_set_layout, None);
+        
+            // Command Handle
+
+            self.command_handle.sync_handle.in_flight_fences
+                .iter()
+                .for_each(|f| device.destroy_fence(*f, None));
+            self.command_handle.sync_handle.render_finished_semaphores
+                .iter()
+                .for_each(|f| device.destroy_semaphore(*f, None));
+            self.command_handle.sync_handle.image_available_semaphores
+                .iter()
+                .for_each(|f| device.destroy_semaphore(*f, None));
+            if self.command_handle.command_pool != vk::CommandPool::null() && !self.command_handle.command_buffers.is_empty() {
+                device.free_command_buffers(self.command_handle.command_pool, &self.command_handle.command_buffers);
+            }
+            if self.command_handle.indirect_draw_buffer.mapped != std::ptr::null_mut()
+                && self.command_handle.indirect_draw_buffer.memory != vk::DeviceMemory::null()
+            {
+                device.unmap_memory(self.command_handle.indirect_draw_buffer.memory);
+            }
+            if self.command_handle.instance_buffer.mapped != std::ptr::null_mut()
+                && self.command_handle.instance_buffer.memory != vk::DeviceMemory::null()
+            {
+                device.unmap_memory(self.command_handle.instance_buffer.memory);
+            }
+            if self.command_handle.indirect_draw_buffer.buffer != vk::Buffer::null() {
+                device.destroy_buffer(self.command_handle.indirect_draw_buffer.buffer, None);
+            }
+            if self.command_handle.indirect_draw_buffer.memory != vk::DeviceMemory::null() {
+                device.free_memory(self.command_handle.indirect_draw_buffer.memory, None);
+            }
+            if self.command_handle.instance_buffer.buffer != vk::Buffer::null() {
+                device.destroy_buffer(self.command_handle.instance_buffer.buffer, None);
+            }
+            if self.command_handle.instance_buffer.memory != vk::DeviceMemory::null() {
+                device.free_memory(self.command_handle.instance_buffer.memory, None);
+            }
+            if self.command_handle.command_pool != vk::CommandPool::null() {
+                device.destroy_command_pool(self.command_handle.command_pool, None);
+            }
+
+            // Model Handle
+
+            self.model_handle.vertex_buffer.destroy(&device);
+            self.model_handle.index_buffer.destroy(&device);
+            self.model_handle.loaded_models.clear();
+            self.model_handle.uniform_buffers
+                .iter_mut()
+                .for_each(|b| b.destroy(&device));
+            self.model_handle.dyn_model_matrix_buffer.destroy(&device);
+            self.model_handle.static_model_matrix_buffer.destroy(&device);
+
+            // Texture Handle
+
+            self.texture_handle.loaded_textures.values().for_each(|t| {
+                t.texture.destroy(device.clone());
+            });
+            self.texture_handle.samplers
+                .iter()
+                .for_each(|(_, s)| device.destroy_sampler(s.sampler, None));
+            self.texture_handle.samplers.clear();
+            self.texture_handle.loaded_textures.clear();
+            self.texture_handle.available_texture_slots.clear();
+            self.texture_handle.samplers.clear();
+            self.texture_handle.available_sampler_slots.clear();
         }
-        Arc::make_mut(&mut self.present_engine).destroy(device.clone());
-        Arc::make_mut(&mut self.rp_engine).destroy(device.clone());
-        Arc::make_mut(&mut self.command_engine).destroy(device.clone());
-        Arc::make_mut(&mut self.model_engine).destroy(device.clone());
-        Arc::make_mut(&mut self.texture_engine).destroy(device.clone());
+    }
+
+    pub fn add_instance(
+        &mut self,
+        vertex_asset_id: AssetId,
+        index_asset_id: AssetId,
+        texture_asset_id: AssetId,
+        sampler_contents: SamplerContents,
+        model_matrix_info: u32,
+    ) -> Result<*mut PerInstanceData> {
+        // Potentially load model and texture
+        self.load_model(
+            vertex_asset_id,
+            index_asset_id,
+        )?;
+        self.load_texture(texture_asset_id, sampler_contents)?;
+
+        // Get model that the instance uses
+        let model = self
+            .model_handle
+            .loaded_models
+            .get(&(vertex_asset_id, index_asset_id))
+            .unwrap()
+            .clone();
+
+        // Get bindless texture index
+        let tex_index = self
+            .get_texture_slot_index(texture_asset_id)
+            .unwrap_or(0);
+
+        // Get bindless sampler index
+        let sampler_index = self
+            .get_sampler_slot_index(sampler_contents)
+            .unwrap_or(0);
+
+        unsafe {
+            let mut affected_draw_data: Vec<*mut IndirectDrawData> = self
+                .model_handle
+                .loaded_models
+                .iter()
+                .filter(|&(_, m)| {
+                    m.indirect_draw_data_ptr.read().first_instance
+                        > model.indirect_draw_data_ptr.read().first_instance
+                })
+                .map(|(_, m)| m.indirect_draw_data_ptr)
+                .collect();
+
+            affected_draw_data
+                .sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
+
+            // Add one to the instance offset for those found in the buffer after the new instance
+            // and continuously swap beginnings of instance buffer sections to make room for new instance
+            if affected_draw_data.len() > 0 {
+                let mut saved_instance: PerInstanceData = self
+                    .command_handle
+                    .instance_buffer
+                    .mapped
+                    .add(affected_draw_data[0].read().first_instance as usize)
+                    .read();
+
+                for draw_data in affected_draw_data {
+                    let draw_data = draw_data.as_mut().unwrap();
+                    let next_instance_ptr = self
+                        .command_handle
+                        .instance_buffer
+                        .mapped
+                        .add((draw_data.first_instance + draw_data.instance_count) as usize);
+
+                    let next_instance = next_instance_ptr.read();
+                    *next_instance_ptr = saved_instance;
+                    saved_instance = next_instance;
+
+                    draw_data.first_instance += 1;
+                }
+            }
+
+            // Add instance to instance buffer
+            let new_instance = PerInstanceData {
+                model_matrix_info: model_matrix_info,
+                texture_index: tex_index,
+                sampler_index: sampler_index,
+                padding: 0,
+            };
+
+            let draw_data = model.indirect_draw_data_ptr.as_mut().unwrap();
+
+            let new_instance_ptr = self
+                .command_handle
+                .instance_buffer
+                .mapped
+                .add((draw_data.first_instance + draw_data.instance_count) as usize);
+
+            *new_instance_ptr = new_instance;
+            draw_data.instance_count += 1;
+
+            Ok(new_instance_ptr)
+        }
+    }
+
+    pub fn remove_instance(
+        &mut self,
+        vertex_asset_id: AssetId,
+        index_asset_id: AssetId,
+        texture_asset_id: AssetId,
+        sampler_contents: SamplerContents,
+        instance: *mut PerInstanceData,
+    ) -> Result<()> {
+        let temp_instance_model_info = unsafe { instance.read().model_matrix_info };
+
+        // Potentially unload model and texture
+        self.unload_model(vertex_asset_id, index_asset_id)?;
+        self.unload_texture(texture_asset_id, sampler_contents)?;
+
+        // Get model that the instance uses
+        let model = self
+            .model_handle
+            .loaded_models
+            .get(&(vertex_asset_id, index_asset_id))
+            .unwrap()
+            .clone();
+
+        let draw_data = unsafe { model.indirect_draw_data_ptr.as_mut().unwrap() };
+
+        unsafe {
+            // Replace the removed instance with the instance at the end of the instance buffer section
+            draw_data.instance_count -= 1;
+            *instance = self
+                .command_handle
+                .instance_buffer
+                .mapped
+                .add((draw_data.first_instance + draw_data.instance_count) as usize)
+                .read();
+
+            // Get draw datas affected by this removal
+            let mut affected_draw_data: Vec<*mut IndirectDrawData> = self
+                .model_handle
+                .loaded_models
+                .iter()
+                .filter(|&(_, m)| {
+                    m.indirect_draw_data_ptr.read().first_instance > draw_data.first_instance
+                })
+                .map(|(_, m)| m.indirect_draw_data_ptr)
+                .collect();
+
+            affected_draw_data
+                .sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
+
+            // Remove one from the instance offset for those found in the buffer after the new instance
+            // and continuously overwrite ends of instance buffer sections with the next ends to cover the empty instance
+            let mut instance_to_overwrite: *mut PerInstanceData = self
+                .command_handle
+                .instance_buffer
+                .mapped
+                .add((draw_data.first_instance + draw_data.instance_count) as usize);
+            for draw_data in affected_draw_data {
+                let draw_data = draw_data.as_mut().unwrap();
+                draw_data.first_instance -= 1;
+
+                let this_instance = self
+                    .command_handle
+                    .instance_buffer
+                    .mapped
+                    .add((draw_data.first_instance + draw_data.instance_count) as usize);
+
+                *instance_to_overwrite = this_instance.read();
+                *this_instance = PerInstanceData {
+                    model_matrix_info: u32::MAX,
+                    texture_index: u32::MAX,
+                    sampler_index: u32::MAX,
+                    padding: u32::MAX,
+                };
+                instance_to_overwrite = this_instance;
+            }
+
+            // Unload model if there are no more instances using it
+            if draw_data.instance_count == 0 {
+                let mut last_draw_data: *mut IndirectDrawData = std::ptr::null_mut();
+                for i in (0..self.command_handle.indirect_draw_buffer.capacity).rev() {
+                    let draw_data = self.command_handle.indirect_draw_buffer.mapped.add(i);
+                    if draw_data.read().instance_count > 0 {
+                        last_draw_data = draw_data;
+                        break;
+                    }
+                }
+
+                self.model_handle
+                    .loaded_models
+                    .iter_mut()
+                    .find(|(_, m)| m.indirect_draw_data_ptr == last_draw_data)
+                    .map(|(_, m)| m.indirect_draw_data_ptr = model.indirect_draw_data_ptr);
+
+                *model.indirect_draw_data_ptr = last_draw_data.read();
+                *last_draw_data = IndirectDrawData::zeroed();
+
+                self.model_handle
+                    .loaded_models
+                    .remove(&(vertex_asset_id, index_asset_id));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn create_model_matrix(
+        &mut self,
+        matrix: QuantizedModelMatrix,
+        is_static: bool,
+    ) -> Result<u32> {
+        if is_static {
+            let prev_buffer = self.model_handle.static_model_matrix_buffer.buffer;
+            let chosen_index = self.model_handle.static_model_matrix_buffer.add_item(
+                &self.device_context,
+                self.command_handle.command_pool,
+                matrix,
+            )?;
+            let new_buffer = self.model_handle.static_model_matrix_buffer.buffer;
+
+            if prev_buffer != new_buffer {
+                self.update_model_matrix_buffer_descriptors()?;
+            }
+            return Ok(chosen_index);
+        } else {
+            let prev_buffer = self.model_handle.dyn_model_matrix_buffer.buffer;
+            let chosen_index = self.model_handle.dyn_model_matrix_buffer.add_item(
+                &self.device_context,
+                self.command_handle.command_pool,
+                matrix,
+            )?;
+            let new_buffer = self.model_handle.dyn_model_matrix_buffer.buffer;
+
+            if prev_buffer != new_buffer {
+                self.update_model_matrix_buffer_descriptors()?;
+            }
+            Ok(chosen_index)
+        }
+    }
+
+    pub fn remove_model_matrix(&mut self, model_matrix_index: u32, is_static: bool) -> Result<()> {
+        if is_static {
+            let prev_buffer = self.model_handle.static_model_matrix_buffer.buffer;
+            self.model_handle
+                .static_model_matrix_buffer
+                .remove_item_at(&self.device_context, self.command_handle.command_pool, model_matrix_index)?;
+            let new_buffer = self.model_handle.static_model_matrix_buffer.buffer;
+
+            if prev_buffer != new_buffer {
+                self.update_model_matrix_buffer_descriptors()?;
+            }
+        } else {
+            let prev_buffer = self.model_handle.dyn_model_matrix_buffer.buffer;
+            self.model_handle.dyn_model_matrix_buffer.remove_item_at(
+                &self.device_context,
+                self.command_handle.command_pool,
+                model_matrix_index,
+            )?;
+            let new_buffer = self.model_handle.dyn_model_matrix_buffer.buffer;
+
+            if prev_buffer != new_buffer {
+                self.update_model_matrix_buffer_descriptors()?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_model_matrix(
+        &self,
+        model_matrix_index: u32,
+        is_static: bool,
+    ) -> QuantizedModelMatrix {
+        if is_static {
+            unsafe {
+                self.model_handle
+                    .static_model_matrix_buffer
+                    .mapped
+                    .add(model_matrix_index as usize)
+                    .read()
+            }
+        } else {
+            unsafe {
+                self.model_handle
+                    .dyn_model_matrix_buffer
+                    .mapped
+                    .add(model_matrix_index as usize)
+                    .read()
+            }
+        }
+    }
+
+    pub fn get_model_matrix_mut(
+        &self,
+        model_matrix_index: u32,
+        is_static: bool,
+    ) -> &mut QuantizedModelMatrix {
+        if is_static {
+            unsafe {
+                self.model_handle
+                    .static_model_matrix_buffer
+                    .mapped
+                    .add(model_matrix_index as usize)
+                    .as_mut()
+                    .unwrap()
+            }
+        } else {
+            unsafe {
+                self.model_handle
+                    .dyn_model_matrix_buffer
+                    .mapped
+                    .add(model_matrix_index as usize)
+                    .as_mut()
+                    .unwrap()
+            }
+        }
+    }
+
+    pub fn set_model_matrix(
+        &mut self,
+        model_matrix_index: u32,
+        position: Vec3,
+        rotation: Quat,
+        scale: Vec3,
+        is_static: bool,
+    ) -> Result<()> {
+        let buffer_ptr = if is_static {
+            self.model_handle.static_model_matrix_buffer.mapped
+        } else {
+            self.model_handle.dyn_model_matrix_buffer.mapped
+        };
+        let model_matrix = unsafe {
+            buffer_ptr
+                .add(model_matrix_index as usize)
+                .as_mut()
+                .unwrap()
+        };
+
+        model_matrix.position = position.to_array();
+        model_matrix.scale = scale.to_array();
+        let rotation_i16: [i16; 4] = [
+            (rotation.x * i16::MAX as f32) as i16,
+            (rotation.y * i16::MAX as f32) as i16,
+            (rotation.z * i16::MAX as f32) as i16,
+            (rotation.w * i16::MAX as f32) as i16,
+        ];
+        model_matrix.rotation = rotation_i16;
+
+        Ok(())
+    }
+
+    pub fn load_model(&mut self, vertex_asset_id: AssetId, index_asset_id: AssetId) -> Result<()> {
+        if vertex_asset_id == AssetId::None || index_asset_id == AssetId::None {
+            return Ok(());
+        }
+
+        // Do not load model if it is already loaded
+        if self
+            .model_handle
+            .loaded_models
+            .contains_key(&(vertex_asset_id, index_asset_id))
+        {
+            return Ok(());
+        }
+
+        // Get vertices
+
+        let vertex_asset = get_asset_from_id(vertex_asset_id);
+        let vertex_bytes: &[u8] = &vertex_asset.0[size_of::<u32>()..];
+        let vertex_count =
+            u32::from_be_bytes(vertex_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
+
+        let vertices: Vec<QuantizedVertex> =
+            match meshopt::decode_vertex_buffer(vertex_bytes, vertex_count) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(anyhow!("Failed to decode vertex buffer")),
+            };
+
+        // Get indices
+
+        let index_asset = get_asset_from_id(index_asset_id);
+        let index_bytes: &[u8] = &index_asset.0[size_of::<u32>()..];
+        let index_count =
+            u32::from_be_bytes(index_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
+        let indices: Vec<u32> = match meshopt::decode_index_buffer(index_bytes, index_count) {
+            Ok(indices) => indices,
+            Err(_) => return Err(anyhow!("Failed to decode index buffer")),
+        };
+
+        unsafe {
+            let prev_vertex_count = self.model_handle.vertex_buffer.element_count;
+            let prev_index_count = self.model_handle.index_buffer.element_count;
+
+            self.model_handle.vertex_buffer.add_items(
+                &self.device_context,
+                self.command_handle.command_pool,
+                vertices,
+            )?;
+
+            self.model_handle.index_buffer.add_items(
+                &self.device_context,
+                self.command_handle.command_pool,
+                indices,
+            )?;
+
+            let mesh = Mesh {
+                vertex_offset: prev_vertex_count,
+                vertex_length: vertex_count as u32,
+                index_offset: prev_index_count,
+                index_length: index_count as u32,
+                indirect_draw_data_ptr: self
+                    .command_handle
+                    .indirect_draw_buffer
+                    .mapped
+                    .add(self.model_handle.loaded_models.len()),
+            };
+
+            let mut last_draw_data: *mut IndirectDrawData = std::ptr::null_mut();
+            for i in (0..self.command_handle.indirect_draw_buffer.capacity).rev() {
+                let draw_data = self.command_handle.indirect_draw_buffer.mapped.add(i);
+                if draw_data.read().instance_count > 0 {
+                    last_draw_data = draw_data;
+                    break;
+                }
+            }
+
+            let mut first_instance: u32 = 0;
+            if !last_draw_data.is_null() {
+                first_instance =
+                    last_draw_data.read().first_instance + last_draw_data.read().instance_count;
+            }
+
+            *mesh.indirect_draw_data_ptr = IndirectDrawData {
+                index_count: index_count as u32,
+                instance_count: 0,
+                first_index: prev_index_count,
+                vertex_offset: prev_vertex_count as i32,
+                first_instance: first_instance,
+            };
+            self.model_handle
+                .loaded_models
+                .insert((vertex_asset_id, index_asset_id), mesh);
+        }
+
+        Ok(())
+    }
+
+    pub fn unload_model(&mut self, vertex_asset_id: AssetId, index_asset_id: AssetId) -> Result<()> {
+        if vertex_asset_id == AssetId::None || index_asset_id == AssetId::None {
+            return Ok(());
+        }
+
+        let unloading_model = self
+            .model_handle
+            .loaded_models
+            .get_mut(&(vertex_asset_id, index_asset_id))
+            .expect("Model not found")
+            .clone();
+
+        let fully_unloaded =
+            unsafe { unloading_model.indirect_draw_data_ptr.read().instance_count <= 1 };
+
+        if fully_unloaded {
+            self.model_handle.vertex_buffer.remove_items(
+                &self.device_context,
+                self.command_handle.command_pool,
+                unloading_model.vertex_offset,
+                unloading_model.vertex_offset + unloading_model.vertex_length,
+            )?;
+            self.model_handle.index_buffer.remove_items(
+                &self.device_context,
+                self.command_handle.command_pool,
+                unloading_model.index_offset,
+                unloading_model.index_offset + unloading_model.index_length,
+            )?;
+
+            // Update other model offsets
+            self.model_handle
+                .loaded_models
+                .values_mut()
+                .filter(|m| m.vertex_offset > unloading_model.vertex_offset)
+                .for_each(|m| {
+                    m.vertex_offset -= unloading_model.vertex_length;
+                    m.index_offset -= unloading_model.index_length;
+                    let draw_data = unsafe { m.indirect_draw_data_ptr.as_mut().unwrap() };
+                    draw_data.vertex_offset = m.vertex_offset as i32;
+                    draw_data.first_index = m.index_offset;
+                });
+        }
+
+        Ok(())
+    }
+
+    pub fn load_texture(&mut self, texture_asset_id: AssetId, sampler_contents: SamplerContents) -> Result<()> {
+        if texture_asset_id == AssetId::None {
+            return Ok(());
+        }
+
+        if let Some(texture) = self.texture_handle.loaded_textures.get_mut(&texture_asset_id) {
+            texture.instance_count += 1;
+            return Ok(());
+        }
+
+        let device_context = self.device_context.clone();
+
+        // Load
+
+        let texture = {
+            let mut texture =
+                ktx2_rw::Ktx2Texture::from_memory(get_asset_from_id(texture_asset_id).0)?;
+
+            // Try BC7 first, fall back to ASTC 4x4 if not supported
+            let transcode_format = if is_image_format_supported(
+                device_context.clone().instance,
+                device_context.physical_device,
+                vk::Format::BC7_SRGB_BLOCK,
+            ) {
+                info!("Using BC7 format for texture transcoding");
+                ktx2_rw::TranscodeFormat::Bc7Rgba
+            } else if is_image_format_supported(
+                device_context.clone().instance,
+                device_context.physical_device,
+                vk::Format::ASTC_4X4_SRGB_BLOCK,
+            ) {
+                info!("BC7 not supported, falling back to ASTC 4x4 for texture transcoding");
+                ktx2_rw::TranscodeFormat::Astc_4x4_Rgba
+            } else {
+                return Err(anyhow!(
+                    "Neither BC7 nor ASTC 4x4 compression formats are supported"
+                ));
+            };
+
+            texture
+                .transcode_basis(transcode_format)
+                .expect("Failed to transcode texture image format");
+            texture
+        };
+
+        let format = vk::Format::from_raw(texture.vk_format().as_raw() as i32);
+        let pixel_data = texture.get_image_data(0, 0, 0).unwrap();
+        let mipmap_levels = texture.levels();
+
+        // Update sampler contents mipmap levels
+        let mut sampler_contents = sampler_contents;
+        sampler_contents.mipmap_levels = mipmap_levels;
+
+        // Calculate total size for all mip levels and collect per-level data
+        let mut mip_sizes: Vec<usize> = Vec::with_capacity(mipmap_levels as usize);
+        let mut total_size: u64 = 0;
+        for level in 0..mipmap_levels {
+            let mip_pixel_data = texture.get_image_data(level, 0, 0).unwrap();
+            mip_sizes.push(mip_pixel_data.len());
+            total_size += mip_pixel_data.len() as u64;
+        }
+
+        // Create (staging)
+
+        let (staging_buffer, staging_buffer_memory) = Buffer::<*const c_void>::create_buffer(
+            &device_context,
+            total_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )?;
+
+        // Copy (staging)
+
+        unsafe {
+            let memory = device_context.clone().device.map_memory(
+                staging_buffer_memory,
+                0,
+                total_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+
+            // Copy each mip level into the staging buffer at the correct offset
+            let mut offset: usize = 0;
+            for level in 0..mipmap_levels as usize {
+                let mip_pixel_data = texture.get_image_data(level as u32, 0, 0).unwrap();
+                memcpy(
+                    mip_pixel_data.as_ptr(),
+                    memory.add(offset).cast(),
+                    mip_pixel_data.len(),
+                );
+                offset += mip_pixel_data.len();
+            }
+
+            device_context.clone().device.unmap_memory(staging_buffer_memory);
+        }
+
+        // Create (Image)
+
+        let (texture_image, texture_image_memory) = create_image(
+            device_context.clone(),
+            texture.width(),
+            texture.height(),
+            mipmap_levels,
+            vk::SampleCountFlags::_1,
+            format,
+            vk::ImageTiling::OPTIMAL,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        // Transition + Copy (image)
+
+        transition_image_layout(
+            device_context.clone(),
+            self.command_handle.command_pool,
+            texture_image,
+            format,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            mipmap_levels,
+        )?;
+
+        // Copy each mip level from the staging buffer into the corresponding image mip level
+        let command_buffer = begin_single_time_commands(self.command_handle.command_pool, device_context.clone().device)?;
+
+        let mut buffer_offset: u64 = 0;
+        let mut regions: Vec<vk::BufferImageCopy> = Vec::with_capacity(mipmap_levels as usize);
+        for level in 0..mipmap_levels {
+            let mip_width = (texture.width() >> level).max(1);
+            let mip_height = (texture.height() >> level).max(1);
+
+            let subresource = vk::ImageSubresourceLayers::builder()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(level)
+                .base_array_layer(0)
+                .layer_count(1)
+                .build();
+
+            let region = vk::BufferImageCopy::builder()
+                .buffer_offset(buffer_offset)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(subresource)
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D {
+                    width: mip_width,
+                    height: mip_height,
+                    depth: 1,
+                })
+                .build();
+
+            regions.push(region);
+
+            buffer_offset += mip_sizes[level as usize] as u64;
+        }
+
+        unsafe {
+            device_context.device.cmd_copy_buffer_to_image(
+                command_buffer,
+                staging_buffer,
+                texture_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &regions,
+            );
+        }
+
+        end_single_time_commands(self.command_handle.command_pool, command_buffer, device_context.device.clone(), device_context.clone().device_queue_handle)?;
+
+        transition_image_layout(
+            device_context.clone(),
+            self.command_handle.command_pool,
+            texture_image,
+            format,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            mipmap_levels,
+        )?;
+
+        // Cleanup
+
+        unsafe {
+            device_context.device.destroy_buffer(staging_buffer, None);
+            device_context.device.free_memory(staging_buffer_memory, None);
+        }
+
+        // Create view
+        let image_view = create_image_view(
+            device_context.clone().device,
+            texture_image,
+            format,
+            vk::ImageAspectFlags::COLOR,
+            mipmap_levels,
+        )?;
+
+        // Add one to the usage count if a sampler was found that already has required specifications, otherwise create sampler
+        let sampler = if let Some(usage) = self.texture_handle.samplers.get_mut(&sampler_contents) {
+            usage.instance_count += 1;
+            self.texture_handle.samplers[&sampler_contents].sampler
+        } else {
+            let sampler = create_sampler(device_context.clone().device, sampler_contents);
+
+            // Get sampler slot index
+            let slot_index: u32 = if self.texture_handle.available_sampler_slots.len() > 0 {
+                self.texture_handle.available_sampler_slots.pop().unwrap()
+            } else {
+                self.texture_handle.samplers.len() as u32
+            };
+            let sampler_usage = SamplerUsage {
+                slot_index,
+                sampler,
+                instance_count: 1,
+            };
+            self.texture_handle.samplers.insert(sampler_contents, sampler_usage);
+            update_bindless_sampler(
+                &device_context,
+                &self.render_pipeline_handle.descriptor_handle.descriptor_sets,
+                &self.texture_handle,
+                slot_index,
+                sampler,
+            )?;
+            sampler
+        };
+
+        // Add texture to array of textures
+        let slot_index: u32 = if self.texture_handle.available_texture_slots.len() > 0 {
+            self.texture_handle.available_texture_slots.pop().unwrap()
+        } else {
+            self.texture_handle.loaded_textures.len() as u32
+        };
+        self.texture_handle.loaded_textures.insert(
+            texture_asset_id,
+            TextureUsage {
+                texture: Texture {
+                    image: texture_image,
+                    image_memory: texture_image_memory,
+                    image_view,
+                },
+                slot_index,
+                instance_count: 1,
+            },
+        );
+
+        // Update bindless descriptor
+        update_bindless_texture(
+            &device_context,
+            &self.render_pipeline_handle.descriptor_handle.descriptor_sets,
+            &self.texture_handle,slot_index, image_view
+        )?;
+
+        Ok(())
+    }
+
+    pub fn unload_texture(
+        &mut self,
+        texture_asset_id: AssetId,
+        sampler_contents: SamplerContents,
+    ) -> Result<()> {
+        if texture_asset_id == AssetId::None {
+            return Ok(());
+        }
+
+        let (unloading_texture, fully_unloaded) =
+            if let Some(texture) = self.texture_handle.loaded_textures.get_mut(&texture_asset_id) {
+                texture.instance_count -= 1;
+                (*texture, texture.instance_count == 0)
+            } else {
+                return Err(anyhow!("Texture not found"));
+            };
+
+        if fully_unloaded {
+            self.texture_handle.loaded_textures.remove(&texture_asset_id);
+            self.texture_handle.available_texture_slots
+                .push(unloading_texture.slot_index);
+            unsafe {
+                self.device_context
+                    .device
+                    .destroy_image_view(unloading_texture.texture.image_view, None);
+                self.device_context.device.destroy_image(unloading_texture.texture.image, None);
+                self.device_context.device.free_memory(unloading_texture.texture.image_memory, None);
+
+                // Unload sampler if no more textures use this sampler
+                let sampler = self.texture_handle.samplers[&sampler_contents].sampler.clone();
+                let slot_index = self.texture_handle.samplers[&sampler_contents].slot_index;
+                let should_unload_sampler: bool =
+                    if let Some(usage) = self.texture_handle.samplers.get_mut(&sampler_contents) {
+                        usage.instance_count -= 1;
+                        usage.instance_count == 0
+                    } else {
+                        false
+                    };
+
+                if should_unload_sampler {
+                    self.device_context.device.destroy_sampler(sampler, None);
+                    self.texture_handle.samplers.remove(&sampler_contents);
+                    self.texture_handle.available_sampler_slots.push(slot_index);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_texture_slot_index(&self, texture_asset_id: AssetId) -> Option<u32> {
+        self.texture_handle.loaded_textures
+            .get(&texture_asset_id)
+            .map(|texture| texture.slot_index)
+    }
+
+    pub fn get_sampler_slot_index(&self, sampler_contents: SamplerContents) -> Option<u32> {
+        self.texture_handle.samplers.get(&sampler_contents).map(|s| s.slot_index)
+    }
+
+    /// Recreates the swapchain for the Vulkan app
+    #[rustfmt::skip]
+    fn recreate_swapchain(&mut self) -> Result<()> {
+        unsafe {
+            let size = self.present_handle.window_handle.window.inner_size();
+            if size.width == 0 || size.height == 0 {
+                return Ok(());
+            }
+
+            self.device_context.device.device_wait_idle()?;
+            self.destroy_swapchain();
+            
+            // Update presentation
+            self.present_handle.swapchain_handle = create_swapchain(&self.device_context, &self.present_handle.window_handle.window, self.present_handle.window_handle.surface)?;
+            self.present_handle.color_texture = create_color_texture(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
+            self.present_handle.depth_texture = create_depth_texture(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
+            
+            // Update ubos
+            self.model_handle.uniform_buffers = create_uniform_buffers(&self.device_context, self.command_handle.command_pool);
+
+            // Update render pipeline
+            self.render_pipeline_handle.base_render_pass = create_base_render_pass(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
+            self.render_pipeline_handle.descriptor_handle.descriptor_pool = create_descriptor_pool(self.device_context.device.clone())?;
+            (self.render_pipeline_handle.pipeline, self.render_pipeline_handle.pipeline_layout) = create_pipeline(
+                &self.present_handle.swapchain_handle,
+                self.present_handle.msaa_samples,
+                self.render_pipeline_handle.descriptor_handle.descriptor_set_layout,
+                self.render_pipeline_handle.base_render_pass,
+                &self.device_context,
+            )?;
+            self.render_pipeline_handle.framebuffers = create_framebuffers(
+                &self.present_handle.swapchain_handle,
+                self.present_handle.color_texture,
+                self.present_handle.depth_texture,
+                self.render_pipeline_handle.base_render_pass,
+                self.device_context.device.clone()
+            )?;
+            self.render_pipeline_handle.descriptor_handle.descriptor_sets = create_descriptor_sets(
+                &self.device_context,
+                &self.model_handle,
+                &self.texture_handle,
+                &self.command_handle.indirect_draw_buffer,
+                &self.command_handle.instance_buffer,
+                self.render_pipeline_handle.descriptor_handle.descriptor_set_layout,
+                self.render_pipeline_handle.descriptor_handle.descriptor_pool)?;
+
+            // Update command buffers
+            self.command_handle.command_buffers = create_command_buffers(self.device_context.device.clone(), self.command_handle.command_pool, self.render_pipeline_handle.framebuffers.len())?;
+            self.command_handle.sync_handle.images_in_flight.resize(self.present_handle.swapchain_handle.images.len(), vk::Fence::null());
+            
+            Ok(())
+        }
+    }
+
+    /// Destroys the parts of our Vulkan app related to the swapchain
+    #[rustfmt::skip]
+    fn destroy_swapchain(&mut self) {
+        unsafe {
+            let device = self.device_context.device.clone();
+            if self.command_handle.command_pool != vk::CommandPool::null() && !self.command_handle.command_buffers.is_empty() {
+                device.free_command_buffers(self.command_handle.command_pool, &self.command_handle.command_buffers);
+            }
+            device.destroy_descriptor_pool(self.render_pipeline_handle.descriptor_handle.descriptor_pool, None);
+            self.present_handle.depth_texture.destroy(device.clone());
+            self.present_handle.color_texture.destroy(device.clone());
+            self.render_pipeline_handle.framebuffers.iter().for_each(|f| device.destroy_framebuffer(*f, None));
+            device.destroy_pipeline(self.render_pipeline_handle.pipeline, None);
+            device.destroy_pipeline_layout(self.render_pipeline_handle.pipeline_layout, None);
+            device.destroy_render_pass(self.render_pipeline_handle.base_render_pass, None);
+            self.present_handle.swapchain_handle.image_views.iter().for_each(|v| device.destroy_image_view(*v, None));
+            device.destroy_swapchain_khr(self.present_handle.swapchain_handle.swapchain, None);
+            self.model_handle.uniform_buffers.iter_mut().for_each(|b| b.destroy(&device));
+            self.model_handle.uniform_buffers.clear();
+        }
+    }
+
+    /// Renders a frame for the Vulkan app
+    fn render(&mut self) -> Result<()> {
+        unsafe {
+            //let start = Instant::now();
+
+            let device = self.device_context.device.clone();
+
+            let size = self
+                .present_handle
+                .window_handle
+                .window
+                .inner_size();
+            if size.width == 0 || size.height == 0 {
+                return Ok(());
+            }
+
+            let in_flight_fence =
+                self.command_handle.sync_handle.in_flight_fences[self.command_handle.sync_handle.current_frame];
+
+            device.wait_for_fences(&[in_flight_fence], true, u64::MAX)?;
+
+            //println!("wait before swap took: {:?}", start.elapsed());
+            //let start = Instant::now();
+
+            let result = device.acquire_next_image_khr(
+                self.present_handle.swapchain_handle.swapchain,
+                u64::MAX,
+                self.command_handle.sync_handle.image_available_semaphores[self.command_handle.sync_handle.current_frame],
+                vk::Fence::null(),
+            );
+
+            let image_index = match result {
+                Ok((image_index, _)) => image_index as usize,
+                Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
+                    self.recreate_swapchain()?;
+                    return Ok(());
+                }
+                Err(e) => return Err(anyhow!(e)),
+            };
+
+            let image_in_flight = self.command_handle.sync_handle.images_in_flight[image_index];
+            if !image_in_flight.is_null() {
+                device.wait_for_fences(&[image_in_flight], true, u64::MAX)?;
+            }
+
+            self.command_handle.sync_handle.images_in_flight[image_index] = in_flight_fence;
+
+            //println!("Swapchain took: {:?}", start.elapsed());
+            //let start = Instant::now();
+
+            self.update_uniform_buffer(self.command_handle.sync_handle.current_frame)?;
+
+            //println!("Uniform buffer took: {:?}", start.elapsed());
+            //let start = Instant::now();
+
+            let (command_buffer, current_frame, indirect_draw_buffer, max_frames_in_flight) = {
+                (
+                    self.command_handle.command_buffers[image_index],
+                    self.command_handle.sync_handle.current_frame,
+                    self.command_handle.indirect_draw_buffer.buffer,
+                    self.command_handle.sync_handle.max_frames_in_flight,
+                )
+            };
+
+            // Commands
+
+            device.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
+
+            let info = vk::CommandBufferBeginInfo::builder();
+            device.begin_command_buffer(command_buffer, &info)?;
+
+            //println!("Draw, instance, and command buffer update took: {:?}", start.elapsed());
+            //let start = Instant::now();
+
+            let render_area = vk::Rect2D::builder()
+                .offset(vk::Offset2D::default())
+                .extent(self.present_handle.swapchain_handle.extent);
+
+            let color_clear_value = vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 1.0, 1.0],
+                },
+            };
+
+            let depth_clear_value = vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            };
+
+            let clear_values = &[color_clear_value, depth_clear_value];
+            let info = vk::RenderPassBeginInfo::builder()
+                .render_pass(self.render_pipeline_handle.base_render_pass)
+                .framebuffer(self.render_pipeline_handle.framebuffers[image_index])
+                .render_area(render_area)
+                .clear_values(clear_values);
+
+            //println!("Clearing took: {:?}", start.elapsed());
+            //let start = Instant::now();
+
+            device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.render_pipeline_handle.pipeline,
+            );
+
+            device.cmd_bind_vertex_buffers(
+                command_buffer,
+                0,
+                &[self.model_handle.vertex_buffer.buffer],
+                &[0],
+            );
+            device.cmd_bind_index_buffer(
+                command_buffer,
+                self.model_handle.index_buffer.buffer,
+                0,
+                vk::IndexType::UINT32,
+            );
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.render_pipeline_handle.pipeline_layout,
+                0,
+                &[self.render_pipeline_handle.descriptor_handle.descriptor_sets[current_frame]],
+                &[],
+            );
+
+            device.cmd_draw_indexed_indirect(
+                command_buffer,
+                indirect_draw_buffer,
+                0,
+                self.command_handle.indirect_draw_buffer.capacity as u32,
+                size_of::<IndirectDrawData>() as u32,
+            );
+
+            device.cmd_end_render_pass(command_buffer);
+            device.end_command_buffer(command_buffer)?;
+
+            //println!("Indirect drawing took: {:?}", start.elapsed());
+            //let start = Instant::now();
+
+            let wait_semaphores = &[self.command_handle.sync_handle.image_available_semaphores[current_frame]];
+            let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+            let command_buffers = &[command_buffer];
+            let signal_semaphores = &[self.command_handle.sync_handle.render_finished_semaphores[image_index]];
+            let submit_info = vk::SubmitInfo::builder()
+                .wait_semaphores(wait_semaphores)
+                .wait_dst_stage_mask(wait_stages)
+                .command_buffers(command_buffers)
+                .signal_semaphores(signal_semaphores);
+
+            device.reset_fences(&[in_flight_fence])?;
+
+            device.queue_submit(self.device_context.device_queue_handle.graphics_queue, &[submit_info], in_flight_fence)?;
+
+            //println!("Sem and fences took: {:?}", start.elapsed());
+            //let start = Instant::now();
+
+            let swapchains = &[self.present_handle.swapchain_handle.swapchain];
+            let image_indices = &[image_index as u32];
+            let present_info = vk::PresentInfoKHR::builder()
+                .wait_semaphores(signal_semaphores)
+                .swapchains(swapchains)
+                .image_indices(image_indices);
+
+            let result = device.queue_present_khr(self.device_context.device_queue_handle.present_queue, &present_info);
+
+            let is_changed = result == Ok(vk::SuccessCode::SUBOPTIMAL_KHR)
+                || result == Err(vk::ErrorCode::OUT_OF_DATE_KHR);
+
+            if self.present_handle.window_handle.is_resized || is_changed {
+                self.present_handle.window_handle.is_resized = false;
+                self.recreate_swapchain()?;
+            } else if let Err(e) = result {
+                return Err(anyhow!(e));
+            }
+
+            self.command_handle.sync_handle.current_frame = (current_frame + 1) % max_frames_in_flight;
+
+            //println!("Finishing took: {:?}", start.elapsed());
+
+            Ok(())
+        }
+    }
+
+    /// TEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMP
+    /// Updates the uniform buffer object for the Vulkan app
+    fn update_uniform_buffer(&self, frame_index: usize) -> Result<()> {
+        // MVP
+
+        let view = Mat4::look_at_rh(
+            vec3(2.0, 2.0, 2.0),
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 0.0, 1.0),
+        );
+
+        let mut proj = glam::Mat4::perspective_rh(
+            45.0 * DEG_TO_RAD,
+            self.present_handle.swapchain_handle.extent.width as f32
+                / self.present_handle.swapchain_handle.extent.height as f32,
+            0.1,
+            10.0,
+        );
+
+        proj.col_mut(1).y *= -1.0;
+
+        let ubo = UniformBufferObject { view, proj };
+
+        // Copy
+
+        unsafe {
+            memcpy(&ubo, self.model_handle.uniform_buffers[frame_index].mapped, 1);
+        }
+
+        Ok(())
+    }
+
+    fn update_model_matrix_buffer_descriptors(&self) -> Result<()> {
+        if self.render_pipeline_handle.descriptor_handle.descriptor_sets.is_empty() {
+            return Ok(());
+        }
+
+        for i in 0..MAX_FRAMES_IN_FLIGHT as usize {
+            let static_model_matrix_info = vk::DescriptorBufferInfo::builder()
+                .buffer(self.model_handle.static_model_matrix_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE);
+
+            let static_model_matrix_buffer_info = [static_model_matrix_info];
+            let static_model_matrix_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.render_pipeline_handle.descriptor_handle.descriptor_sets[i])
+                .dst_binding(2)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&static_model_matrix_buffer_info);
+
+            let dyn_model_matrix_info = vk::DescriptorBufferInfo::builder()
+                .buffer(self.model_handle.dyn_model_matrix_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE);
+
+            let dyn_model_matrix_buffer_info = [dyn_model_matrix_info];
+            let dyn_model_matrix_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.render_pipeline_handle.descriptor_handle.descriptor_sets[i])
+                .dst_binding(3)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&dyn_model_matrix_buffer_info);
+
+            unsafe {
+                self.device_context.device.update_descriptor_sets(
+                    &[static_model_matrix_write, dyn_model_matrix_write],
+                    &[] as &[vk::CopyDescriptorSet],
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -250,7 +1546,8 @@ impl VulkanRenderer {
 const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 
 /// The name of the validation layers
-const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
+const VALIDATION_LAYER: vk::ExtensionName =
+    vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 
 /// The required device extensions.
 const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
@@ -542,7 +1839,7 @@ extern "system" fn debug_callback(
     vk::FALSE
 }
 
-fn check_physical_device(
+pub fn check_physical_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
@@ -573,7 +1870,7 @@ fn check_physical_device(
     Ok(())
 }
 
-fn check_physical_device_extensions(
+pub fn check_physical_device_extensions(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
 ) -> Result<()> {
@@ -594,7 +1891,7 @@ fn check_physical_device_extensions(
     }
 }
 
-fn get_queue_family_indices(
+pub fn get_queue_family_indices(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     surface: &vk::SurfaceKHR,
@@ -706,11 +2003,8 @@ unsafe fn create_surface(instance: Instance, window: &Window) -> Result<vk::Surf
     )?)
 }
 
-fn set_default_msaa(
-    instance: Instance,
-    physical_device: vk::PhysicalDevice,
-) -> vulkanalia::vk::SampleCountFlags {
-    let max_msaa = get_max_msaa_samples(instance, physical_device);
+fn set_default_msaa(device_context: &DeviceContext) -> vulkanalia::vk::SampleCountFlags {
+    let max_msaa = get_max_msaa_samples(device_context.clone().instance, device_context.physical_device);
     let chosen_msaa = if max_msaa < vk::SampleCountFlags::_4 {
         max_msaa
     } else {
@@ -722,20 +2016,17 @@ fn set_default_msaa(
 }
 
 unsafe fn create_swapchain(
-    instance: Instance,
+    device_context: &DeviceContext,
     window: &Window,
-    physical_device: vk::PhysicalDevice,
-    device: Device,
     surface: vk::SurfaceKHR,
-    device_queue_handle: DeviceQueueHandle,
 ) -> Result<SwapchainHandle> {
     // Image
 
     let swapchain_capabilities =
-        instance.get_physical_device_surface_capabilities_khr(physical_device, surface)?;
+        device_context.instance.get_physical_device_surface_capabilities_khr(device_context.physical_device, surface)?;
 
-    let surface_format = get_swapchain_surface_format(instance, physical_device, surface);
-    let present_mode = get_swapchain_present_mode(instance, physical_device, surface);
+    let surface_format = get_swapchain_surface_format(device_context.clone().instance, device_context.physical_device, surface);
+    let present_mode = get_swapchain_present_mode(device_context.clone().instance, device_context.physical_device, surface);
     let swapchain_extent = get_swapchain_extent(window, swapchain_capabilities);
     let swapchain_format = surface_format.format;
 
@@ -747,11 +2038,11 @@ unsafe fn create_swapchain(
     }
 
     let mut queue_family_indices = vec![];
-    let image_sharing_mode = if device_queue_handle.graphics_queue_family_index
-        != device_queue_handle.present_queue_family_index
+    let image_sharing_mode = if device_context.device_queue_handle.graphics_queue_family_index
+        != device_context.device_queue_handle.present_queue_family_index
     {
-        queue_family_indices.push(device_queue_handle.graphics_queue_family_index);
-        queue_family_indices.push(device_queue_handle.present_queue_family_index);
+        queue_family_indices.push(device_context.device_queue_handle.graphics_queue_family_index);
+        queue_family_indices.push(device_context.device_queue_handle.present_queue_family_index);
         vk::SharingMode::CONCURRENT
     } else {
         vk::SharingMode::EXCLUSIVE
@@ -775,19 +2066,19 @@ unsafe fn create_swapchain(
         .clipped(true)
         .old_swapchain(vk::SwapchainKHR::null());
 
-    let swapchain = device.create_swapchain_khr(&info, None)?;
+    let swapchain = device_context.device.create_swapchain_khr(&info, None)?;
 
     // Images
 
-    let swapchain_images = device.get_swapchain_images_khr(swapchain)?;
+    let swapchain_images = device_context.device.get_swapchain_images_khr(swapchain)?;
 
     // Image Views
 
     let swapchain_image_views = swapchain_images
         .iter()
         .map(|i| {
-            TextureEngine::create_image_view(
-                device,
+            create_image_view(
+                device_context.device.clone(),
                 *i,
                 swapchain_format,
                 vk::ImageAspectFlags::COLOR,
@@ -806,14 +2097,14 @@ unsafe fn create_swapchain(
 }
 
 unsafe fn create_color_texture(
+    device_context: &DeviceContext,
     swapchain_handle: &SwapchainHandle,
     msaa_samples: vk::SampleCountFlags,
-    device: Device,
 ) -> Result<Texture> {
     // Image + Image Memory
 
-    let (color_image, color_image_memory) = TextureEngine::create_image(
-        context.clone(),
+    let (color_image, color_image_memory) = create_image(
+        device_context.clone(),
         swapchain_handle.extent.width,
         swapchain_handle.extent.height,
         1,
@@ -829,8 +2120,8 @@ unsafe fn create_color_texture(
 
     // Image View
 
-    let color_image_view = TextureEngine::create_image_view(
-        device,
+    let color_image_view = create_image_view(
+        device_context.clone().device,
         color_image,
         swapchain_handle.format,
         vk::ImageAspectFlags::COLOR,
@@ -845,18 +2136,16 @@ unsafe fn create_color_texture(
 }
 
 unsafe fn create_depth_texture(
-    instance: Instance,
+    device_context: &DeviceContext,
     swapchain_handle: &SwapchainHandle,
     msaa_samples: vk::SampleCountFlags,
-    device: Device,
-    physical_device: vk::PhysicalDevice,
 ) -> Result<Texture> {
     // Image + Image Memory
 
-    let format = get_depth_format(instance, physical_device)?;
+    let format = get_depth_format(device_context.clone().instance, device_context.physical_device)?;
 
-    let (depth_image, depth_image_memory) = TextureEngine::create_image(
-        context.clone(),
+    let (depth_image, depth_image_memory) = create_image(
+        device_context.clone(),
         swapchain_handle.extent.width,
         swapchain_handle.extent.height,
         1,
@@ -872,8 +2161,8 @@ unsafe fn create_depth_texture(
 
     // Image view
 
-    let depth_image_view = TextureEngine::create_image_view(
-        device,
+    let depth_image_view = create_image_view(
+        device_context.clone().device,
         depth_image,
         format,
         vk::ImageAspectFlags::DEPTH,
@@ -889,7 +2178,7 @@ unsafe fn create_depth_texture(
 
 // Helper Functions
 
-fn get_max_msaa_samples(
+pub fn get_max_msaa_samples(
     instance: Instance,
     physical_device: vk::PhysicalDevice,
 ) -> vk::SampleCountFlags {
@@ -910,7 +2199,7 @@ fn get_max_msaa_samples(
     .unwrap_or(vk::SampleCountFlags::_1)
 }
 
-unsafe fn get_swapchain_surface_format(
+pub unsafe fn get_swapchain_surface_format(
     instance: Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
@@ -941,7 +2230,7 @@ unsafe fn get_swapchain_surface_format(
 }
 
 #[rustfmt::skip]
-fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKHR) -> vk::Extent2D {
+pub fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKHR) -> vk::Extent2D {
     if capabilities.current_extent.width != u32::MAX {
         capabilities.current_extent
     } else {
@@ -958,7 +2247,7 @@ fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKH
     }
 }
 
-unsafe fn get_swapchain_present_mode(
+pub unsafe fn get_swapchain_present_mode(
     instance: Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
@@ -980,14 +2269,14 @@ unsafe fn get_swapchain_present_mode(
         .unwrap_or(vk::PresentModeKHR::FIFO)
 }
 
-fn get_depth_format(instance: Instance, physical_device: vk::PhysicalDevice) -> Result<vk::Format> {
+pub fn get_depth_format(instance: Instance, physical_device: vk::PhysicalDevice) -> Result<vk::Format> {
     let candidates = &[
         vk::Format::D32_SFLOAT,
         vk::Format::D32_SFLOAT_S8_UINT,
         vk::Format::D24_UNORM_S8_UINT,
     ];
 
-    TextureEngine::get_supported_format(
+    get_supported_image_format(
         instance,
         physical_device,
         candidates,
@@ -1033,15 +2322,10 @@ unsafe fn ensure_wayland_env() {}
 /// Maximum number of textures that can be loaded in memory at any one time
 const BINDLESS_TEXTURE_COUNT: u32 = 5_000;
 
-/// The maximum number of frames that can be processed concurrently
-const MAX_FRAMES_IN_FLIGHT: u32 = 4;
-
 // Build Functions
 
 unsafe fn create_base_render_pass(
-    instance: Instance,
-    device: Device,
-    physical_device: vk::PhysicalDevice,
+    device_context: &DeviceContext,
     swapchain_handle: &SwapchainHandle,
     msaa_samples: vk::SampleCountFlags,
 ) -> Result<vk::RenderPass> {
@@ -1058,7 +2342,7 @@ unsafe fn create_base_render_pass(
         .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
     let depth_stencil_attachment = vk::AttachmentDescription::builder()
-        .format(get_depth_format(instance, physical_device)?)
+        .format(get_depth_format(device_context.clone().instance, device_context.physical_device)?)
         .samples(msaa_samples)
         .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1132,7 +2416,7 @@ unsafe fn create_base_render_pass(
         .subpasses(subpasses)
         .dependencies(dependencies);
 
-    let render_pass = device.create_render_pass(&info, None)?;
+    let render_pass = device_context.device.create_render_pass(&info, None)?;
 
     Ok(render_pass)
 }
@@ -1260,10 +2544,14 @@ unsafe fn create_descriptor_pool(device: Device) -> Result<vk::DescriptorPool> {
 }
 
 unsafe fn create_descriptor_sets(
-    device: Device,
+    device_context: &DeviceContext,
+    model_handle: &ModelHandle,
+    texture_handle: &TextureHandle,
+    indirect_draw_buffer: &IndirectDrawBuffer,
+    instance_buffer: &InstanceBuffer,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-) -> Result<()> {
+) -> Result<Vec<vk::DescriptorSet>> {
     // Allocate
 
     let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT as usize];
@@ -1271,77 +2559,77 @@ unsafe fn create_descriptor_sets(
         .descriptor_pool(descriptor_pool)
         .set_layouts(&layouts);
 
-    let descriptor_sets = device.allocate_descriptor_sets(&info)?;
+    let descriptor_sets = device_context.device.allocate_descriptor_sets(&info)?;
 
     // Update
 
-    for i in 0..MAX_FRAMES_IN_FLIGHT {
+    for i in 0..MAX_FRAMES_IN_FLIGHT as usize {
         let info = vk::DescriptorBufferInfo::builder()
-            .buffer(model_engine.uniform_buffers[i].buffer)
+            .buffer(model_handle.uniform_buffers[i].buffer)
             .offset(0)
             .range(size_of::<UniformBufferObject>() as u64);
 
         let buffer_info = &[info];
         let ubo_write = vk::WriteDescriptorSet::builder()
-            .dst_set(self.0.descriptor_sets[i])
-            .dst_binding(0)
+            .dst_set(descriptor_sets[i])
+            .dst_binding(2)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .buffer_info(buffer_info);
 
         let static_model_matrix_info = vk::DescriptorBufferInfo::builder()
-            .buffer(model_engine.static_model_matrix_buffer.buffer)
+            .buffer(model_handle.static_model_matrix_buffer.buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE);
 
         let static_model_matrix_buffer_info = [static_model_matrix_info];
         let static_model_matrix_write = vk::WriteDescriptorSet::builder()
-            .dst_set(self.0.descriptor_sets[i])
-            .dst_binding(2)
+            .dst_set(descriptor_sets[i])
+            .dst_binding(3)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&static_model_matrix_buffer_info);
 
         let dyn_model_matrix_info = vk::DescriptorBufferInfo::builder()
-            .buffer(model_engine.dyn_model_matrix_buffer.buffer)
+            .buffer(model_handle.dyn_model_matrix_buffer.buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE);
 
         let dyn_model_matrix_buffer_info = [dyn_model_matrix_info];
         let dyn_model_matrix_write = vk::WriteDescriptorSet::builder()
-            .dst_set(self.0.descriptor_sets[i])
-            .dst_binding(3)
+            .dst_set(descriptor_sets[i])
+            .dst_binding(4)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&dyn_model_matrix_buffer_info);
 
         let indirect_draw_info = vk::DescriptorBufferInfo::builder()
-            .buffer(command_engine.indirect_draw_buffer)
+            .buffer(indirect_draw_buffer.buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE);
 
         let indirect_draw_buffer_info = [indirect_draw_info];
         let indirect_draw_write = vk::WriteDescriptorSet::builder()
-            .dst_set(self.0.descriptor_sets[i])
-            .dst_binding(4)
+            .dst_set(descriptor_sets[i])
+            .dst_binding(5)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&indirect_draw_buffer_info);
 
         let instance_data_info = vk::DescriptorBufferInfo::builder()
-            .buffer(command_engine.instance_buffer)
+            .buffer(instance_buffer.buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE);
 
         let instance_data_buffer_info = [instance_data_info];
         let instance_data_write = vk::WriteDescriptorSet::builder()
-            .dst_set(self.0.descriptor_sets[i])
-            .dst_binding(5)
+            .dst_set(descriptor_sets[i])
+            .dst_binding(6)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&instance_data_buffer_info);
 
-        device.update_descriptor_sets(
+        device_context.device.update_descriptor_sets(
             &[
                 ubo_write,
                 static_model_matrix_write,
@@ -1353,9 +2641,9 @@ unsafe fn create_descriptor_sets(
         );
     }
 
-    texture_engine.refresh_bindless_textures(device, &self.0)?;
+    refresh_bindless_textures(device_context, &descriptor_sets, texture_handle)?;
 
-    Ok(())
+    Ok(descriptor_sets)
 }
 
 unsafe fn create_pipeline(
@@ -1363,15 +2651,13 @@ unsafe fn create_pipeline(
     msaa_samples: vk::SampleCountFlags,
     descriptor_set_layout: vk::DescriptorSetLayout,
     render_pass: vk::RenderPass,
-    instance: &Instance,
-    device: &Device,
-    physical_device: vk::PhysicalDevice,
+    device_context: &DeviceContext,
 ) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
     // Stages
 
     let shader = include_bytes!("../../assets/shaders/shader.spv");
 
-    let shader_module = create_shader_module(&device, &shader[..])?;
+    let shader_module = create_shader_module(&device_context.device, &shader[..])?;
 
     let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::VERTEX)
@@ -1387,7 +2673,7 @@ unsafe fn create_pipeline(
 
     let binding_descriptions = &[QuantizedVertex::binding_description()];
     let attribute_descriptions =
-        QuantizedVertex::attribute_descriptions(&instance, &physical_device)?;
+        QuantizedVertex::attribute_descriptions(&device_context.instance, &device_context.physical_device)?;
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
         .vertex_binding_descriptions(binding_descriptions)
         .vertex_attribute_descriptions(&attribute_descriptions);
@@ -1466,7 +2752,7 @@ unsafe fn create_pipeline(
     let layout_info = vk::PipelineLayoutCreateInfo::builder()
         .set_layouts(set_layouts)
         .push_constant_ranges(push_constant_ranges);
-    let pipeline_layout = device.create_pipeline_layout(&layout_info, None)?;
+    let pipeline_layout = device_context.device.create_pipeline_layout(&layout_info, None)?;
 
     // Create
 
@@ -1484,13 +2770,13 @@ unsafe fn create_pipeline(
         .render_pass(render_pass)
         .subpass(0);
 
-    let pipeline = device
+    let pipeline = device_context.device
         .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
         .0[0];
 
     // Cleanup
 
-    device.destroy_shader_module(shader_module, None);
+    device_context.device.destroy_shader_module(shader_module, None);
 
     Ok((pipeline, pipeline_layout))
 }
@@ -1523,7 +2809,7 @@ unsafe fn create_framebuffers(
 
 // Helper Functions
 
-fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderModule> {
+pub fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderModule> {
     unsafe {
         let bytecode = Bytecode::new(bytecode).unwrap();
         let info = vk::ShaderModuleCreateInfo::builder()
@@ -1537,8 +2823,6 @@ fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::ShaderMo
 // Command Engine Setup
 // ______________________________________________________________________________________________________________________________________________________
 
-const MAX_INDIRECT_DRAWS: usize = 1024;
-const MAX_INSTANCES: usize = 262_144;
 const DEG_TO_RAD: f32 = PI / 180.0;
 
 // Build Functions
@@ -1554,57 +2838,6 @@ unsafe fn create_command_pool(
     let command_pool = device.create_command_pool(&info, None)?;
 
     Ok(command_pool)
-}
-
-unsafe fn create_indirect_draw_buffer() -> Result<()> {
-    let size = (size_of::<IndirectDrawData>() * MAX_INDIRECT_DRAWS) as u64;
-    let (buffer, memory) = ModelEngine::create_buffer(
-        context.clone(),
-        size,
-        vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-    )?;
-
-    self.0.indirect_draw_buffer = buffer;
-    self.0.indirect_draw_buffer_memory = memory;
-    self.0.indirect_draw_buffer_mapped = context
-        .device
-        .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?
-        .cast::<IndirectDrawData>();
-    for i in 0..MAX_INDIRECT_DRAWS {
-        *self.0.indirect_draw_buffer_mapped.add(i) = IndirectDrawData::zeroed();
-    }
-    self.0.indirect_draw_capacity = MAX_INDIRECT_DRAWS;
-
-    Ok(())
-}
-
-unsafe fn create_instance_buffer() -> Result<()> {
-    let size = (std::mem::size_of::<PerInstanceData>() * MAX_INSTANCES) as u64;
-    let (buffer, memory) = ModelEngine::create_buffer(
-        context.clone(),
-        size,
-        vk::BufferUsageFlags::STORAGE_BUFFER,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-    )?;
-
-    self.0.instance_buffer = buffer;
-    self.0.instance_buffer_memory = memory;
-    self.0.instance_buffer_mapped = context
-        .device
-        .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?
-        .cast::<PerInstanceData>();
-    for i in 0..MAX_INSTANCES {
-        *self.0.instance_buffer_mapped.add(i) = PerInstanceData {
-            model_matrix_info: u32::MAX,
-            texture_index: u32::MAX,
-            sampler_index: u32::MAX,
-            padding: u32::MAX,
-        };
-    }
-    self.0.instance_capacity = MAX_INSTANCES;
-
-    Ok(())
 }
 
 unsafe fn create_command_buffers(
@@ -1655,7 +2888,7 @@ unsafe fn create_sync_objects(
         render_finished_semaphores,
         in_flight_fences,
         images_in_flight,
-        max_frames_in_flight: MAX_FRAMES_IN_FLIGHT,
+        max_frames_in_flight: MAX_FRAMES_IN_FLIGHT as usize,
         current_frame: 0,
     })
 }
@@ -1727,21 +2960,388 @@ const MODEL_MATRIX_ALLOCATE_THRESHOLD: u32 = 1024;
 
 // Build Functions
 
-unsafe fn create_uniform_buffers(device_context: DeviceContext, command_pool: vk::CommandPool) -> Result<Vec<Buffer<UniformBufferObject>>> {
+fn create_mesh_buffers(
+    device_context: DeviceContext,
+    command_pool: vk::CommandPool,
+) -> (Buffer<QuantizedVertex>, Buffer<u32>) {
+    let vertex_buffer: Buffer<QuantizedVertex> = Buffer::new(
+        &device_context,
+        command_pool,
+        1,
+        vk::BufferUsageFlags::VERTEX_BUFFER,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        0,
+        Vec::new(),
+    );
+
+    let index_buffer: Buffer<u32> = Buffer::new(
+        &device_context,
+        command_pool,
+        1,
+        vk::BufferUsageFlags::INDEX_BUFFER,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        0,
+        Vec::new(),
+    );
+
+    (vertex_buffer, index_buffer)
+}
+
+fn create_uniform_buffers(
+    device_context: &DeviceContext,
+    command_pool: vk::CommandPool,
+) -> Vec<Buffer<UniformBufferObject>> {
     let mut uniform_buffers: Vec<Buffer<UniformBufferObject>> = Vec::new();
 
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
-        let buffer: Buffer<UniformBufferObject> = Buffer::new(device_context.clone(), command_pool, 1, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE, 0, Vec::new());
+        let buffer: Buffer<UniformBufferObject> = Buffer::new(
+            device_context,
+            command_pool,
+            1,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+            0,
+            Vec::new(),
+        );
         uniform_buffers.push(buffer);
     }
 
-    Ok(uniform_buffers)
+    uniform_buffers
 }
 
-unsafe fn create_model_matrix_buffers(device_context: DeviceContext, command_pool: vk::CommandPool) -> Result<(Buffer<QuantizedModelMatrix>, Buffer<QuantizedModelMatrix>)> {
-    let dyn_model_matrix_buffer: Buffer<QuantizedModelMatrix> = Buffer::new(device_context.clone(), command_pool, MODEL_MATRIX_ALLOCATE_THRESHOLD as u64, vk::BufferUsageFlags::STORAGE_BUFFER, vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE, MODEL_MATRIX_ALLOCATE_THRESHOLD, Vec::new());
-    let static_model_matrix_buffer: Buffer<QuantizedModelMatrix> = Buffer::new(device_context.clone(), command_pool, MODEL_MATRIX_ALLOCATE_THRESHOLD as u64, vk::BufferUsageFlags::STORAGE_BUFFER, vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE, MODEL_MATRIX_ALLOCATE_THRESHOLD, Vec::new());
-    Ok((dyn_model_matrix_buffer, static_model_matrix_buffer))
+fn create_model_matrix_buffers(
+    device_context: DeviceContext,
+    command_pool: vk::CommandPool,
+) -> (Buffer<QuantizedModelMatrix>, Buffer<QuantizedModelMatrix>) {
+    let dyn_model_matrix_buffer: Buffer<QuantizedModelMatrix> = Buffer::new(
+        &device_context,
+        command_pool,
+        MODEL_MATRIX_ALLOCATE_THRESHOLD as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        MODEL_MATRIX_ALLOCATE_THRESHOLD,
+        Vec::new(),
+    );
+    let static_model_matrix_buffer: Buffer<QuantizedModelMatrix> = Buffer::new(
+        &device_context,
+        command_pool,
+        MODEL_MATRIX_ALLOCATE_THRESHOLD as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        MODEL_MATRIX_ALLOCATE_THRESHOLD,
+        Vec::new(),
+    );
+    (dyn_model_matrix_buffer, static_model_matrix_buffer)
 }
 
 // Helper Functions
+
+pub fn get_supported_vertex_format(
+    device_context: &DeviceContext,
+    candidates: &[vk::Format],
+    features: vk::FormatFeatureFlags,
+) -> Result<vk::Format> {
+    candidates
+        .iter()
+        .cloned()
+        .find(|f| {
+            let properties = unsafe {
+                device_context
+                    .instance
+                    .get_physical_device_format_properties(device_context.physical_device, *f)
+            };
+            // For vertex buffers, check buffer features (typically linear tiling)
+            properties.buffer_features.contains(features)
+        })
+        .ok_or_else(|| anyhow!("Failed to find supported vertex attribute format"))
+}
+
+// ______________________________________________________________________________________________________________________________________________________
+// Texture Engine Setup
+// ______________________________________________________________________________________________________________________________________________________
+
+// Helper Functions
+
+pub fn get_supported_image_format(
+    instance: Instance,
+    physical_device: vk::PhysicalDevice,
+    candidates: &[vk::Format],
+    tiling: vk::ImageTiling,
+    features: vk::FormatFeatureFlags,
+) -> Result<vk::Format> {
+    unsafe {
+        candidates
+            .iter()
+            .cloned()
+            .find(|f| {
+                let properties =
+                    instance.get_physical_device_format_properties(physical_device, *f);
+                match tiling {
+                    vk::ImageTiling::LINEAR => {
+                        properties.linear_tiling_features.contains(features)
+                    }
+                    vk::ImageTiling::OPTIMAL => {
+                        properties.optimal_tiling_features.contains(features)
+                    }
+                    _ => false,
+                }
+            })
+            .ok_or_else(|| anyhow!("Failed to find supported format"))
+    }
+}
+
+pub fn is_image_format_supported(
+    instance: Instance,
+    physical_device: vk::PhysicalDevice,
+    format: vk::Format,
+) -> bool {
+    let properties =
+        unsafe { instance.get_physical_device_format_properties(physical_device, format) };
+    // Check if format is supported for optimal tiling with sampled image feature
+    properties
+        .optimal_tiling_features
+        .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE)
+}
+
+pub fn create_sampler(device: Device, sampler_contents: SamplerContents) -> vk::Sampler {
+    // Create sampler
+    let info = vk::SamplerCreateInfo::builder()
+        .mag_filter(sampler_contents.filter)
+        .min_filter(sampler_contents.filter)
+        .address_mode_u(sampler_contents.address_mode_u)
+        .address_mode_v(sampler_contents.address_mode_v)
+        .address_mode_w(sampler_contents.address_mode_w)
+        .anisotropy_enable(true)
+        .max_anisotropy(16.0)
+        .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+        .unnormalized_coordinates(false)
+        .compare_enable(false)
+        .compare_op(vk::CompareOp::ALWAYS)
+        .mipmap_mode(sampler_contents.mipmap_mode)
+        .min_lod(0.0)
+        .max_lod(sampler_contents.mipmap_levels as f32)
+        .mip_lod_bias(0.0);
+    unsafe { device.create_sampler(&info, None).unwrap() }
+}
+
+pub fn create_image(
+    device_context: DeviceContext,
+    width: u32,
+    height: u32,
+    mipmap_levels: u32,
+    samples: vk::SampleCountFlags,
+    format: vk::Format,
+    tiling: vk::ImageTiling,
+    usage: vk::ImageUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> Result<(vk::Image, vk::DeviceMemory)> {
+    // Image
+
+    let info = vk::ImageCreateInfo::builder()
+        .image_type(vk::ImageType::_2D)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(mipmap_levels)
+        .array_layers(1)
+        .format(format)
+        .tiling(tiling)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .samples(samples);
+
+    unsafe {
+        let image = device_context.device.create_image(&info, None)?;
+
+        // Memory
+
+        let requirements = device_context.device.get_image_memory_requirements(image);
+
+        let info = vk::MemoryAllocateInfo::builder()
+            .allocation_size(requirements.size)
+            .memory_type_index(get_memory_type_index(&device_context.instance, device_context.physical_device, properties, requirements)?);
+
+        let image_memory = device_context.device.allocate_memory(&info, None)?;
+
+        device_context.device.bind_image_memory(image, image_memory, 0)?;
+
+        Ok((image, image_memory))
+    }
+}
+
+pub fn create_image_view(
+    device: Device,
+    image: vk::Image,
+    format: vk::Format,
+    aspects: vk::ImageAspectFlags,
+    mipmap_levels: u32,
+) -> Result<vk::ImageView> {
+    let subresource_range = vk::ImageSubresourceRange::builder()
+        .aspect_mask(aspects)
+        .base_mip_level(0)
+        .level_count(mipmap_levels)
+        .base_array_layer(0)
+        .layer_count(1);
+
+    let info = vk::ImageViewCreateInfo::builder()
+        .image(image)
+        .view_type(vk::ImageViewType::_2D)
+        .format(format)
+        .subresource_range(subresource_range);
+
+    unsafe { Ok(device.create_image_view(&info, None)?) }
+}
+
+pub fn transition_image_layout(
+    device_context: DeviceContext,
+    command_pool: vk::CommandPool,
+    image: vk::Image,
+    format: vk::Format,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    mipmap_levels: u32,
+) -> Result<()> {
+    let (src_access_mask, dst_access_mask, src_stage_mask, dst_stage_mask) =
+        match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+            ),
+            (
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ) => (
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            ),
+            _ => return Err(anyhow!("Unsupported image layout transition!")),
+        };
+
+    let command_buffer = begin_single_time_commands(command_pool, device_context.device.clone())?;
+
+    let subresource = vk::ImageSubresourceRange::builder()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(mipmap_levels)
+        .base_array_layer(0)
+        .layer_count(1);
+
+    let barrier = vk::ImageMemoryBarrier::builder()
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(subresource)
+        .src_access_mask(src_access_mask)
+        .dst_access_mask(dst_access_mask);
+
+    unsafe {
+        device_context.device.cmd_pipeline_barrier(
+            command_buffer,
+            src_stage_mask,
+            dst_stage_mask,
+            vk::DependencyFlags::empty(),
+            &[] as &[vk::MemoryBarrier],
+            &[] as &[vk::BufferMemoryBarrier],
+            &[barrier],
+        );
+    }
+
+    end_single_time_commands(command_pool, command_buffer, device_context.device, device_context.device_queue_handle)?;
+
+    Ok(())
+}
+
+pub fn update_bindless_texture(
+    device_context: &DeviceContext,
+    descriptor_sets: &Vec<vk::DescriptorSet>,
+    texture_handle: &TextureHandle,
+    slot_index: u32,
+    view: vk::ImageView,
+) -> Result<()> {
+    if descriptor_sets.is_empty() {
+        return Ok(());
+    }
+
+    let info = vk::DescriptorImageInfo::builder()
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .image_view(view);
+
+    let image_info = &[info];
+    for descriptor_set in descriptor_sets {
+        let write_set = vk::WriteDescriptorSet::builder()
+            .dst_set(*descriptor_set)
+            .dst_binding(1)
+            .dst_array_element(slot_index)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .image_info(image_info);
+
+        unsafe {
+            device_context.device.update_descriptor_sets(&[write_set], &[] as &[vk::CopyDescriptorSet]);
+        }
+    }
+    Ok(())
+}
+
+pub fn update_bindless_sampler(
+    device_context: &DeviceContext,
+    descriptor_sets: &Vec<vk::DescriptorSet>,
+    texture_handle: &TextureHandle,
+    slot_index: u32,
+    sampler: vk::Sampler,
+) -> Result<()> {
+    if descriptor_sets.is_empty() {
+        return Ok(());
+    }
+
+    let info = vk::DescriptorImageInfo::builder().sampler(sampler);
+    let sampler_info = &[info];
+    for descriptor_set in descriptor_sets {
+        let write_set = vk::WriteDescriptorSet::builder()
+            .dst_set(*descriptor_set)
+            .dst_binding(6)
+            .dst_array_element(slot_index)
+            .descriptor_type(vk::DescriptorType::SAMPLER)
+            .image_info(sampler_info);
+
+        unsafe {
+            device_context.device.update_descriptor_sets(&[write_set], &[] as &[vk::CopyDescriptorSet]);
+        }
+    }
+    Ok(())
+}
+
+pub fn refresh_bindless_textures(
+    device_context: &DeviceContext,
+    descriptor_sets: &Vec<vk::DescriptorSet>,
+    texture_handle: &TextureHandle
+) -> Result<()> {
+    for texture in texture_handle.loaded_textures.values() {
+        update_bindless_texture(
+            device_context,
+            descriptor_sets,
+            texture_handle,
+            texture.slot_index,
+            texture.texture.image_view,
+        )?;
+    }
+    for sampler_usage in texture_handle.samplers.values() {
+        update_bindless_sampler(
+            device_context,
+            descriptor_sets,
+            texture_handle,
+            sampler_usage.slot_index,
+            sampler_usage.sampler,
+        )?;
+    }
+
+    Ok(())
+}
