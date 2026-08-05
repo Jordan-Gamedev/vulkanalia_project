@@ -1,36 +1,45 @@
 pub mod buffers;
-pub mod device_queue_handle;
 pub mod descriptor_handle;
+pub mod device_queue_handle;
+pub mod indirect_draw_data;
+pub mod mesh;
+pub mod per_instance_data;
+pub mod quantized_model_matrix;
 pub mod quantized_vertex;
 pub mod swapchain_handle;
+pub mod sync_handle;
 pub mod texture;
+pub mod uniform_buffer_object;
 pub mod vertex;
 pub mod vulkan_renderer;
 pub mod window_handle;
 
 pub use descriptor_handle::DescriptorHandle;
 pub use device_queue_handle::DeviceQueueHandle;
+pub use indirect_draw_data::IndirectDrawData;
+pub use mesh::Mesh;
+pub use per_instance_data::PerInstanceData;
+pub use quantized_model_matrix::QuantizedModelMatrix;
 pub use quantized_vertex::QuantizedVertex;
 pub use swapchain_handle::SwapchainHandle;
+pub use sync_handle::SyncHandle;
 pub use texture::Texture;
+pub use uniform_buffer_object::UniformBufferObject;
 pub use vertex::Vertex;
 pub use window_handle::WindowHandle;
 
-
-
-
 pub mod app;
-pub mod device_context;
 pub mod command_engine;
+pub mod device_context;
 pub mod model_engine;
 pub mod present_engine;
 pub mod render_pipeline_engine;
 pub mod texture_engine;
 
 pub use app::App;
+pub use command_engine::{CommandEngine, CommandEngineBuilder};
 pub use device_context::DeviceContext;
+pub use model_engine::{ModelEngine, ModelEngineBuilder};
 pub use present_engine::{PresentEngine, PresentEngineBuilder};
 pub use render_pipeline_engine::{RenderPipelineEngine, RenderPipelineEngineBuilder};
-pub use command_engine::{CommandEngine, CommandEngineBuilder};
-pub use model_engine::{ModelEngine, ModelEngineBuilder, UniformBufferObject};
-pub use texture_engine::{TextureEngine};
+pub use texture_engine::TextureEngine;

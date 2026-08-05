@@ -1,5 +1,6 @@
 use vulkanalia::prelude::v1_0::*;
 
+#[derive(Clone)]
 pub struct DeviceQueueHandle {
     pub graphics_queue: vk::Queue,
     pub present_queue: vk::Queue,

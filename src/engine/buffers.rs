@@ -8,12 +8,14 @@
 )]
 
 use anyhow::Result;
-use vulkanalia::prelude::v1_0::*;
 use core::slice;
 use std::mem::size_of;
 use std::ptr::copy_nonoverlapping as memcpy;
+use vulkanalia::prelude::v1_0::*;
 
-use crate::engine::CommandEngine;
+use crate::engine::vulkan_renderer::{
+    begin_single_time_commands, end_single_time_commands, get_memory_type_index,
+};
 
 use super::device_context::DeviceContext;
 
@@ -34,8 +36,8 @@ pub struct Buffer<T: Clone + std::fmt::Debug + Default> {
 
 impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     pub fn new(
-        context: DeviceContext,
-        command_engine: &CommandEngine,
+        device_context: DeviceContext,
+        command_pool: vk::CommandPool,
         initial_capacity: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
@@ -43,38 +45,56 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         initial_contents: Vec<T>,
     ) -> Self {
         unsafe {
-            let device = context.clone().device;
-    
+            let device = device_context.device.clone();
+
             // If the buffer needs to be initialized with values and it isn't cpu accessible, use staging buffer
             if properties.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL) {
                 // Create (staging)
-    
+
                 let (staging_buffer, staging_buffer_memory) = Buffer::<T>::create_buffer(
-                    context.clone(),
+                    &device_context,
                     initial_capacity as u64,
                     vk::BufferUsageFlags::TRANSFER_SRC,
                     vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-                ).unwrap();
-            
+                )
+                .unwrap();
+
                 // Copy (staging)
-            
-                let mapped = device.map_memory(staging_buffer_memory, 0, initial_capacity, vk::MemoryMapFlags::empty()).unwrap().cast();
+
+                let mapped = device
+                    .map_memory(
+                        staging_buffer_memory,
+                        0,
+                        initial_capacity,
+                        vk::MemoryMapFlags::empty(),
+                    )
+                    .unwrap()
+                    .cast();
                 memcpy(initial_contents.as_ptr(), mapped, initial_contents.len());
                 device.unmap_memory(staging_buffer_memory);
 
                 // Create (device local)
-    
-                let usage = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST | usage;
+
+                let usage =
+                    vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST | usage;
                 let (device_buffer, device_buffer_memory) = Buffer::<T>::create_buffer(
-                    context.clone(),
+                    &device_context,
                     initial_capacity,
                     usage,
                     properties,
-                ).unwrap();
+                )
+                .unwrap();
 
                 // Copy (device local)
-            
-                Buffer::<T>::copy_buffer(context, command_engine, staging_buffer, device_buffer, initial_capacity).unwrap();
+
+                Buffer::<T>::copy_buffer(
+                    device_context,
+                    command_pool,
+                    staging_buffer,
+                    device_buffer,
+                    initial_capacity,
+                )
+                .unwrap();
 
                 device.destroy_buffer(staging_buffer, None);
                 device.free_memory(staging_buffer_memory, None);
@@ -92,15 +112,31 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                     is_host_visible: false,
                 }
             } else {
-                let (buffer, memory) = Buffer::<T>::create_buffer(context, initial_capacity, usage, properties).unwrap();
-                let mapped = device.map_memory(memory, 0, initial_capacity as u64 * size_of::<T>() as u64, vk::MemoryMapFlags::empty()).unwrap().cast::<T>();
+                let (buffer, memory) = Buffer::<T>::create_buffer(
+                    &device_context,
+                    initial_capacity,
+                    usage,
+                    properties,
+                )
+                .unwrap();
+
+                let mapped = device
+                    .map_memory(
+                        memory,
+                        0,
+                        initial_capacity as u64 * size_of::<T>() as u64,
+                        vk::MemoryMapFlags::empty(),
+                    )
+                    .unwrap()
+                    .cast::<T>();
                 memcpy(initial_contents.as_ptr(), mapped, initial_contents.len());
 
                 Self {
                     buffer: buffer,
                     memory: memory,
                     mapped: mapped,
-                    available_indices: (initial_contents.len() as u32..initial_capacity as u32).collect(),
+                    available_indices: (initial_contents.len() as u32..initial_capacity as u32)
+                        .collect(),
                     element_count: initial_contents.len() as u32,
                     element_capacity: initial_capacity as u32,
                     alloc_dealloc_threshold: alloc_dealloc_threshold,
@@ -120,7 +156,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 device.unmap_memory(self.memory);
                 self.mapped = std::ptr::null_mut();
             }
-    
+
             if !self.buffer.is_null() {
                 device.destroy_buffer(self.buffer, None);
                 device.free_memory(self.memory, None);
@@ -132,45 +168,71 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         }
     }
 
-    pub fn recreate(&mut self, context: DeviceContext, command_engine: &CommandEngine, contents: Vec<T>) {
+    pub fn recreate(
+        &mut self,
+        device_context: DeviceContext,
+        command_pool: vk::CommandPool,
+        contents: Vec<T>,
+    ) {
         // Destroy old buffer
-        self.destroy(&context.device);
+        self.destroy(&device_context.device);
 
         // Calculate initial capacity
-        let initial_capacity: u32 = (contents.len() as u32).max(self.alloc_dealloc_threshold * (contents.len() as f32 / self.alloc_dealloc_threshold as f32).ceil() as u32).max(self.alloc_dealloc_threshold);
+        let initial_capacity: u32 = (contents.len() as u32)
+            .max(
+                self.alloc_dealloc_threshold
+                    * (contents.len() as f32 / self.alloc_dealloc_threshold as f32).ceil() as u32,
+            )
+            .max(self.alloc_dealloc_threshold);
 
         // Create the new buffer
         *self = Buffer::new(
-            context,
-            command_engine,
+            device_context,
+            command_pool,
             initial_capacity as u64,
             self.usage,
             self.properties,
             self.alloc_dealloc_threshold,
-            contents
+            contents,
         );
     }
-    
+
     pub fn copy(
         &self,
-        context: DeviceContext,
-        command_engine: &CommandEngine,
+        device_context: DeviceContext,
+        command_pool: vk::CommandPool,
         destination: vk::Buffer,
         size: vk::DeviceSize,
     ) -> Result<()> {
         unsafe {
-            let command_buffer = command_engine.begin_single_time_commands(context.clone().device)?;
-    
+            let command_buffer =
+                begin_single_time_commands(command_pool, device_context.device.clone())?;
+
             let regions = vk::BufferCopy::builder().size(size);
-            context.device.cmd_copy_buffer(command_buffer, self.buffer, destination, &[regions]);
-        
-            command_engine.end_single_time_commands(context, command_buffer)?;
-        
-            Ok(())    
+            device_context.device.cmd_copy_buffer(
+                command_buffer,
+                self.buffer,
+                destination,
+                &[regions],
+            );
+
+            end_single_time_commands(
+                command_pool,
+                command_buffer,
+                device_context.device,
+                device_context.device_queue_handle,
+            )?;
+
+            Ok(())
         }
     }
 
-    pub fn get_buffer_items(&self, context: DeviceContext, command_engine: &CommandEngine, include_empty: bool) -> Result<Vec<T>> {
+    pub fn get_buffer_items(
+        &self,
+        device_context: DeviceContext,
+        command_pool: vk::CommandPool,
+        include_empty: bool,
+    ) -> Result<Vec<T>> {
         unsafe {
             let mut contents: Vec<T> = Vec::with_capacity(self.element_capacity as usize);
             if self.is_host_visible {
@@ -179,65 +241,91 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                         contents.push(self.mapped.add(i as usize).read());
                     }
                 }
-                return Ok(contents)
+                return Ok(contents);
             }
 
             // Create staging buffer to read data from GPU
             let (staging_buffer, staging_memory) = Buffer::<T>::create_buffer(
-                context.clone(),
+                &device_context,
                 self.element_capacity as u64,
                 vk::BufferUsageFlags::TRANSFER_DST,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
 
             // Copy buffer contents to staging buffer to make the contents readable
-            Buffer::<T>::copy_buffer(context.clone(), command_engine, self.buffer, staging_buffer, self.element_capacity as u64)?;
+            Buffer::<T>::copy_buffer(
+                device_context.clone(),
+                command_pool,
+                self.buffer,
+                staging_buffer,
+                self.element_capacity as u64,
+            )?;
 
             // Read the data from the buffer
-            let memory = context.device.map_memory(
-                staging_memory,
-                0,
-                self.element_capacity as u64,
-                vk::MemoryMapFlags::empty()
-            )
-            .unwrap()
-            .cast::<T>();
+            let memory = device_context
+                .device
+                .map_memory(
+                    staging_memory,
+                    0,
+                    self.element_capacity as u64,
+                    vk::MemoryMapFlags::empty(),
+                )
+                .unwrap()
+                .cast::<T>();
 
             // Create a Vector out of the memory
-            let vec: Vec<T> = slice::from_raw_parts(memory.cast(), self.element_capacity as usize).to_vec();
+            let vec: Vec<T> =
+                slice::from_raw_parts(memory.cast(), self.element_capacity as usize).to_vec();
 
             // Cleanup
-            context.device.destroy_buffer(staging_buffer, None);
-            context.device.unmap_memory(staging_memory);
-            context.device.free_memory(staging_memory, None);
+            device_context.device.destroy_buffer(staging_buffer, None);
+            device_context.device.unmap_memory(staging_memory);
+            device_context.device.free_memory(staging_memory, None);
 
             Ok(vec)
         }
     }
 
-    pub fn add_items(&mut self, context: DeviceContext, command_engine: &CommandEngine, mut items: Vec<T>) -> Result<()> {
-        while self.is_host_visible && items.len() > 0 && let Some(available_index) = self.available_indices.pop_first() && let Some(next_content) = items.pop() {
+    pub fn add_items(
+        &mut self,
+        device_context: DeviceContext,
+        command_pool: vk::CommandPool,
+        mut items: Vec<T>,
+    ) -> Result<()> {
+        while self.is_host_visible
+            && items.len() > 0
+            && let Some(available_index) = self.available_indices.pop_first()
+            && let Some(next_content) = items.pop()
+        {
             unsafe { *self.mapped.add(available_index as usize) = next_content };
             self.element_count += 1;
         }
 
         if items.len() > 0 {
             // Get items from current buffer
-            let mut total_items: Vec<T> = self.get_buffer_items(context.clone(), command_engine, false)?;
-    
+            let mut total_items: Vec<T> =
+                self.get_buffer_items(device_context.clone(), command_pool, false)?;
+
             // Combine old and new items
             total_items.extend(items);
 
-            self.recreate(context, command_engine, total_items);
+            self.recreate(device_context, command_pool, total_items);
         }
 
         Ok(())
     }
 
-    pub fn remove_items(&mut self, context: DeviceContext, command_engine: &CommandEngine, start_remove_index: u32, stop_remove_index: u32) -> Result<()> {       
+    pub fn remove_items(
+        &mut self,
+        device_context: DeviceContext,
+        command_pool: vk::CommandPool,
+        start_remove_index: u32,
+        stop_remove_index: u32,
+    ) -> Result<()> {
         if self.is_host_visible {
             self.element_count -= stop_remove_index - start_remove_index;
-            self.available_indices.extend(start_remove_index..stop_remove_index);
+            self.available_indices
+                .extend(start_remove_index..stop_remove_index);
 
             // Get furthest element index used
             let mut furthest_used_index: u32 = self.element_capacity - 1;
@@ -253,14 +341,18 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             }
 
             // Get furthest element index not used
-            let furthest_empty_index = *self.available_indices.last().unwrap_or(&(self.element_capacity - 1));
+            let furthest_empty_index = *self
+                .available_indices
+                .last()
+                .unwrap_or(&(self.element_capacity - 1));
 
             let num_empty_end_indices = furthest_empty_index - furthest_used_index;
 
             if num_empty_end_indices >= self.alloc_dealloc_threshold {
                 // Get items from current buffer
-                let mut total_items: Vec<T> = self.get_buffer_items(context.clone(), command_engine, true)?;
-                
+                let mut total_items: Vec<T> =
+                    self.get_buffer_items(device_context.clone(), command_pool, true)?;
+
                 for _ in furthest_used_index + 1..=furthest_empty_index {
                     total_items.pop();
                     self.available_indices.pop_last();
@@ -268,85 +360,118 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
                 // Create a new buffer with all the items
                 let available_indices = self.available_indices.clone();
-                self.recreate(context, command_engine, total_items);
+                self.recreate(device_context, command_pool, total_items);
                 self.available_indices = available_indices;
             }
         } else {
             // Get items from current buffer
-            let mut total_items: Vec<T> = self.get_buffer_items(context.clone(), command_engine, false)?;    
-            
+            let mut total_items: Vec<T> =
+                self.get_buffer_items(device_context.clone(), command_pool, false)?;
+
             // Remove in between items
             total_items.drain(start_remove_index as usize..stop_remove_index as usize);
-            
+
             // Create a new buffer with all the items
-            self.recreate(context, command_engine, total_items);
+            self.recreate(device_context, command_pool, total_items);
         }
-        
+
         Ok(())
     }
 
     /// Adds item and returns the index chosen to place the item
-    pub fn add_item(&mut self, context: DeviceContext, command_engine: &CommandEngine, item: T) -> Result<u32> {
+    pub fn add_item(
+        &mut self,
+        context: DeviceContext,
+        command_pool: vk::CommandPool,
+        item: T,
+    ) -> Result<u32> {
         let available_indices_size = self.available_indices.len();
-        let chosen_index = if self.available_indices.len() > 0 { self.available_indices.first() } else { Some(&self.element_count) };
+        let chosen_index = if self.available_indices.len() > 0 {
+            self.available_indices.first()
+        } else {
+            Some(&self.element_count)
+        };
         let chosen_index = *chosen_index.unwrap();
-        self.add_items(context, command_engine, vec![item])?;
+        self.add_items(context, command_pool, vec![item])?;
         Ok(chosen_index)
     }
 
-    pub fn remove_item_at(&mut self, context: DeviceContext, command_engine: &CommandEngine, index: u32) -> Result<()> {
-        self.remove_items(context, command_engine, index, index + 1)?;
+    pub fn remove_item_at(
+        &mut self,
+        device_context: DeviceContext,
+        command_pool: vk::CommandPool,
+        index: u32,
+    ) -> Result<()> {
+        self.remove_items(device_context, command_pool, index, index + 1)?;
         Ok(())
-    }    
+    }
 
     pub fn create_buffer(
-        context: DeviceContext,
+        device_context: &DeviceContext,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
         unsafe {
             // Buffer
-        
+
             let buffer_info = vk::BufferCreateInfo::builder()
                 .size(size.max(1) * size_of::<T>() as u64)
                 .usage(usage)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        
-            let buffer = context.device.create_buffer(&buffer_info, None)?;
-        
+
+            let buffer = device_context.device.create_buffer(&buffer_info, None)?;
+
             // Memory
-        
-            let requirements = context.device.get_buffer_memory_requirements(buffer);
-        
+
+            let requirements = device_context.device.get_buffer_memory_requirements(buffer);
+
             let memory_info = vk::MemoryAllocateInfo::builder()
                 .allocation_size(requirements.size)
-                .memory_type_index(context.get_memory_type_index(properties, requirements)?);
-        
-            let buffer_memory = context.device.allocate_memory(&memory_info, None)?;
-        
-            context.device.bind_buffer_memory(buffer, buffer_memory, 0)?;
-        
+                .memory_type_index(get_memory_type_index(
+                    &device_context.instance,
+                    device_context.physical_device,
+                    properties,
+                    requirements,
+                )?);
+
+            let buffer_memory = device_context.device.allocate_memory(&memory_info, None)?;
+
+            device_context
+                .device
+                .bind_buffer_memory(buffer, buffer_memory, 0)?;
+
             Ok((buffer, buffer_memory))
         }
     }
 
     pub fn copy_buffer(
-        context: DeviceContext,
-        command_engine: &CommandEngine,
+        device_context: DeviceContext,
+        command_pool: vk::CommandPool,
         source: vk::Buffer,
         destination: vk::Buffer,
         size: vk::DeviceSize,
     ) -> Result<()> {
         unsafe {
-            let command_buffer = command_engine.begin_single_time_commands(context.clone().device)?;
-    
+            let command_buffer =
+                begin_single_time_commands(command_pool, device_context.device.clone())?;
+
             let regions = vk::BufferCopy::builder().size(size * size_of::<T>() as u64);
-            context.device.cmd_copy_buffer(command_buffer, source, destination, &[regions]);
-        
-            command_engine.end_single_time_commands(context, command_buffer)?;
-        
-            Ok(())    
+            device_context.device.clone().cmd_copy_buffer(
+                command_buffer,
+                source,
+                destination,
+                &[regions],
+            );
+
+            end_single_time_commands(
+                command_pool,
+                command_buffer,
+                device_context.device,
+                device_context.device_queue_handle,
+            )?;
+
+            Ok(())
         }
     }
 }
