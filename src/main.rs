@@ -5,9 +5,9 @@ use bevy_ecs::prelude::*;
 use vulkanalia_project::engine::VulkanRenderer;
 
 // Runs exactly once at startup
-fn init_spawn(mut commands: Commands) {}
+fn init_spawn(mut _commands: Commands) {}
 
-fn gameplay_update(mut commands: Commands) {}
+fn gameplay_update(mut _commands: Commands) {}
 
 fn main() {
     let mut vulkan_renderer = VulkanRenderer::new().unwrap();
@@ -18,8 +18,8 @@ fn main() {
         .add_systems(Startup, init_spawn)
         .add_systems(Update, gameplay_update)
         .set_runner(move |mut bevy_app: bevy_app::App| {
-            vulkan_renderer.run(&mut bevy_app);
-            bevy_app.should_exit().unwrap()
+            vulkan_renderer.run(&mut bevy_app).unwrap();
+            bevy_app::AppExit::Success
         });
 
     bevy_app.run();

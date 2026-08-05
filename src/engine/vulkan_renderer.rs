@@ -1738,14 +1738,6 @@ unsafe fn create_logical_device(
         })
         .collect::<Vec<_>>();
 
-    // Layers
-
-    let layers = if VALIDATION_ENABLED {
-        vec![VALIDATION_LAYER.as_ptr()]
-    } else {
-        vec![]
-    };
-
     // Extensions
 
     let mut extensions = DEVICE_EXTENSIONS
@@ -1786,7 +1778,6 @@ unsafe fn create_logical_device(
 
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
-        .enabled_layer_names(&layers)
         .enabled_extension_names(&extensions)
         .enabled_features(&features)
         .push_next(&mut storage_16bit_features)
