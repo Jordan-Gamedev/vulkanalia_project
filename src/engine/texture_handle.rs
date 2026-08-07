@@ -4,7 +4,7 @@ use crate::engine::TextureUsage;
 use crate::resources::AssetId;
 use std::collections::HashMap;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TextureHandle {
     pub loaded_textures: HashMap<AssetId, TextureUsage>,
     pub available_texture_slots: Vec<u32>,

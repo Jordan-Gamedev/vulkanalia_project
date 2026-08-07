@@ -6,12 +6,16 @@ use vulkanalia::prelude::v1_0::*;
 
 const MAX_INSTANCES: usize = 262_144;
 
+#[derive(Clone)]
 pub struct InstanceBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
-    pub mapped: *mut PerInstanceData,
+    pub mapped: *const PerInstanceData,
     pub capacity: usize,
 }
+
+unsafe impl Sync for InstanceBuffer {}
+unsafe impl Send for InstanceBuffer {}
 
 impl InstanceBuffer {
     pub fn new(device_context: &DeviceContext) -> Result<Self> {

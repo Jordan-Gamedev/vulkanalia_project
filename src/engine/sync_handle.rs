@@ -1,5 +1,6 @@
 use vulkanalia::prelude::v1_0::*;
 
+#[derive(Clone)]
 pub struct SyncHandle {
     pub image_available_semaphores: Vec<vk::Semaphore>,
     pub render_finished_semaphores: Vec<vk::Semaphore>,

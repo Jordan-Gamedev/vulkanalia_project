@@ -1,6 +1,7 @@
 use crate::engine::DescriptorHandle;
 use vulkanalia::prelude::v1_0::*;
 
+#[derive(Clone)]
 pub struct RenderPipelineHandle {
     pub base_render_pass: vk::RenderPass,
     pub descriptor_handle: DescriptorHandle,

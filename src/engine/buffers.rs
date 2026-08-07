@@ -23,8 +23,7 @@ use super::device_context::DeviceContext;
 pub struct Buffer<T: Clone + std::fmt::Debug + Default> {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
-    pub mapped: *mut T,
-    //pub available_indices: std::collections::VecDeque<u32>,
+    pub mapped: *const T,
     pub available_indices: std::collections::BTreeSet<u32>,
     pub element_count: u32,
     pub element_capacity: u32,
@@ -33,6 +32,9 @@ pub struct Buffer<T: Clone + std::fmt::Debug + Default> {
     pub properties: vk::MemoryPropertyFlags,
     pub is_host_visible: bool,
 }
+
+unsafe impl<T: Clone + std::fmt::Debug + Default> Sync for Buffer<T> {}
+unsafe impl<T: Clone + std::fmt::Debug + Default> Send for Buffer<T> {}
 
 impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     pub fn new(
@@ -297,7 +299,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             && let Some(available_index) = self.available_indices.pop_first()
             && let Some(next_content) = items.pop()
         {
-            unsafe { *self.mapped.add(available_index as usize) = next_content };
+            unsafe { *self.mapped.add(available_index as usize).cast_mut() = next_content };
             self.element_count += 1;
         }
 

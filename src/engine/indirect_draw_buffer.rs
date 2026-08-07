@@ -1,19 +1,22 @@
 use crate::engine::Buffer;
 use crate::engine::DeviceContext;
 use crate::engine::IndirectDrawData;
-
 use anyhow::Result;
 use bytemuck::Zeroable;
 use vulkanalia::prelude::v1_0::*;
 
 const MAX_INDIRECT_DRAWS: usize = 1024;
 
+#[derive(Clone)]
 pub struct IndirectDrawBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
-    pub mapped: *mut IndirectDrawData,
+    pub mapped: *const IndirectDrawData,
     pub capacity: usize,
 }
+
+unsafe impl Sync for IndirectDrawBuffer {}
+unsafe impl Send for IndirectDrawBuffer {}
 
 impl IndirectDrawBuffer {
     pub fn new(device_context: &DeviceContext) -> Result<Self> {

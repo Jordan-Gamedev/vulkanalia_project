@@ -8,3 +8,6 @@ pub struct Mesh {
     pub index_length: u32,
     pub indirect_draw_data_ptr: *mut IndirectDrawData,
 }
+
+unsafe impl Sync for Mesh {}
+unsafe impl Send for Mesh {}

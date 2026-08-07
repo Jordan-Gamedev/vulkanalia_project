@@ -57,7 +57,6 @@ use vulkanalia::vk::ExtDebugUtilsExtensionInstanceCommands;
 use vulkanalia::vk::{KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
 use vulkanalia::window as vk_window;
 use winit::dpi::LogicalSize;
-use winit::event::{Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, Window, WindowBuilder};
 
@@ -68,6 +67,8 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 4;
 #[error("{0}")]
 struct SuitabilityError(&'static str);
 
+#[derive(bevy_ecs::resource::Resource)]
+#[derive(Clone)]
 pub struct VulkanRenderer {
     pub device_context: DeviceContext,
     pub present_handle: PresentHandle,
@@ -94,7 +95,7 @@ impl VulkanRenderer {
 
             // Finalize window handle
             let window_handle = WindowHandle {
-                window,
+                window: Arc::new(window),
                 event_loop: Some(Arc::new(event_loop)),
                 surface,
                 is_resized: false,
@@ -267,45 +268,6 @@ impl VulkanRenderer {
         }
     }
 
-    pub fn run(&mut self, bevy_app: &mut bevy_app::App) -> Result<()> {
-        let event_loop = Arc::into_inner(self.present_handle.window_handle.event_loop.take().unwrap()).unwrap();
-
-        event_loop.run(move |event, elwt| {
-            match event {
-                // Request a redraw after all events are processed
-                Event::AboutToWait => self
-                    .present_handle
-                    .window_handle
-                    .window
-                    .request_redraw(),
-                Event::WindowEvent { event, .. } => match event {
-                    // Render a frame if the Vulkan app is not being destroyed
-                    WindowEvent::RedrawRequested if !elwt.exiting() => {
-                        // TODO: Jolt physics should update here as well
-                        bevy_app.update();
-                        self.render().unwrap();
-                    }
-
-                    // Mark the window as having been resized
-                    WindowEvent::Resized(size) => {
-                        self.present_handle.window_handle.is_resized = true;
-                    }
-
-                    // Destroy the Vulkan app
-                    WindowEvent::CloseRequested => {
-                        self.present_handle.window_handle.window.set_visible(false);
-                        self.destroy();
-                        elwt.exit();
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        })?;
-
-        Ok(())
-    }
-
     pub fn destroy(&mut self) {
         let device = self.device_context.device.clone();
         
@@ -406,7 +368,7 @@ impl VulkanRenderer {
         texture_asset_id: AssetId,
         sampler_contents: SamplerContents,
         model_matrix_info: u32,
-    ) -> Result<*mut PerInstanceData> {
+    ) -> Result<*const PerInstanceData> {
         // Potentially load model and texture
         self.load_model(
             vertex_asset_id,
@@ -463,7 +425,8 @@ impl VulkanRenderer {
                         .command_handle
                         .instance_buffer
                         .mapped
-                        .add((draw_data.first_instance + draw_data.instance_count) as usize);
+                        .add((draw_data.first_instance + draw_data.instance_count) as usize)
+                        .cast_mut();
 
                     let next_instance = next_instance_ptr.read();
                     *next_instance_ptr = saved_instance;
@@ -487,7 +450,8 @@ impl VulkanRenderer {
                 .command_handle
                 .instance_buffer
                 .mapped
-                .add((draw_data.first_instance + draw_data.instance_count) as usize);
+                .add((draw_data.first_instance + draw_data.instance_count) as usize)
+                .cast_mut();
 
             *new_instance_ptr = new_instance;
             draw_data.instance_count += 1;
@@ -502,7 +466,7 @@ impl VulkanRenderer {
         index_asset_id: AssetId,
         texture_asset_id: AssetId,
         sampler_contents: SamplerContents,
-        instance: *mut PerInstanceData,
+        instance: *const PerInstanceData,
     ) -> Result<()> {
         let temp_instance_model_info = unsafe { instance.read().model_matrix_info };
 
@@ -523,7 +487,7 @@ impl VulkanRenderer {
         unsafe {
             // Replace the removed instance with the instance at the end of the instance buffer section
             draw_data.instance_count -= 1;
-            *instance = self
+            *instance.cast_mut() = self
                 .command_handle
                 .instance_buffer
                 .mapped
@@ -531,14 +495,14 @@ impl VulkanRenderer {
                 .read();
 
             // Get draw datas affected by this removal
-            let mut affected_draw_data: Vec<*mut IndirectDrawData> = self
+            let mut affected_draw_data: Vec<*const IndirectDrawData> = self
                 .model_handle
                 .loaded_models
                 .iter()
                 .filter(|&(_, m)| {
                     m.indirect_draw_data_ptr.read().first_instance > draw_data.first_instance
                 })
-                .map(|(_, m)| m.indirect_draw_data_ptr)
+                .map(|(_, m)| m.indirect_draw_data_ptr.cast_const())
                 .collect();
 
             affected_draw_data
@@ -550,16 +514,19 @@ impl VulkanRenderer {
                 .command_handle
                 .instance_buffer
                 .mapped
-                .add((draw_data.first_instance + draw_data.instance_count) as usize);
+                .add((draw_data.first_instance + draw_data.instance_count) as usize)
+                .cast_mut();
+
             for draw_data in affected_draw_data {
-                let draw_data = draw_data.as_mut().unwrap();
+                let draw_data = draw_data.cast_mut().as_mut().unwrap();
                 draw_data.first_instance -= 1;
 
                 let this_instance = self
                     .command_handle
                     .instance_buffer
                     .mapped
-                    .add((draw_data.first_instance + draw_data.instance_count) as usize);
+                    .add((draw_data.first_instance + draw_data.instance_count) as usize)
+                    .cast_mut();
 
                 *instance_to_overwrite = this_instance.read();
                 *this_instance = PerInstanceData {
@@ -573,7 +540,7 @@ impl VulkanRenderer {
 
             // Unload model if there are no more instances using it
             if draw_data.instance_count == 0 {
-                let mut last_draw_data: *mut IndirectDrawData = std::ptr::null_mut();
+                let mut last_draw_data: *const IndirectDrawData = std::ptr::null();
                 for i in (0..self.command_handle.indirect_draw_buffer.capacity).rev() {
                     let draw_data = self.command_handle.indirect_draw_buffer.mapped.add(i);
                     if draw_data.read().instance_count > 0 {
@@ -585,11 +552,11 @@ impl VulkanRenderer {
                 self.model_handle
                     .loaded_models
                     .iter_mut()
-                    .find(|(_, m)| m.indirect_draw_data_ptr == last_draw_data)
+                    .find(|(_, m)| m.indirect_draw_data_ptr == last_draw_data.cast_mut())
                     .map(|(_, m)| m.indirect_draw_data_ptr = model.indirect_draw_data_ptr);
 
                 *model.indirect_draw_data_ptr = last_draw_data.read();
-                *last_draw_data = IndirectDrawData::zeroed();
+                *last_draw_data.cast_mut() = IndirectDrawData::zeroed();
 
                 self.model_handle
                     .loaded_models
@@ -697,6 +664,7 @@ impl VulkanRenderer {
                     .static_model_matrix_buffer
                     .mapped
                     .add(model_matrix_index as usize)
+                    .cast_mut()
                     .as_mut()
                     .unwrap()
             }
@@ -706,6 +674,7 @@ impl VulkanRenderer {
                     .dyn_model_matrix_buffer
                     .mapped
                     .add(model_matrix_index as usize)
+                    .cast_mut()
                     .as_mut()
                     .unwrap()
             }
@@ -728,6 +697,7 @@ impl VulkanRenderer {
         let model_matrix = unsafe {
             buffer_ptr
                 .add(model_matrix_index as usize)
+                .cast_mut()
                 .as_mut()
                 .unwrap()
         };
@@ -808,10 +778,11 @@ impl VulkanRenderer {
                     .command_handle
                     .indirect_draw_buffer
                     .mapped
-                    .add(self.model_handle.loaded_models.len()),
+                    .add(self.model_handle.loaded_models.len())
+                    .cast_mut(),
             };
 
-            let mut last_draw_data: *mut IndirectDrawData = std::ptr::null_mut();
+            let mut last_draw_data: *const IndirectDrawData = std::ptr::null();
             for i in (0..self.command_handle.indirect_draw_buffer.capacity).rev() {
                 let draw_data = self.command_handle.indirect_draw_buffer.mapped.add(i);
                 if draw_data.read().instance_count > 0 {
@@ -1276,7 +1247,7 @@ impl VulkanRenderer {
     }
 
     /// Renders a frame for the Vulkan app
-    fn render(&mut self) -> Result<()> {
+    pub fn render(&mut self) -> Result<()> {
         unsafe {
             //let start = Instant::now();
 
@@ -1404,6 +1375,20 @@ impl VulkanRenderer {
                 &[],
             );
 
+            println!("first drawcall: {:?}\n", self.command_handle.indirect_draw_buffer.mapped.add(0).read());
+            println!("first instance: {:?}\n", self.command_handle.instance_buffer.mapped.add(0).read());
+            let model_matrix_info = self.command_handle.instance_buffer.mapped.add(0).read().model_matrix_info;
+            let index = model_matrix_info & 0x7FFFFFFF;
+            let is_static = model_matrix_info & 0x80000000 > 0;
+            println!("first model matrix: {:?}\n", self.get_model_matrix(index, is_static));
+
+            // println!("second drawcall: {:?}\n", self.command_handle.indirect_draw_buffer.mapped.add(1).read());
+            // println!("second instance: {:?}\n", self.command_handle.instance_buffer.mapped.add(1).read());
+            // let model_matrix_info = self.command_handle.instance_buffer.mapped.add(1).read().model_matrix_info;
+            // let index = model_matrix_info & 0x7FFFFFFF;
+            // let is_static = model_matrix_info & 0x80000000 > 0;
+            // println!("second model matrix: {:?}\n", self.get_model_matrix(index, is_static));
+
             device.cmd_draw_indexed_indirect(
                 command_buffer,
                 indirect_draw_buffer,
@@ -1488,7 +1473,7 @@ impl VulkanRenderer {
         // Copy
 
         unsafe {
-            memcpy(&ubo, self.model_handle.uniform_buffers[frame_index].mapped, 1);
+            memcpy(&ubo, self.model_handle.uniform_buffers[frame_index].mapped.cast_mut(), 1);
         }
 
         Ok(())
@@ -3264,13 +3249,14 @@ pub fn update_bindless_texture(
 
     let info = vk::DescriptorImageInfo::builder()
         .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+
         .image_view(view);
 
     let image_info = &[info];
     for descriptor_set in descriptor_sets {
         let write_set = vk::WriteDescriptorSet::builder()
             .dst_set(*descriptor_set)
-            .dst_binding(1)
+            .dst_binding(0)
             .dst_array_element(slot_index)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .image_info(image_info);
@@ -3298,7 +3284,7 @@ pub fn update_bindless_sampler(
     for descriptor_set in descriptor_sets {
         let write_set = vk::WriteDescriptorSet::builder()
             .dst_set(*descriptor_set)
-            .dst_binding(6)
+            .dst_binding(1)
             .dst_array_element(slot_index)
             .descriptor_type(vk::DescriptorType::SAMPLER)
             .image_info(sampler_info);

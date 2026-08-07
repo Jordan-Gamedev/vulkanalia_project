@@ -36,6 +36,12 @@ struct PerInstanceData
     uint padding;
 };
 
+[[vk::binding(0, 0)]]
+Texture2D textures[];
+
+[[vk::binding(1, 0)]]
+SamplerState samplers[];
+
 [[vk::binding(2, 0)]]
 ConstantBuffer<UniformBuffer> ubo;
 
@@ -109,9 +115,6 @@ VSOutput vertMain(VSInput input, uint drawId: SV_DrawIndex, uint instanceId: SV_
     output.samplerIndex = pi.samplerIndex;
     return output;
 }
-
-Texture2D textures[];
-SamplerState samplers[];
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET

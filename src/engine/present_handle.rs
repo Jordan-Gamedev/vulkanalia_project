@@ -3,6 +3,7 @@ use crate::engine::Texture;
 use crate::engine::WindowHandle;
 use vulkanalia::prelude::v1_0::*;
 
+#[derive(Clone)]
 pub struct PresentHandle {
     pub window_handle: WindowHandle,
     pub swapchain_handle: SwapchainHandle,
