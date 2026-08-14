@@ -1375,20 +1375,6 @@ impl VulkanRenderer {
                 &[],
             );
 
-            println!("first drawcall: {:?}\n", self.command_handle.indirect_draw_buffer.mapped.add(0).read());
-            println!("first instance: {:?}\n", self.command_handle.instance_buffer.mapped.add(0).read());
-            let model_matrix_info = self.command_handle.instance_buffer.mapped.add(0).read().model_matrix_info;
-            let index = model_matrix_info & 0x7FFFFFFF;
-            let is_static = model_matrix_info & 0x80000000 > 0;
-            println!("first model matrix: {:?}\n", self.get_model_matrix(index, is_static));
-
-            // println!("second drawcall: {:?}\n", self.command_handle.indirect_draw_buffer.mapped.add(1).read());
-            // println!("second instance: {:?}\n", self.command_handle.instance_buffer.mapped.add(1).read());
-            // let model_matrix_info = self.command_handle.instance_buffer.mapped.add(1).read().model_matrix_info;
-            // let index = model_matrix_info & 0x7FFFFFFF;
-            // let is_static = model_matrix_info & 0x80000000 > 0;
-            // println!("second model matrix: {:?}\n", self.get_model_matrix(index, is_static));
-
             device.cmd_draw_indexed_indirect(
                 command_buffer,
                 indirect_draw_buffer,

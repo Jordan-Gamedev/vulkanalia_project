@@ -2,11 +2,11 @@ Forward+ Pipeline
 ______________________
 
 ┌─────────────┐
-│ GPU Culling │ → Cull geometry by GPU-visible surfaces first
+│ GPU Culling │ → Fill visbuffers for cameras, lights, planar reflections, and reflection probes using frustum culling aabb testing
 └──────┬──────┘
        ▼
 ┌──────────────┐
-│ Light Culling│ → Reduce active lights per object
+│ Light Culling│ → Reduce active lights per object with cluster-based culling
 └──────┬───────┘
        ▼
 ┌─────────────┐
@@ -61,6 +61,14 @@ ______________________
        └── Tone Mapping and Color Grading
 
 Notes:
+
+Culling:
+
+       Scene-wide instance data buffer should have LoD info (also contains distance culling) and aabb info for compute shader to calculate culling and lod picking
+       An IndirectDrawData megabuffer and a PerInstanceData megabuffer will be shared by all visbuffers--both [max active visbuffer count] * max capacity
+              Visbuffers hold offsets to the megabuffers which vk::cmd_draw_indexed_indirect will use
+              For instance, 16 maximum visbuffers with instance buffers having a capacity of 262_144 instances (4mb) will make an allocated megabuffer of 64mib,
+                     and 32kib for an indirect buffer with a 1024 draw call capacity
 
 Depth prepass only used on important objects (for SSS) and likely occluders/large objects
 

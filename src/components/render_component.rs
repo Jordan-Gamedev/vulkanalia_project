@@ -54,7 +54,7 @@ impl RenderComponent {
                 .get_mut::<TransformComponent>()
                 .unwrap()
         };
-        transform_component.scale = Vec3::new(0.01, 0.01, 0.01);
+        transform_component.scale = Vec3::new(1.0, 1.0, 1.0);
 
         // Create model matrix
         let model_matrix_index = vulkan_renderer

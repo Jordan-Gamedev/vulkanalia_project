@@ -235,6 +235,11 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         command_pool: vk::CommandPool,
         include_empty: bool,
     ) -> Result<Vec<T>> {
+        // Return empty vector if there are no elements in buffer and empty items are not desired
+        if !include_empty {
+            return Ok(Vec::new());
+        }
+
         unsafe {
             let mut contents: Vec<T> = Vec::with_capacity(self.element_capacity as usize);
             if self.is_host_visible {
