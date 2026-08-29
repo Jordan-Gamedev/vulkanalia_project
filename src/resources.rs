@@ -15,47 +15,31 @@ pub const COUNT_ENUM_T: usize = 2;
 
 // 670 B
 pub const BLANK_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/blank_albedo.ktx2").as_slice());
-// 213.49 KiB
+// 221.05 KiB
 pub const CUTTLEFISH_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/cuttlefish_albedo.ktx2").as_slice());
 
-// ------------Model Vertices-----------
+// ------------Model Buffers------------
 
-pub const START_ENUM_V: usize = 3;
-pub const END_ENUM_V: usize = 5;
-pub const COUNT_ENUM_V: usize = 3;
+pub const START_ENUM_M: usize = 3;
+pub const END_ENUM_M: usize = 5;
+pub const COUNT_ENUM_M: usize = 3;
 
-// 109 B
-pub const CUBE_V: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Cube.vertbuff").as_slice());
-// 1.67 KiB
-pub const LIMPET_V: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Limpet.vertbuff").as_slice());
-// 18.29 KiB
-pub const MONKEY_V: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Monkey.vertbuff").as_slice());
-
-// ------------Model Indices------------
-
-pub const START_ENUM_I: usize = 6;
-pub const END_ENUM_I: usize = 8;
-pub const COUNT_ENUM_I: usize = 3;
-
-// 38 B
-pub const CUBE_I: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Cube.indbuff").as_slice());
-// 89 B
-pub const LIMPET_I: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Limpet.indbuff").as_slice());
-// 990 B
-pub const MONKEY_I: AlignedAsset = AlignedAsset(include_bytes!("../assets/models_compressed/Monkey.indbuff").as_slice());
+// 1.99 KiB
+pub const LIMPET_M: AlignedAsset = AlignedAsset(include_bytes!("../assets/mesh_files/Limpet.mesh").as_slice());
+// 243 B
+pub const CUBE_M: AlignedAsset = AlignedAsset(include_bytes!("../assets/mesh_files/Cube.mesh").as_slice());
+// 19.35 KiB
+pub const MONKEY_M: AlignedAsset = AlignedAsset(include_bytes!("../assets/mesh_files/Monkey.mesh").as_slice());
 
 #[derive(Clone, Copy, Debug, Default, Eq, strum::FromRepr, Hash, PartialEq)]
-#[repr(usize)]
+#[repr(u16)]
 pub enum AssetId {
 	#[default] None,
 	BlankAlbedoTexture,
 	CuttlefishAlbedoTexture,
-	CubeVertices,
-	LimpetVertices,
-	MonkeyVertices,
-	CubeIndices,
-	LimpetIndices,
-	MonkeyIndices,
+	LimpetMesh,
+	CubeMesh,
+	MonkeyMesh,
 }
 
 pub fn get_asset_from_id(id: AssetId) -> AlignedAsset {
@@ -69,23 +53,14 @@ pub fn get_asset_from_id(id: AssetId) -> AlignedAsset {
 		AssetId::CuttlefishAlbedoTexture => {
 			CUTTLEFISH_ALBEDO_T
 		},
-		AssetId::CubeVertices => {
-			CUBE_V
+		AssetId::LimpetMesh => {
+			LIMPET_M
 		},
-		AssetId::LimpetVertices => {
-			LIMPET_V
+		AssetId::CubeMesh => {
+			CUBE_M
 		},
-		AssetId::MonkeyVertices => {
-			MONKEY_V
-		},
-		AssetId::CubeIndices => {
-			CUBE_I
-		},
-		AssetId::LimpetIndices => {
-			LIMPET_I
-		},
-		AssetId::MonkeyIndices => {
-			MONKEY_I
+		AssetId::MonkeyMesh => {
+			MONKEY_M
 		},
 	}
 }

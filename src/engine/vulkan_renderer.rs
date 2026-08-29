@@ -11,10 +11,10 @@ use crate::engine::CommandHandle;
 use crate::engine::DescriptorHandle;
 use crate::engine::DeviceContext;
 use crate::engine::DeviceQueueHandle;
-use crate::engine::IndirectDrawBuffer;
 use crate::engine::IndirectDrawData;
-use crate::engine::InstanceBuffer;
 use crate::engine::Mesh;
+use crate::engine::MeshBufferLayout;
+use crate::engine::MeshMetadata;
 use crate::engine::ModelHandle;
 use crate::engine::PerInstanceData;
 use crate::engine::PresentHandle;
@@ -30,12 +30,12 @@ use crate::engine::Texture;
 use crate::engine::TextureHandle;
 use crate::engine::TextureUsage;
 use crate::engine::UniformBufferObject;
+use crate::engine::Visbuffer;
 use crate::engine::WindowHandle;
 use crate::engine::buffers::Buffer;
 use crate::resources::AssetId;
 use crate::resources::get_asset_from_id;
 use anyhow::{Result, anyhow};
-use bytemuck::Zeroable;
 use glam::Quat;
 use glam::Vec3;
 use glam::{Mat4, vec3};
@@ -61,7 +61,7 @@ use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, Window, WindowBuilder};
 
 /// The maximum number of frames that can be processed concurrently
-const MAX_FRAMES_IN_FLIGHT: u32 = 4;
+const MAX_FRAMES_IN_FLIGHT: u32 = 3;
 
 #[derive(Debug, Error)]
 #[error("{0}")]
@@ -185,15 +185,15 @@ impl VulkanRenderer {
             // Create command pool
             let command_pool = create_command_pool(device.clone(), device_queue_handle)?;
 
-            // Create indirect buffer
-            let indirect_draw_buffer = IndirectDrawBuffer::new(&device_context)?;
+            // Create visbuffers
+            let main_camera_visbuffers = create_visbuffers(&device_context, command_pool);
 
-            // Create instance buffer
-            let instance_buffer = InstanceBuffer::new(&device_context)?;
+            // Create source instance buffer that stores all active instances
+            let source_instance_buffer = create_source_instance_buffer(&device_context, command_pool);
 
-            // Create mesh buffers
+            // Create vertex and index buffers
             let (vertex_buffer, index_buffer) =
-                create_mesh_buffers(device_context.clone(), command_pool);
+                create_vertex_index_buffers(device_context.clone(), command_pool);
 
             // Create uniform buffer objects
             let uniform_buffers = create_uniform_buffers(&device_context, command_pool);
@@ -202,6 +202,9 @@ impl VulkanRenderer {
             let (dyn_model_matrix_buffer, static_model_matrix_buffer) =
                 create_model_matrix_buffers(device_context.clone(), command_pool);
 
+            // Create mesh buffer
+            let mesh_uniform_buffer = create_mesh_buffer(device_context.clone(), command_pool);
+
             // Finalize model handle
             let model_handle = ModelHandle {
                 vertex_buffer,
@@ -209,7 +212,8 @@ impl VulkanRenderer {
                 uniform_buffers,
                 dyn_model_matrix_buffer,
                 static_model_matrix_buffer,
-                loaded_models: HashMap::new(),
+                loaded_meshes: HashMap::new(),
+                mesh_uniform_buffer: mesh_uniform_buffer,
             };
 
             // Create starting texture handle
@@ -219,9 +223,8 @@ impl VulkanRenderer {
             let descriptor_sets = create_descriptor_sets(
                 &device_context,
                 &model_handle,
+                &main_camera_visbuffers,
                 &texture_handle,
-                &indirect_draw_buffer,
-                &instance_buffer,
                 descriptor_set_layout,
                 descriptor_pool,
             )?;
@@ -253,8 +256,8 @@ impl VulkanRenderer {
                 command_pool,
                 command_buffers,
                 sync_handle,
-                indirect_draw_buffer,
-                instance_buffer,
+                source_instance_buffer,
+                main_camera_visbuffers,
             };
 
             Ok(Self {
@@ -308,42 +311,23 @@ impl VulkanRenderer {
             if self.command_handle.command_pool != vk::CommandPool::null() && !self.command_handle.command_buffers.is_empty() {
                 device.free_command_buffers(self.command_handle.command_pool, &self.command_handle.command_buffers);
             }
-            if self.command_handle.indirect_draw_buffer.mapped != std::ptr::null_mut()
-                && self.command_handle.indirect_draw_buffer.memory != vk::DeviceMemory::null()
-            {
-                device.unmap_memory(self.command_handle.indirect_draw_buffer.memory);
-            }
-            if self.command_handle.instance_buffer.mapped != std::ptr::null_mut()
-                && self.command_handle.instance_buffer.memory != vk::DeviceMemory::null()
-            {
-                device.unmap_memory(self.command_handle.instance_buffer.memory);
-            }
-            if self.command_handle.indirect_draw_buffer.buffer != vk::Buffer::null() {
-                device.destroy_buffer(self.command_handle.indirect_draw_buffer.buffer, None);
-            }
-            if self.command_handle.indirect_draw_buffer.memory != vk::DeviceMemory::null() {
-                device.free_memory(self.command_handle.indirect_draw_buffer.memory, None);
-            }
-            if self.command_handle.instance_buffer.buffer != vk::Buffer::null() {
-                device.destroy_buffer(self.command_handle.instance_buffer.buffer, None);
-            }
-            if self.command_handle.instance_buffer.memory != vk::DeviceMemory::null() {
-                device.free_memory(self.command_handle.instance_buffer.memory, None);
-            }
             if self.command_handle.command_pool != vk::CommandPool::null() {
                 device.destroy_command_pool(self.command_handle.command_pool, None);
             }
+            self.command_handle.source_instance_buffer.destroy(&device);
+            self.command_handle.main_camera_visbuffers.iter_mut().for_each(|v| v.destroy(&device));
 
             // Model Handle
 
             self.model_handle.vertex_buffer.destroy(&device);
             self.model_handle.index_buffer.destroy(&device);
-            self.model_handle.loaded_models.clear();
+            self.model_handle.loaded_meshes.clear();
             self.model_handle.uniform_buffers
                 .iter_mut()
                 .for_each(|b| b.destroy(&device));
             self.model_handle.dyn_model_matrix_buffer.destroy(&device);
             self.model_handle.static_model_matrix_buffer.destroy(&device);
+            self.model_handle.mesh_uniform_buffer.destroy(&device);
 
             // Texture Handle
 
@@ -363,209 +347,276 @@ impl VulkanRenderer {
 
     pub fn add_instance(
         &mut self,
-        vertex_asset_id: AssetId,
-        index_asset_id: AssetId,
+        mesh_asset_id: AssetId,
         texture_asset_id: AssetId,
         sampler_contents: SamplerContents,
-        model_matrix_info: u32,
-    ) -> Result<*const PerInstanceData> {
+        matrix: QuantizedModelMatrix,
+        is_static: bool,
+    ) -> Result<PerInstanceData> {
         // Potentially load model and texture
-        self.load_model(
-            vertex_asset_id,
-            index_asset_id,
-        )?;
+        let mesh_metadata_index = self.load_mesh(mesh_asset_id)?;
         self.load_texture(texture_asset_id, sampler_contents)?;
 
-        // Get model that the instance uses
-        let model = self
+        // Get the mesh that the instance uses
+        let mesh = self
             .model_handle
-            .loaded_models
-            .get(&(vertex_asset_id, index_asset_id))
+            .loaded_meshes
+            .get(&mesh_asset_id)
             .unwrap()
             .clone();
 
         // Get bindless texture index
-        let tex_index = self
+        let texture_index = self
             .get_texture_slot_index(texture_asset_id)
-            .unwrap_or(0);
+            .unwrap_or(0) as u16;
 
         // Get bindless sampler index
         let sampler_index = self
             .get_sampler_slot_index(sampler_contents)
-            .unwrap_or(0);
+            .unwrap_or(0) as u16;        
 
-        unsafe {
-            let mut affected_draw_data: Vec<*mut IndirectDrawData> = self
-                .model_handle
-                .loaded_models
-                .iter()
-                .filter(|&(_, m)| {
-                    m.indirect_draw_data_ptr.read().first_instance
-                        > model.indirect_draw_data_ptr.read().first_instance
-                })
-                .map(|(_, m)| m.indirect_draw_data_ptr)
-                .collect();
+        // Create model matrix
+        let model_matrix_info = self.create_model_matrix(matrix, is_static)?;
 
-            affected_draw_data
-                .sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
+        // Add instance to the source instance buffer
+        let new_instance = PerInstanceData {
+            model_matrix_info,
+            texture_index,
+            sampler_index,
+            mesh_metadata_index,
+            mesh_asset_id: mesh_asset_id as u16,
+        };
+        self.command_handle.source_instance_buffer.add_item(&self.device_context, self.command_handle.command_pool, new_instance)?;
 
-            // Add one to the instance offset for those found in the buffer after the new instance
-            // and continuously swap beginnings of instance buffer sections to make room for new instance
-            if affected_draw_data.len() > 0 {
-                let mut saved_instance: PerInstanceData = self
-                    .command_handle
-                    .instance_buffer
-                    .mapped
-                    .add(affected_draw_data[0].read().first_instance as usize)
-                    .read();
-
-                for draw_data in affected_draw_data {
-                    let draw_data = draw_data.as_mut().unwrap();
-                    let next_instance_ptr = self
-                        .command_handle
-                        .instance_buffer
-                        .mapped
-                        .add((draw_data.first_instance + draw_data.instance_count) as usize)
-                        .cast_mut();
-
-                    let next_instance = next_instance_ptr.read();
-                    *next_instance_ptr = saved_instance;
-                    saved_instance = next_instance;
-
-                    draw_data.first_instance += 1;
-                }
-            }
-
-            // Add instance to instance buffer
-            let new_instance = PerInstanceData {
-                model_matrix_info: model_matrix_info,
-                texture_index: tex_index,
-                sampler_index: sampler_index,
-                padding: 0,
-            };
-
-            let draw_data = model.indirect_draw_data_ptr.as_mut().unwrap();
-
-            let new_instance_ptr = self
-                .command_handle
-                .instance_buffer
-                .mapped
-                .add((draw_data.first_instance + draw_data.instance_count) as usize)
-                .cast_mut();
-
-            *new_instance_ptr = new_instance;
-            draw_data.instance_count += 1;
-
-            Ok(new_instance_ptr)
-        }
+        Ok(new_instance)
     }
 
     pub fn remove_instance(
         &mut self,
-        vertex_asset_id: AssetId,
-        index_asset_id: AssetId,
+        mesh_asset_id: AssetId,
         texture_asset_id: AssetId,
         sampler_contents: SamplerContents,
-        instance: *const PerInstanceData,
+        model_matrix_info: u32,
     ) -> Result<()> {
-        let temp_instance_model_info = unsafe { instance.read().model_matrix_info };
-
         // Potentially unload model and texture
-        self.unload_model(vertex_asset_id, index_asset_id)?;
+
+        self.unload_mesh(mesh_asset_id)?;
         self.unload_texture(texture_asset_id, sampler_contents)?;
 
-        // Get model that the instance uses
-        let model = self
-            .model_handle
-            .loaded_models
-            .get(&(vertex_asset_id, index_asset_id))
-            .unwrap()
-            .clone();
+        // Remove instance and model matrix
 
-        let draw_data = unsafe { model.indirect_draw_data_ptr.as_mut().unwrap() };
-
-        unsafe {
-            // Replace the removed instance with the instance at the end of the instance buffer section
-            draw_data.instance_count -= 1;
-            *instance.cast_mut() = self
-                .command_handle
-                .instance_buffer
-                .mapped
-                .add((draw_data.first_instance + draw_data.instance_count) as usize)
-                .read();
-
-            // Get draw datas affected by this removal
-            let mut affected_draw_data: Vec<*const IndirectDrawData> = self
-                .model_handle
-                .loaded_models
-                .iter()
-                .filter(|&(_, m)| {
-                    m.indirect_draw_data_ptr.read().first_instance > draw_data.first_instance
-                })
-                .map(|(_, m)| m.indirect_draw_data_ptr.cast_const())
-                .collect();
-
-            affected_draw_data
-                .sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
-
-            // Remove one from the instance offset for those found in the buffer after the new instance
-            // and continuously overwrite ends of instance buffer sections with the next ends to cover the empty instance
-            let mut instance_to_overwrite: *mut PerInstanceData = self
-                .command_handle
-                .instance_buffer
-                .mapped
-                .add((draw_data.first_instance + draw_data.instance_count) as usize)
-                .cast_mut();
-
-            for draw_data in affected_draw_data {
-                let draw_data = draw_data.cast_mut().as_mut().unwrap();
-                draw_data.first_instance -= 1;
-
-                let this_instance = self
-                    .command_handle
-                    .instance_buffer
-                    .mapped
-                    .add((draw_data.first_instance + draw_data.instance_count) as usize)
-                    .cast_mut();
-
-                *instance_to_overwrite = this_instance.read();
-                *this_instance = PerInstanceData {
-                    model_matrix_info: u32::MAX,
-                    texture_index: u32::MAX,
-                    sampler_index: u32::MAX,
-                    padding: u32::MAX,
-                };
-                instance_to_overwrite = this_instance;
-            }
-
-            // Unload model if there are no more instances using it
-            if draw_data.instance_count == 0 {
-                let mut last_draw_data: *const IndirectDrawData = std::ptr::null();
-                for i in (0..self.command_handle.indirect_draw_buffer.capacity).rev() {
-                    let draw_data = self.command_handle.indirect_draw_buffer.mapped.add(i);
-                    if draw_data.read().instance_count > 0 {
-                        last_draw_data = draw_data;
-                        break;
-                    }
-                }
-
-                self.model_handle
-                    .loaded_models
-                    .iter_mut()
-                    .find(|(_, m)| m.indirect_draw_data_ptr == last_draw_data.cast_mut())
-                    .map(|(_, m)| m.indirect_draw_data_ptr = model.indirect_draw_data_ptr);
-
-                *model.indirect_draw_data_ptr = last_draw_data.read();
-                *last_draw_data.cast_mut() = IndirectDrawData::zeroed();
-
-                self.model_handle
-                    .loaded_models
-                    .remove(&(vertex_asset_id, index_asset_id));
-            }
-        }
-
+        let source_instances = self.command_handle.source_instance_buffer.get_buffer_items(&self.device_context, self.command_handle.command_pool, true)?;
+        let instance_index = source_instances.iter().position(|instance| instance.model_matrix_info == model_matrix_info).expect(&format!("Instance with model matrix info of {} not found!", model_matrix_info));
+        self.command_handle.source_instance_buffer.remove_item_at(&self.device_context, self.command_handle.command_pool, instance_index as u32)?;
+        self.remove_model_matrix(VulkanRenderer::get_model_matrix_index(model_matrix_info), VulkanRenderer::is_model_matrix_static(model_matrix_info))?;
         Ok(())
     }
+
+    // pub fn add_instance(
+    //     &mut self,
+    //     vertex_asset_id: AssetId,
+    //     index_asset_id: AssetId,
+    //     texture_asset_id: AssetId,
+    //     sampler_contents: SamplerContents,
+    //     model_matrix_info: u32,
+    // ) -> Result<*const PerInstanceData> {
+    //     // Potentially load model and texture
+    //     self.load_model(
+    //         vertex_asset_id,
+    //         index_asset_id,
+    //     )?;
+    //     self.load_texture(texture_asset_id, sampler_contents)?;
+
+    //     // Get model that the instance uses
+    //     let model = self
+    //         .model_handle
+    //         .loaded_models
+    //         .get(&(vertex_asset_id, index_asset_id))
+    //         .unwrap()
+    //         .clone();
+
+    //     // Get bindless texture index
+    //     let tex_index = self
+    //         .get_texture_slot_index(texture_asset_id)
+    //         .unwrap_or(0);
+
+    //     // Get bindless sampler index
+    //     let sampler_index = self
+    //         .get_sampler_slot_index(sampler_contents)
+    //         .unwrap_or(0);
+
+    //     unsafe {
+    //         let mut affected_draw_data: Vec<*mut IndirectDrawData> = self
+    //             .model_handle
+    //             .loaded_models
+    //             .iter()
+    //             .filter(|&(_, m)| {
+    //                 m.indirect_draw_data_ptr.read().first_instance
+    //                     > model.indirect_draw_data_ptr.read().first_instance
+    //             })
+    //             .map(|(_, m)| m.indirect_draw_data_ptr)
+    //             .collect();
+
+    //         affected_draw_data
+    //             .sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
+
+    //         // Add one to the instance offset for those found in the buffer after the new instance
+    //         // and continuously swap beginnings of instance buffer sections to make room for new instance
+    //         if affected_draw_data.len() > 0 {
+    //             let mut saved_instance: PerInstanceData = self
+    //                 .command_handle
+    //                 .instance_buffer
+    //                 .mapped
+    //                 .add(affected_draw_data[0].read().first_instance as usize)
+    //                 .read();
+
+    //             for draw_data in affected_draw_data {
+    //                 let draw_data = draw_data.as_mut().unwrap();
+    //                 let next_instance_ptr = self
+    //                     .command_handle
+    //                     .instance_buffer
+    //                     .mapped
+    //                     .add((draw_data.first_instance + draw_data.instance_count) as usize)
+    //                     .cast_mut();
+
+    //                 let next_instance = next_instance_ptr.read();
+    //                 *next_instance_ptr = saved_instance;
+    //                 saved_instance = next_instance;
+
+    //                 draw_data.first_instance += 1;
+    //             }
+    //         }
+
+    //         // Add instance to instance buffer
+    //         let new_instance = PerInstanceData {
+    //             model_matrix_info: model_matrix_info,
+    //             texture_index: tex_index,
+    //             sampler_index: sampler_index,
+    //             padding: 0,
+    //         };
+
+    //         let draw_data = model.indirect_draw_data_ptr.as_mut().unwrap();
+
+    //         let new_instance_ptr = self
+    //             .command_handle
+    //             .instance_buffer
+    //             .mapped
+    //             .add((draw_data.first_instance + draw_data.instance_count) as usize)
+    //             .cast_mut();
+
+    //         *new_instance_ptr = new_instance;
+    //         draw_data.instance_count += 1;
+
+    //         Ok(new_instance_ptr)
+    //     }
+    // }
+
+    // pub fn remove_instance(
+    //     &mut self,
+    //     vertex_asset_id: AssetId,
+    //     index_asset_id: AssetId,
+    //     texture_asset_id: AssetId,
+    //     sampler_contents: SamplerContents,
+    //     instance: *const PerInstanceData,
+    // ) -> Result<()> {
+    //     let temp_instance_model_info = unsafe { instance.read().model_matrix_info };
+
+    //     // Potentially unload model and texture
+    //     self.unload_model(vertex_asset_id, index_asset_id)?;
+    //     self.unload_texture(texture_asset_id, sampler_contents)?;
+
+    //     // Get model that the instance uses
+    //     let model = self
+    //         .model_handle
+    //         .loaded_models
+    //         .get(&(vertex_asset_id, index_asset_id))
+    //         .unwrap()
+    //         .clone();
+
+    //     let draw_data = unsafe { model.indirect_draw_data_ptr.as_mut().unwrap() };
+
+    //     unsafe {
+    //         // Replace the removed instance with the instance at the end of the instance buffer section
+    //         draw_data.instance_count -= 1;
+    //         *instance.cast_mut() = self
+    //             .command_handle
+    //             .instance_buffer
+    //             .mapped
+    //             .add((draw_data.first_instance + draw_data.instance_count) as usize)
+    //             .read();
+
+    //         // Get draw datas affected by this removal
+    //         let mut affected_draw_data: Vec<*const IndirectDrawData> = self
+    //             .model_handle
+    //             .loaded_models
+    //             .iter()
+    //             .filter(|&(_, m)| {
+    //                 m.indirect_draw_data_ptr.read().first_instance > draw_data.first_instance
+    //             })
+    //             .map(|(_, m)| m.indirect_draw_data_ptr.cast_const())
+    //             .collect();
+
+    //         affected_draw_data
+    //             .sort_unstable_by(|a, b| a.read().first_instance.cmp(&b.read().first_instance));
+
+    //         // Remove one from the instance offset for those found in the buffer after the new instance
+    //         // and continuously overwrite ends of instance buffer sections with the next ends to cover the empty instance
+    //         let mut instance_to_overwrite: *mut PerInstanceData = self
+    //             .command_handle
+    //             .instance_buffer
+    //             .mapped
+    //             .add((draw_data.first_instance + draw_data.instance_count) as usize)
+    //             .cast_mut();
+
+    //         for draw_data in affected_draw_data {
+    //             let draw_data = draw_data.cast_mut().as_mut().unwrap();
+    //             draw_data.first_instance -= 1;
+
+    //             let this_instance = self
+    //                 .command_handle
+    //                 .instance_buffer
+    //                 .mapped
+    //                 .add((draw_data.first_instance + draw_data.instance_count) as usize)
+    //                 .cast_mut();
+
+    //             *instance_to_overwrite = this_instance.read();
+    //             *this_instance = PerInstanceData {
+    //                 model_matrix_info: u32::MAX,
+    //                 texture_index: u32::MAX,
+    //                 sampler_index: u32::MAX,
+    //                 padding: u32::MAX,
+    //             };
+    //             instance_to_overwrite = this_instance;
+    //         }
+
+    //         // Unload model if there are no more instances using it
+    //         if draw_data.instance_count == 0 {
+    //             let mut last_draw_data: *const IndirectDrawData = std::ptr::null();
+    //             for i in (0..self.command_handle.indirect_draw_buffer.capacity).rev() {
+    //                 let draw_data = self.command_handle.indirect_draw_buffer.mapped.add(i);
+    //                 if draw_data.read().instance_count > 0 {
+    //                     last_draw_data = draw_data;
+    //                     break;
+    //                 }
+    //             }
+
+    //             self.model_handle
+    //                 .loaded_models
+    //                 .iter_mut()
+    //                 .find(|(_, m)| m.indirect_draw_data_ptr == last_draw_data.cast_mut())
+    //                 .map(|(_, m)| m.indirect_draw_data_ptr = model.indirect_draw_data_ptr);
+
+    //             *model.indirect_draw_data_ptr = last_draw_data.read();
+    //             *last_draw_data.cast_mut() = IndirectDrawData::zeroed();
+
+    //             self.model_handle
+    //                 .loaded_models
+    //                 .remove(&(vertex_asset_id, index_asset_id));
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
 
     pub fn create_model_matrix(
         &mut self,
@@ -597,7 +648,10 @@ impl VulkanRenderer {
             if prev_buffer != new_buffer {
                 self.update_model_matrix_buffer_descriptors()?;
             }
-            Ok(chosen_index)
+
+            let mut info = chosen_index & 0x7FFFFFFF;
+            info |= (is_static as u32) << 31;
+            Ok(info)
         }
     }
 
@@ -627,6 +681,14 @@ impl VulkanRenderer {
         }
 
         Ok(())
+    }
+
+    pub fn is_model_matrix_static(model_matrix_info: u32) -> bool {
+        model_matrix_info & 0x80000000 > 0
+    }    
+
+    pub fn get_model_matrix_index(model_matrix_info: u32) -> u32 {
+        model_matrix_info & 0x7FFFFFFF
     }
 
     pub fn get_model_matrix(
@@ -715,144 +777,271 @@ impl VulkanRenderer {
         Ok(())
     }
 
-    pub fn load_model(&mut self, vertex_asset_id: AssetId, index_asset_id: AssetId) -> Result<()> {
-        if vertex_asset_id == AssetId::None || index_asset_id == AssetId::None {
-            return Ok(());
+    /// Returns mesh metadata index inside uniform buffer
+    pub fn load_mesh(&mut self, mesh_asset_id: AssetId) -> Result<u16> {
+        if mesh_asset_id == AssetId::None {
+            return Ok(u16::MAX)
         }
 
-        // Do not load model if it is already loaded
-        if self
-            .model_handle
-            .loaded_models
-            .contains_key(&(vertex_asset_id, index_asset_id))
-        {
-            return Ok(());
+        // Do not load mesh if it is already loaded
+
+        if let Some(mesh) = self.model_handle.loaded_meshes.get_mut(&mesh_asset_id) {
+            mesh.usage_count += 1;
+            return Ok(u16::MAX)
         }
 
-        // Get vertices
+        let asset = get_asset_from_id(mesh_asset_id);
 
-        let vertex_asset = get_asset_from_id(vertex_asset_id);
-        let vertex_bytes: &[u8] = &vertex_asset.0[size_of::<u32>()..];
-        let vertex_count =
-            u32::from_be_bytes(vertex_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
+        // Get vertex and index counts
 
-        let vertices: Vec<QuantizedVertex> =
-            match meshopt::decode_vertex_buffer(vertex_bytes, vertex_count) {
-                Ok(bytes) => bytes,
-                Err(_) => return Err(anyhow!("Failed to decode vertex buffer")),
-            };
+        let vertex_count0 = u32::from_be_bytes(asset.0[0..4].try_into().unwrap()) as usize;
+        let index_count0 = u32::from_be_bytes(asset.0[4..8].try_into().unwrap()) as usize;
+        let vertex_byte_count0 = u32::from_be_bytes(asset.0[8..12].try_into().unwrap()) as usize;
+        let index_byte_count0 = u32::from_be_bytes(asset.0[12..16].try_into().unwrap()) as usize;
+        let vertex_count1 = u32::from_be_bytes(asset.0[16..20].try_into().unwrap()) as usize;
+        let index_count1 = u32::from_be_bytes(asset.0[20..24].try_into().unwrap()) as usize;
+        let vertex_byte_count1 = u32::from_be_bytes(asset.0[24..28].try_into().unwrap()) as usize;
+        let index_byte_count1 = u32::from_be_bytes(asset.0[28..32].try_into().unwrap()) as usize;
+        let vertex_count2 = u32::from_be_bytes(asset.0[32..36].try_into().unwrap()) as usize;
+        let index_count2 = u32::from_be_bytes(asset.0[36..40].try_into().unwrap()) as usize;
+        let vertex_byte_count2 = u32::from_be_bytes(asset.0[40..44].try_into().unwrap()) as usize;
+        let index_byte_count2 = u32::from_be_bytes(asset.0[44..48].try_into().unwrap()) as usize;
+        let vertex_count3 = u32::from_be_bytes(asset.0[48..52].try_into().unwrap()) as usize;
+        let index_count3 = u32::from_be_bytes(asset.0[52..56].try_into().unwrap()) as usize;
+        let vertex_byte_count3 = u32::from_be_bytes(asset.0[56..60].try_into().unwrap()) as usize;
+        let index_byte_count3 = u32::from_be_bytes(asset.0[60..64].try_into().unwrap()) as usize;
 
-        // Get indices
+        let total_vertex_byte_count = vertex_byte_count0 + vertex_byte_count1 + vertex_byte_count2 + vertex_byte_count3;
 
-        let index_asset = get_asset_from_id(index_asset_id);
-        let index_bytes: &[u8] = &index_asset.0[size_of::<u32>()..];
-        let index_count =
-            u32::from_be_bytes(index_asset.0[0..size_of::<u32>()].try_into().unwrap()) as usize;
-        let indices: Vec<u32> = match meshopt::decode_index_buffer(index_bytes, index_count) {
+        // Get AABB
+
+        let min_aabb: Vec3 = Vec3::new(
+            f32::from_be_bytes(asset.0[64..68].try_into().unwrap()),
+            f32::from_be_bytes(asset.0[68..72].try_into().unwrap()),
+            f32::from_be_bytes(asset.0[72..76].try_into().unwrap()),
+        );
+        let max_aabb: Vec3 = Vec3::new(
+            f32::from_be_bytes(asset.0[76..80].try_into().unwrap()),
+            f32::from_be_bytes(asset.0[80..84].try_into().unwrap()),
+            f32::from_be_bytes(asset.0[84..88].try_into().unwrap()),
+        );
+
+        // Get lod data
+
+        let lod1_percentage = f32::from_be_bytes(asset.0[88..92].try_into().unwrap());
+        let lod2_percentage = f32::from_be_bytes(asset.0[92..96].try_into().unwrap());
+        let lod3_percentage = f32::from_be_bytes(asset.0[96..100].try_into().unwrap());
+        let cull_percentage = f32::from_be_bytes(asset.0[100..104].try_into().unwrap());
+        
+        // Get vertex and index bytes
+
+        let mut vertex_offset = 104;
+        let mut index_offset = 104 + total_vertex_byte_count;
+
+        let vertex_bytes0: &[u8] = &asset.0[vertex_offset..(vertex_offset + vertex_byte_count0)];
+        let index_bytes0: &[u8] = &asset.0[index_offset..(index_offset + index_byte_count0)];
+
+        vertex_offset += vertex_byte_count0;
+        index_offset += index_byte_count0;
+
+        let vertex_bytes1: &[u8] = &asset.0[vertex_offset..(vertex_offset + vertex_byte_count1)];
+        let index_bytes1: &[u8] = &asset.0[index_offset..(index_offset + index_byte_count1)];
+
+        vertex_offset += vertex_byte_count1;
+        index_offset += index_byte_count1;
+
+        let vertex_bytes2: &[u8] = &asset.0[vertex_offset..(vertex_offset + vertex_byte_count2)];
+        let index_bytes2: &[u8] = &asset.0[index_offset..(index_offset + index_byte_count2)];
+
+        vertex_offset += vertex_byte_count2;
+        index_offset += index_byte_count2;
+
+        let vertex_bytes3: &[u8] = &asset.0[vertex_offset..(vertex_offset + vertex_byte_count3)];
+        let index_bytes3: &[u8] = &asset.0[index_offset..(index_offset + index_byte_count3)];
+
+        // Decode vertices and indices
+
+        let mut vertices0: Vec<QuantizedVertex> = match meshopt::decode_vertex_buffer(vertex_bytes0, vertex_count0) {
+            Ok(bytes) => bytes,
+            Err(_) => return Err(anyhow!("Failed to decode vertex buffer 0")),
+        };
+        let mut indices0: Vec<u32> = match meshopt::decode_index_buffer(index_bytes0, index_count0) {
             Ok(indices) => indices,
-            Err(_) => return Err(anyhow!("Failed to decode index buffer")),
+            Err(_) => return Err(anyhow!("Failed to decode index buffer 0")),
         };
 
-        unsafe {
-            let prev_vertex_count = self.model_handle.vertex_buffer.element_count;
-            let prev_index_count = self.model_handle.index_buffer.element_count;
+        let vertices1: Vec<QuantizedVertex> = if vertex_count1 > 0 {
+            match meshopt::decode_vertex_buffer(vertex_bytes1, vertex_count1) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(anyhow!("Failed to decode vertex buffer 1")),
+            }
+        } else {
+            Vec::new()
+        };
+        let indices1: Vec<u32> = if index_count1 > 0 {
+            match meshopt::decode_index_buffer(index_bytes1, index_count1) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(anyhow!("Failed to decode index buffer 1")),
+            }
+        } else {
+            Vec::new()
+        };
 
-            self.model_handle.vertex_buffer.add_items(
-                &self.device_context,
-                self.command_handle.command_pool,
-                vertices,
-            )?;
+        let vertices2: Vec<QuantizedVertex> = if vertex_count2 > 0 {
+            match meshopt::decode_vertex_buffer(vertex_bytes2, vertex_count2) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(anyhow!("Failed to decode vertex buffer 2")),
+            }
+        } else {
+            Vec::new()
+        };
+        let indices2: Vec<u32> = if index_count2 > 0 {
+            match meshopt::decode_index_buffer(index_bytes2, index_count2) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(anyhow!("Failed to decode index buffer 2")),
+            }
+        } else {
+            Vec::new()
+        };
 
-            self.model_handle.index_buffer.add_items(
-                &self.device_context,
-                self.command_handle.command_pool,
-                indices,
-            )?;
+        let vertices3: Vec<QuantizedVertex> = if vertex_count3 > 0 {
+            match meshopt::decode_vertex_buffer(vertex_bytes3, vertex_count3) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(anyhow!("Failed to decode vertex buffer 3")),
+            }
+        } else {
+            Vec::new()
+        };
+        let indices3: Vec<u32> = if index_count3 > 0 {
+            match meshopt::decode_index_buffer(index_bytes3, index_count3) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(anyhow!("Failed to decode index buffer 3")),
+            }
+        } else {
+            Vec::new()
+        };
 
-            let mesh = Mesh {
-                vertex_offset: prev_vertex_count,
-                vertex_length: vertex_count as u32,
-                index_offset: prev_index_count,
-                index_length: index_count as u32,
-                indirect_draw_data_ptr: self
-                    .command_handle
-                    .indirect_draw_buffer
-                    .mapped
-                    .add(self.model_handle.loaded_models.len())
-                    .cast_mut(),
-            };
+        // Finish loading
 
-            let mut last_draw_data: *const IndirectDrawData = std::ptr::null();
-            for i in (0..self.command_handle.indirect_draw_buffer.capacity).rev() {
-                let draw_data = self.command_handle.indirect_draw_buffer.mapped.add(i);
-                if draw_data.read().instance_count > 0 {
-                    last_draw_data = draw_data;
+        vertices0.extend(vertices1);
+        vertices0.extend(vertices2);
+        vertices0.extend(vertices3);
+        indices0.extend(indices1);
+        indices0.extend(indices2);
+        indices0.extend(indices3);
+
+        let prev_vertex_count = self.model_handle.vertex_buffer.element_count;
+        let prev_index_count = self.model_handle.index_buffer.element_count;
+
+        self.model_handle.vertex_buffer.add_items(
+            &self.device_context,
+            self.command_handle.command_pool,
+            vertices0,
+        )?;
+
+        self.model_handle.index_buffer.add_items(
+            &self.device_context,
+            self.command_handle.command_pool,
+            indices0,
+        )?;
+
+        let mesh_metadata = MeshMetadata::new(min_aabb, max_aabb, lod1_percentage, lod2_percentage, lod3_percentage, cull_percentage);
+        let mesh = Mesh {
+            mesh_asset_id,
+            metadata: mesh_metadata,
+            usage_count: 1,
+            vertex_offset: prev_vertex_count,
+            index_offset: prev_index_count,
+            lod0_vertex_length: vertex_count0 as u32,
+            lod0_index_length: index_count0 as u32,
+            lod1_vertex_length: vertex_count1 as u32,
+            lod1_index_length: index_count1 as u32,
+            lod2_vertex_length: vertex_count2 as u32,
+            lod2_index_length: index_count2 as u32,
+            lod3_vertex_length: vertex_count3 as u32,
+            lod3_index_length: index_count3 as u32,
+        };
+
+        self.model_handle.loaded_meshes.insert(mesh_asset_id, mesh);
+
+        let (mesh_buffer, mesh_buffer_memory, mesh_buffer_mapped) = self.model_handle.mesh_uniform_buffer.get_buffer_parts(&self.device_context, self.command_handle.command_pool);
+        let mesh_buffer_layout = unsafe { mesh_buffer_mapped.cast_mut().as_mut().unwrap() };
+        
+        let mut mesh_metadata_index = u16::MAX;
+        for i in 0..2048 {
+            if mesh_buffer_layout.0[i] == mesh_metadata {
+                mesh_metadata_index = i as u16;
+                break;
+            }
+        }
+
+        if mesh_metadata_index == u16::MAX {
+            for i in 0..2048 {
+                if mesh_buffer_layout.0[i] == MeshMetadata::default() {
+                    mesh_buffer_layout.0[i] = mesh_metadata;
+                    mesh_metadata_index = i as u16;
                     break;
                 }
             }
-
-            let mut first_instance: u32 = 0;
-            if !last_draw_data.is_null() {
-                first_instance =
-                    last_draw_data.read().first_instance + last_draw_data.read().instance_count;
-            }
-
-            *mesh.indirect_draw_data_ptr = IndirectDrawData {
-                index_count: index_count as u32,
-                instance_count: 0,
-                first_index: prev_index_count,
-                vertex_offset: prev_vertex_count as i32,
-                first_instance: first_instance,
-            };
-            self.model_handle
-                .loaded_models
-                .insert((vertex_asset_id, index_asset_id), mesh);
         }
 
-        Ok(())
+        // Finalize and Cleanup
+        unsafe {
+            if !self.model_handle.mesh_uniform_buffer.is_host_visible {
+                Buffer::<MeshBufferLayout>::copy_buffer(&self.device_context, self.command_handle.command_pool, mesh_buffer, self.model_handle.mesh_uniform_buffer.buffer, 1u64)?;
+                self.device_context.device.destroy_buffer(mesh_buffer, None);
+                self.device_context.device.unmap_memory(mesh_buffer_memory);
+                self.device_context.device.free_memory(mesh_buffer_memory, None);
+            }
+        }
+
+        Ok(mesh_metadata_index)
     }
 
-    pub fn unload_model(&mut self, vertex_asset_id: AssetId, index_asset_id: AssetId) -> Result<()> {
-        if vertex_asset_id == AssetId::None || index_asset_id == AssetId::None {
-            return Ok(());
+    pub fn unload_mesh(&mut self, mesh_asset_id: AssetId) -> Result<()> {
+        // Do not unload mesh if it is not loaded
+
+        if mesh_asset_id == AssetId::None || !self.model_handle.loaded_meshes.contains_key(&mesh_asset_id) {
+            return Ok(())
         }
 
-        let unloading_model = self
+        self.model_handle.loaded_meshes.get_mut(&mesh_asset_id).unwrap().usage_count -= 1;
+
+        let unloading_mesh = self
             .model_handle
-            .loaded_models
-            .get_mut(&(vertex_asset_id, index_asset_id))
-            .expect("Model not found")
+            .loaded_meshes
+            .get(&mesh_asset_id)
+            .unwrap()
             .clone();
 
-        let fully_unloaded =
-            unsafe { unloading_model.indirect_draw_data_ptr.read().instance_count <= 1 };
+        if unloading_mesh.usage_count == 0 {
+            let unloaded_vertex_count = unloading_mesh.lod0_vertex_length + unloading_mesh.lod1_vertex_length + unloading_mesh.lod2_vertex_length + unloading_mesh.lod3_vertex_length;
+            let unloaded_index_count = unloading_mesh.lod0_index_length + unloading_mesh.lod1_index_length + unloading_mesh.lod2_index_length + unloading_mesh.lod3_index_length;
 
-        if fully_unloaded {
             self.model_handle.vertex_buffer.remove_items(
                 &self.device_context,
                 self.command_handle.command_pool,
-                unloading_model.vertex_offset,
-                unloading_model.vertex_offset + unloading_model.vertex_length,
+                unloading_mesh.vertex_offset,
+                unloading_mesh.vertex_offset + unloaded_vertex_count,
             )?;
             self.model_handle.index_buffer.remove_items(
                 &self.device_context,
                 self.command_handle.command_pool,
-                unloading_model.index_offset,
-                unloading_model.index_offset + unloading_model.index_length,
+                unloading_mesh.index_offset,
+                unloading_mesh.index_offset + unloaded_index_count,
             )?;
 
             // Update other model offsets
             self.model_handle
-                .loaded_models
+                .loaded_meshes
                 .values_mut()
-                .filter(|m| m.vertex_offset > unloading_model.vertex_offset)
+                .filter(|m| m.vertex_offset > unloading_mesh.vertex_offset)
                 .for_each(|m| {
-                    m.vertex_offset -= unloading_model.vertex_length;
-                    m.index_offset -= unloading_model.index_length;
-                    let draw_data = unsafe { m.indirect_draw_data_ptr.as_mut().unwrap() };
-                    draw_data.vertex_offset = m.vertex_offset as i32;
-                    draw_data.first_index = m.index_offset;
+                    m.vertex_offset -= unloaded_vertex_count;
+                    m.index_offset -= unloaded_index_count;
                 });
+
+            self.model_handle.loaded_meshes.remove(&mesh_asset_id);
         }
 
         Ok(())
@@ -922,7 +1111,7 @@ impl VulkanRenderer {
 
         // Create (staging)
 
-        let (staging_buffer, staging_buffer_memory) = Buffer::<*const c_void>::create_buffer(
+        let (staging_buffer, staging_buffer_memory, staging_buffer_mapped) = Buffer::<*const c_void>::create_buffer(
             &device_context,
             total_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
@@ -932,20 +1121,13 @@ impl VulkanRenderer {
         // Copy (staging)
 
         unsafe {
-            let memory = device_context.clone().device.map_memory(
-                staging_buffer_memory,
-                0,
-                total_size,
-                vk::MemoryMapFlags::empty(),
-            )?;
-
             // Copy each mip level into the staging buffer at the correct offset
             let mut offset: usize = 0;
             for level in 0..mipmap_levels as usize {
                 let mip_pixel_data = texture.get_image_data(level as u32, 0, 0).unwrap();
                 memcpy(
                     mip_pixel_data.as_ptr(),
-                    memory.add(offset).cast(),
+                    staging_buffer_mapped.add(offset).cast(),
                     mip_pixel_data.len(),
                 );
                 offset += mip_pixel_data.len();
@@ -1210,9 +1392,8 @@ impl VulkanRenderer {
             self.render_pipeline_handle.descriptor_handle.descriptor_sets = create_descriptor_sets(
                 &self.device_context,
                 &self.model_handle,
+                &self.command_handle.main_camera_visbuffers,
                 &self.texture_handle,
-                &self.command_handle.indirect_draw_buffer,
-                &self.command_handle.instance_buffer,
                 self.render_pipeline_handle.descriptor_handle.descriptor_set_layout,
                 self.render_pipeline_handle.descriptor_handle.descriptor_pool)?;
 
@@ -1262,8 +1443,11 @@ impl VulkanRenderer {
                 return Ok(());
             }
 
+            let current_frame = self.command_handle.sync_handle.current_frame;
+            let max_frames_in_flight = self.command_handle.sync_handle.max_frames_in_flight;
+
             let in_flight_fence =
-                self.command_handle.sync_handle.in_flight_fences[self.command_handle.sync_handle.current_frame];
+                self.command_handle.sync_handle.in_flight_fences[current_frame];
 
             device.wait_for_fences(&[in_flight_fence], true, u64::MAX)?;
 
@@ -1273,7 +1457,7 @@ impl VulkanRenderer {
             let result = device.acquire_next_image_khr(
                 self.present_handle.swapchain_handle.swapchain,
                 u64::MAX,
-                self.command_handle.sync_handle.image_available_semaphores[self.command_handle.sync_handle.current_frame],
+                self.command_handle.sync_handle.image_available_semaphores[current_frame],
                 vk::Fence::null(),
             );
 
@@ -1296,19 +1480,17 @@ impl VulkanRenderer {
             //println!("Swapchain took: {:?}", start.elapsed());
             //let start = Instant::now();
 
-            self.update_uniform_buffer(self.command_handle.sync_handle.current_frame)?;
+            self.update_uniform_buffer(current_frame)?;
 
             //println!("Uniform buffer took: {:?}", start.elapsed());
             //let start = Instant::now();
 
-            let (command_buffer, current_frame, indirect_draw_buffer, max_frames_in_flight) = {
-                (
-                    self.command_handle.command_buffers[image_index],
-                    self.command_handle.sync_handle.current_frame,
-                    self.command_handle.indirect_draw_buffer.buffer,
-                    self.command_handle.sync_handle.max_frames_in_flight,
-                )
-            };
+            let command_buffer = self.command_handle.command_buffers[image_index];
+            let indirect_draw_buffer = &self.command_handle.main_camera_visbuffers[current_frame].indirect_draw_buffer;
+
+            // Culling Pass
+
+
 
             // Commands
 
@@ -1377,9 +1559,9 @@ impl VulkanRenderer {
 
             device.cmd_draw_indexed_indirect(
                 command_buffer,
-                indirect_draw_buffer,
+                indirect_draw_buffer.buffer,
                 0,
-                self.command_handle.indirect_draw_buffer.capacity as u32,
+                indirect_draw_buffer.element_capacity as u32,
                 size_of::<IndirectDrawData>() as u32,
             );
 
@@ -1925,7 +2107,7 @@ unsafe fn create_window(with_fullscreen: bool) -> Result<(EventLoop<()>, Window)
 
     let window: Window = WindowBuilder::new()
         .with_title("Vulkanalia Game")
-        .with_inner_size(LogicalSize::new(2560, 1600))
+        .with_inner_size(LogicalSize::new(2560, 1440))
         .build(&event_loop)
         .unwrap();
 
@@ -1940,8 +2122,8 @@ unsafe fn create_window(with_fullscreen: bool) -> Result<(EventLoop<()>, Window)
             //.max_by_key(|mode| mode.refresh_rate_millihertz() + mode.size().width * mode.size().height)
             .find(|mode| {
                 mode.refresh_rate_millihertz() / 1000 == 240
-                    && mode.size().width == 1920
-                    && mode.size().height == 1200
+                    && mode.size().width == 2560
+                    && mode.size().height == 1440
             })
         {
             window.set_fullscreen(Some(Fullscreen::Exclusive(video_mode.clone())));
@@ -2508,9 +2690,8 @@ unsafe fn create_descriptor_pool(device: Device) -> Result<vk::DescriptorPool> {
 unsafe fn create_descriptor_sets(
     device_context: &DeviceContext,
     model_handle: &ModelHandle,
+    main_camera_visbuffers: &Vec<Visbuffer>,
     texture_handle: &TextureHandle,
-    indirect_draw_buffer: &IndirectDrawBuffer,
-    instance_buffer: &InstanceBuffer,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
 ) -> Result<Vec<vk::DescriptorSet>> {
@@ -2526,70 +2707,65 @@ unsafe fn create_descriptor_sets(
     // Update
 
     for i in 0..MAX_FRAMES_IN_FLIGHT as usize {
-        let info = vk::DescriptorBufferInfo::builder()
+        let ubo_info = [vk::DescriptorBufferInfo::builder()
             .buffer(model_handle.uniform_buffers[i].buffer)
             .offset(0)
-            .range(size_of::<UniformBufferObject>() as u64);
+            .range(size_of::<UniformBufferObject>() as u64)];
 
-        let buffer_info = &[info];
         let ubo_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
             .dst_binding(2)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .buffer_info(buffer_info);
+            .buffer_info(&ubo_info);
 
-        let static_model_matrix_info = vk::DescriptorBufferInfo::builder()
+        let static_model_matrix_info = [vk::DescriptorBufferInfo::builder()
             .buffer(model_handle.static_model_matrix_buffer.buffer)
             .offset(0)
-            .range(vk::WHOLE_SIZE);
+            .range(vk::WHOLE_SIZE)];
 
-        let static_model_matrix_buffer_info = [static_model_matrix_info];
         let static_model_matrix_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
             .dst_binding(3)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .buffer_info(&static_model_matrix_buffer_info);
+            .buffer_info(&static_model_matrix_info);
 
-        let dyn_model_matrix_info = vk::DescriptorBufferInfo::builder()
+        let dyn_model_matrix_info = [vk::DescriptorBufferInfo::builder()
             .buffer(model_handle.dyn_model_matrix_buffer.buffer)
             .offset(0)
-            .range(vk::WHOLE_SIZE);
+            .range(vk::WHOLE_SIZE)];
 
-        let dyn_model_matrix_buffer_info = [dyn_model_matrix_info];
         let dyn_model_matrix_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
             .dst_binding(4)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .buffer_info(&dyn_model_matrix_buffer_info);
+            .buffer_info(&dyn_model_matrix_info);
 
-        let indirect_draw_info = vk::DescriptorBufferInfo::builder()
-            .buffer(indirect_draw_buffer.buffer)
+        let indirect_draw_info = [vk::DescriptorBufferInfo::builder()
+            .buffer(main_camera_visbuffers[i].indirect_draw_buffer.buffer)
             .offset(0)
-            .range(vk::WHOLE_SIZE);
+            .range(vk::WHOLE_SIZE)];
 
-        let indirect_draw_buffer_info = [indirect_draw_info];
         let indirect_draw_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
             .dst_binding(5)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .buffer_info(&indirect_draw_buffer_info);
+            .buffer_info(&indirect_draw_info);
 
-        let instance_data_info = vk::DescriptorBufferInfo::builder()
-            .buffer(instance_buffer.buffer)
+        let instance_data_info = [vk::DescriptorBufferInfo::builder()
+            .buffer(main_camera_visbuffers[i].instance_buffer.buffer)
             .offset(0)
-            .range(vk::WHOLE_SIZE);
+            .range(vk::WHOLE_SIZE)];
 
-        let instance_data_buffer_info = [instance_data_info];
         let instance_data_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
             .dst_binding(6)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .buffer_info(&instance_data_buffer_info);
+            .buffer_info(&instance_data_info);
 
         device_context.device.update_descriptor_sets(
             &[
@@ -2855,6 +3031,30 @@ unsafe fn create_sync_objects(
     })
 }
 
+fn create_source_instance_buffer(device_context: &DeviceContext, command_pool: vk::CommandPool) -> Buffer<PerInstanceData> {
+    Buffer::new(
+        device_context,
+        command_pool,
+        4096,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        4096,
+        Vec::new(),
+        true,
+    )
+}
+
+fn create_visbuffers(
+    device_context: &DeviceContext,
+    command_pool: vk::CommandPool
+) -> Vec<Visbuffer> {
+    let mut visbuffers: Vec<Visbuffer> = Vec::new();
+    for i in 0..MAX_FRAMES_IN_FLIGHT {
+        visbuffers.push(Visbuffer::new(device_context, command_pool, 1));
+    }
+    visbuffers
+}
+
 // Helper Functions
 
 pub fn begin_single_time_commands(
@@ -2922,7 +3122,7 @@ const MODEL_MATRIX_ALLOCATE_THRESHOLD: u32 = 1024;
 
 // Build Functions
 
-fn create_mesh_buffers(
+fn create_vertex_index_buffers(
     device_context: DeviceContext,
     command_pool: vk::CommandPool,
 ) -> (Buffer<QuantizedVertex>, Buffer<u32>) {
@@ -2934,6 +3134,7 @@ fn create_mesh_buffers(
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
         0,
         Vec::new(),
+        false,
     );
 
     let index_buffer: Buffer<u32> = Buffer::new(
@@ -2944,6 +3145,7 @@ fn create_mesh_buffers(
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
         0,
         Vec::new(),
+        false,
     );
 
     (vertex_buffer, index_buffer)
@@ -2959,11 +3161,12 @@ fn create_uniform_buffers(
         let buffer: Buffer<UniformBufferObject> = Buffer::new(
             device_context,
             command_pool,
-            1,
+            262_144,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
             0,
             Vec::new(),
+            false,
         );
         uniform_buffers.push(buffer);
     }
@@ -2983,17 +3186,35 @@ fn create_model_matrix_buffers(
         vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         MODEL_MATRIX_ALLOCATE_THRESHOLD,
         Vec::new(),
+        true,
     );
     let static_model_matrix_buffer: Buffer<QuantizedModelMatrix> = Buffer::new(
         &device_context,
         command_pool,
         MODEL_MATRIX_ALLOCATE_THRESHOLD as u64,
         vk::BufferUsageFlags::STORAGE_BUFFER,
-        vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
         MODEL_MATRIX_ALLOCATE_THRESHOLD,
         Vec::new(),
+        true,
     );
     (dyn_model_matrix_buffer, static_model_matrix_buffer)
+}
+
+fn create_mesh_buffer(
+    device_context: DeviceContext,
+    command_pool: vk::CommandPool,
+) -> Buffer<MeshBufferLayout> {
+    Buffer::new(
+        &device_context,
+        command_pool,
+        1,
+        vk::BufferUsageFlags::UNIFORM_BUFFER,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        0,
+        vec![MeshBufferLayout::default()],
+    false,
+    )
 }
 
 // Helper Functions

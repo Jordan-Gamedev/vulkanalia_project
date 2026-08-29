@@ -1,7 +1,8 @@
 use meshopt::{quantize_half, quantize_snorm, quantize_unorm};
+use serde::Deserialize;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{stdout, Result, Write};
+use std::io::{Result, Write, stdout};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -23,6 +24,29 @@ struct QuantizedVertex {
     color: [u8; 3],
     normal: [i8; 3],
     uv: [u16; 2],
+}
+
+#[derive(Debug, Deserialize)]
+struct Lods {
+    lod0: String,
+    lod1: String,
+    lod2: String,
+    lod3: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LodPercentages {
+    lod1: f32,
+    lod2: f32,
+    lod3: f32,
+    cull: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct Model {
+    name: String,
+    lods: Lods,
+    lod_percentages: LodPercentages,
 }
 
 fn find_project_root(start: &Path) -> Option<PathBuf> {
@@ -64,7 +88,7 @@ fn main() -> Result<()> {
 
     // Print help info if requested by user
     if check_help() {
-        return Ok(())
+        return Ok(());
     }
 
     // Compile shaders to spirv bytecode
@@ -91,7 +115,10 @@ fn main() -> Result<()> {
     // Optionally run the executable
     if std::env::args().any(|a| a.eq_ignore_ascii_case("--run")) {
         if let Ok(exe_path) = find_executable() {
-            log_color(&format!("Running {}...", exe_path.display()), ColorType::Blue);
+            log_color(
+                &format!("Running {}...", exe_path.display()),
+                ColorType::Blue,
+            );
             let _ = Command::new(&exe_path).status();
         }
     }
@@ -99,13 +126,18 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-enum ColorType { Blue, Green, Yellow, Red }
+enum ColorType {
+    Blue,
+    Green,
+    Yellow,
+    Red,
+}
 fn log_color(message: &str, color_type: ColorType) {
     let esc_seq = match color_type {
-        ColorType::Blue => { "\x1b[36m" },
-        ColorType::Green => { "\x1b[32m" },
-        ColorType::Yellow => { "\x1b[33m" },
-        ColorType::Red => { "\x1b[31m" },
+        ColorType::Blue => "\x1b[36m",
+        ColorType::Green => "\x1b[32m",
+        ColorType::Yellow => "\x1b[33m",
+        ColorType::Red => "\x1b[31m",
     };
     println!("{}{}", esc_seq, message);
     print!("\x1b[0m");
@@ -151,18 +183,21 @@ fn finish_progress() {
 }
 
 fn check_help() -> bool {
-    let mut args  = std::env::args();
+    let mut args = std::env::args();
 
     if args.any(|a| a.eq_ignore_ascii_case("--help") || a.eq_ignore_ascii_case("-h")) {
-        log_color("Usage: build <Options>\n\t
+        log_color(
+            "Usage: build <Options>\n\t
         --help | -h\tList usage info
         --release\tBuild in release mode (default: dev)\n\t
         --upx\tAttempt to compress the final release exe with UPX\n\t
-        --run\tRun the built executable after a successful build", ColorType::Blue);
-        return true
+        --run\tRun the built executable after a successful build",
+            ColorType::Blue,
+        );
+        return true;
     }
 
-    return false
+    return false;
 }
 
 fn find_executable() -> Result<PathBuf> {
@@ -189,15 +224,16 @@ fn find_executable() -> Result<PathBuf> {
     }
 }
 
+/// TODO: Fully update instance and draw buffer workflow
+/// ALSO TODO: Actually make frustum culling and lod selection
+/// ALSO TODO: Make dynamic model matrix buffer be per frame in flight
 fn compile_shaders() -> Result<()> {
     print_banner("1/5  Shader Compilation");
     let shader_paths = traverse_directory("assets/shaders", vec!["slang"])?;
     if shader_paths.is_empty() {
         log_color("No shader files found", ColorType::Yellow);
-        return Ok(())
+        return Ok(());
     }
-
-    render_progress("Shader compiling", 0, shader_paths.len())?;
 
     let mut failed_shaders: Vec<&str> = Vec::new();
     let slang_command = cfg_select! {
@@ -206,40 +242,85 @@ fn compile_shaders() -> Result<()> {
     };
 
     for (index, shader_path) in shader_paths.iter().enumerate() {
+        render_progress(
+            &format!(
+                "Shader compiling ({})",
+                shader_paths[index].clone().into_string().unwrap()
+            ),
+            index,
+            shader_paths.len(),
+        )?;
+
+        let shader_contents = fs::read_to_string(shader_path)?;
+        let shader_lines: Vec<&str> = shader_contents.lines().map(|l| l.trim()).collect();
+        let mut args = vec![
+            "-target",
+            "spirv",
+            "-profile",
+            "spirv_1_3",
+            "-emit-spirv-directly",
+            "-fvk-use-entrypoint-name",
+        ];
+
+        // Find "[shader("s and determine entry points for compilation on the line below
+        for i in 0..shader_lines.len() {
+            let mut line_index = i;
+
+            if shader_lines[line_index].contains("[shader(") {
+                line_index += 1;
+                let mut next_line = shader_lines[line_index];
+                while next_line.starts_with("[") {
+                    line_index += 1;
+                    next_line = shader_lines[line_index];
+                }
+
+                let entry_point_name = next_line.split([' ', '(']).collect::<Vec<&str>>()[1];
+                args.push("-entry");
+                args.push(entry_point_name);
+            }
+        }
+
+        args.push("-o");
+
         match Command::new(slang_command)
-            .args([
-                "-target", "spirv",
-                "-profile", "spirv_1_3",
-                "-emit-spirv-directly",
-                "-fvk-use-entrypoint-name",
-                "-entry", "vertMain",
-                "-entry", "fragMain",
-                "-o",
-            ])
+            .args(args)
             .arg(shader_path.with_extension("spv"))
             .arg(shader_path)
-            .output() {
-                Ok(m) =>
-                {
-                    if m.status.code().map_or(false, |c| c != 0) {
-                        let msg = String::from_utf8_lossy(&m.stderr).to_string();
-                        log_color(&msg, ColorType::Red);
-                        failed_shaders.push(shader_path.to_str().unwrap())
-                    }
-                },
-                Err(e) => { log_color(&format!("\n{}", e), ColorType::Red); failed_shaders.push(shader_path.to_str().unwrap()) }
-            };
+            .output()
+        {
+            Ok(m) => {
+                if m.status.code().map_or(false, |c| c != 0) {
+                    let msg = String::from_utf8_lossy(&m.stderr).to_string();
+                    log_color(&msg, ColorType::Red);
+                    failed_shaders.push(shader_path.to_str().unwrap())
+                }
+            }
+            Err(e) => {
+                log_color(&format!("\n{}", e), ColorType::Red);
+                failed_shaders.push(shader_path.to_str().unwrap())
+            }
+        };
 
         render_progress("Shader compiling", index + 1, shader_paths.len())?;
     }
     finish_progress();
 
     if failed_shaders.len() == 0 {
-        log_color("Shader compilation finished successfully.", ColorType::Green);
+        log_color(
+            "Shader compilation finished successfully.",
+            ColorType::Green,
+        );
     } else {
-        log_color(&format!("{}/{} shaders failed!", failed_shaders.len(), shader_paths.len()), ColorType::Red);
+        log_color(
+            &format!(
+                "{}/{} shaders failed!",
+                failed_shaders.len(),
+                shader_paths.len()
+            ),
+            ColorType::Red,
+        );
         for (i, failed) in failed_shaders.iter().enumerate() {
-            log_color(&format!("\t[{}]: {}", {i}, {failed}), ColorType::Red);
+            log_color(&format!("\t[{}]: {}", { i }, { failed }), ColorType::Red);
         }
         println!();
     }
@@ -249,13 +330,12 @@ fn compile_shaders() -> Result<()> {
 
 fn convert_textures() -> Result<()> {
     print_banner("2/5  Texture Conversion");
-    let texture_paths = traverse_directory("assets/textures", vec!["png", "jpg", "jpeg", "tga", "bmp"])?;
+    let texture_paths =
+        traverse_directory("assets/textures", vec!["png", "jpg", "jpeg", "tga", "bmp"])?;
     if texture_paths.is_empty() {
         log_color("No texture files found", ColorType::Yellow);
-        return Ok(())
+        return Ok(());
     }
-
-    render_progress("Texture conversion", 0, texture_paths.len())?;
 
     let ktx_command = cfg_select! {
         windows => { "toktx" },
@@ -264,37 +344,100 @@ fn convert_textures() -> Result<()> {
     let base_args = vec![
         "create",
         "--generate-mipmap",
-        "--mipmap-filter", "mitchell",
-        "--format", "R8G8B8A8_SRGB",
+        "--mipmap-filter",
+        "mitchell",
+        "--format",
+        "R8G8B8A8_SRGB",
     ];
 
-    let etc1s_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { vec!["--clevel", "5"] } else { vec!["--clevel", "1"] };
-    let uastc_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) { vec!["--zstd", "16"] } else { vec!["--zstd", "3"] };
+    let etc1s_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) {
+        vec!["--clevel", "5"]
+    } else {
+        vec!["--clevel", "1"]
+    };
+    let uastc_quality = if std::env::args().any(|a| a.eq_ignore_ascii_case("--release")) {
+        vec!["--zstd", "16"]
+    } else {
+        vec!["--zstd", "3"]
+    };
 
     let mut failed_conversions: Vec<&str> = Vec::new();
 
     for (index, tex_path) in texture_paths.iter().enumerate() {
+        render_progress(
+            &format!(
+                "Texture conversion ({})",
+                tex_path.clone().into_string().unwrap()
+            ),
+            index,
+            texture_paths.len(),
+        )?;
+
         let tex_path = tex_path.to_str().unwrap();
 
         let encode_args = match tex_path {
             s if s.contains("_albedo") => {
-                vec!["--encode", "uastc", "--uastc-quality", "3", "--uastc-rdo", "--uastc-rdo-l", "1.0", uastc_quality[0], uastc_quality[1]]
-            },
+                vec![
+                    "--encode",
+                    "uastc",
+                    "--uastc-quality",
+                    "3",
+                    "--uastc-rdo",
+                    "--uastc-rdo-l",
+                    "1.0",
+                    uastc_quality[0],
+                    uastc_quality[1],
+                ]
+            }
             s if s.contains("_normal") => {
-                vec!["--encode", "uastc", "--uastc-quality", "4", "--uastc-rdo", "--uastc-rdo-l", "0.75", uastc_quality[0], uastc_quality[1]]
-            },
+                vec![
+                    "--encode",
+                    "uastc",
+                    "--uastc-quality",
+                    "4",
+                    "--uastc-rdo",
+                    "--uastc-rdo-l",
+                    "0.75",
+                    uastc_quality[0],
+                    uastc_quality[1],
+                ]
+            }
             s if s.contains("_metallic") || s.contains("_roughness") => {
-                vec!["--encode", "etc1s", "--qlevel", "128", etc1s_quality[0], etc1s_quality[1]]
-            },
+                vec![
+                    "--encode",
+                    "etc1s",
+                    "--qlevel",
+                    "128",
+                    etc1s_quality[0],
+                    etc1s_quality[1],
+                ]
+            }
             s if s.contains("_ao") => {
-                vec!["--encode", "uastc", "--uastc-quality", "2", "--uastc-rdo", "--uastc-rdo-l", "2.0", uastc_quality[0], uastc_quality[1]]
-            },
+                vec![
+                    "--encode",
+                    "uastc",
+                    "--uastc-quality",
+                    "2",
+                    "--uastc-rdo",
+                    "--uastc-rdo-l",
+                    "2.0",
+                    uastc_quality[0],
+                    uastc_quality[1],
+                ]
+            }
             s if s.contains("_emissive") => {
-                vec!["--encode", "etc1s", "--qlevel", "64", etc1s_quality[0], etc1s_quality[1]]
-            },
+                vec![
+                    "--encode",
+                    "etc1s",
+                    "--qlevel",
+                    "64",
+                    etc1s_quality[0],
+                    etc1s_quality[1],
+                ]
+            }
             _ => {
                 vec![]
-            },
+            }
         };
 
         let mut final_args = base_args.clone();
@@ -304,24 +447,37 @@ fn convert_textures() -> Result<()> {
         final_args.push(file_output.as_str());
 
         match Command::new(ktx_command).args(final_args).output() {
-                Ok(m) => {
-                    if m.status.code().map_or(false, |c| c != 0) {
-                        let msg = String::from_utf8_lossy(&m.stderr).to_string();
-                        log_color(&msg, ColorType::Red);
-                        failed_conversions.push(tex_path)
-                    }
-                },
-                Err(e) => { log_color(&format!("\n{}", e), ColorType::Red); failed_conversions.push(tex_path) }
-            };
+            Ok(m) => {
+                if m.status.code().map_or(false, |c| c != 0) {
+                    let msg = String::from_utf8_lossy(&m.stderr).to_string();
+                    log_color(&msg, ColorType::Red);
+                    failed_conversions.push(tex_path)
+                }
+            }
+            Err(e) => {
+                log_color(&format!("\n{}", e), ColorType::Red);
+                failed_conversions.push(tex_path)
+            }
+        };
 
         render_progress("Texture conversion", index + 1, texture_paths.len())?;
     }
     finish_progress();
 
     if failed_conversions.len() == 0 {
-        log_color("Texture conversion finished successfully.", ColorType::Green);
+        log_color(
+            "Texture conversion finished successfully.",
+            ColorType::Green,
+        );
     } else {
-        log_color(&format!("{}/{} textures failed!", failed_conversions.len(), texture_paths.len()), ColorType::Red);
+        log_color(
+            &format!(
+                "{}/{} textures failed!",
+                failed_conversions.len(),
+                texture_paths.len()
+            ),
+            ColorType::Red,
+        );
         for (i, failed) in failed_conversions.iter().enumerate() {
             log_color(&format!("\t[{}]: {}", i, failed), ColorType::Red);
         }
@@ -334,50 +490,83 @@ fn convert_textures() -> Result<()> {
 fn mesher() -> Result<()> {
     print_banner("3/5  Mesh Extraction");
 
-    let source_root_dir = "assets/models";
-    let paths = traverse_directory(&source_root_dir, vec!["glb"])?;
+    let source_root_dir = "assets/glbs";
+    let paths = traverse_directory(&source_root_dir, vec!["toml"])?;
     if paths.is_empty() {
         log_color("No model files found", ColorType::Yellow);
         return Ok(());
     }
 
-    let dest_root_dir = "assets/models_compressed";
+    let dest_root_dir = "assets/mesh_files";
     if let Err(e) = fs::remove_dir_all(&dest_root_dir) {
         if e.kind() != std::io::ErrorKind::NotFound {
             eprintln!("{e}");
         }
     }
 
-    render_progress("Meshing models", 0, paths.len())?;
-
     let mut fail_count = 0;
 
+    // Gather glb data from lods
     for (index, path) in paths.iter().enumerate() {
-        match gltf::import(path) {
-            Ok((glb, buffers, _)) => {
-                let (verts, inds) = compress_glb(glb, buffers)?;
-                write_mesh_to_file(
-                    &source_root_dir.to_string(),
-                    &dest_root_dir.to_string(),
-                    path.parent().unwrap().as_os_str(),
-                    &path.file_stem().unwrap(),
-                    verts,
-                    inds,
-                )?;
+        let metadata = fs::read_to_string(path)?;
+        let model: Model = toml::from_str(&metadata).unwrap();
+
+        render_progress(
+            format!("Meshing glbs ({})", model.name).as_str(),
+            index,
+            paths.len(),
+        )?;
+
+        let mut gathered_glbs: Vec<gltf::Document> = Vec::new();
+        let mut gathered_buffers: Vec<Vec<gltf::buffer::Data>> = Vec::new();
+
+        for i in 0..4 {
+            // Get lod path
+            let lod_path = match i {
+                0 => format!("{}/{}", source_root_dir, model.lods.lod0),
+                1 => format!("{}/{}", source_root_dir, model.lods.lod1),
+                2 => format!("{}/{}", source_root_dir, model.lods.lod2),
+                _ => format!("{}/{}", source_root_dir, model.lods.lod3),
+            };
+
+            // No more lods should be processed if the current lod is "none"
+            if lod_path.ends_with("none") {
+                break;
             }
-            Err(e) => {
-                eprintln!("Failed to load {}: {e}", path.display()); fail_count += 1;
+
+            match gltf::import(&lod_path) {
+                Ok((glb, buffers, _)) => {
+                    gathered_glbs.push(glb);
+                    gathered_buffers.push(buffers);
+                }
+                Err(e) => {
+                    eprintln!("Failed to load {}: {e}", lod_path);
+                    fail_count += 1;
+                }
             }
         }
 
-        render_progress("Meshing models", index + 1, paths.len())?;
+        // Compress meshes and write them to file
+        let bytes = read_glbs(&model, gathered_glbs, gathered_buffers);
+        write_mesh_to_file(
+            &source_root_dir.to_string(),
+            &dest_root_dir.to_string(),
+            path.parent().unwrap().as_os_str(),
+            &model.name,
+            bytes,
+        )?;
+
+        render_progress("Meshing glbs", index + 1, paths.len())?;
     }
     finish_progress();
-    
+
     if fail_count == 0 {
         log_color("Mesh extraction finished successfully.", ColorType::Green);
     } else {
-        log_color(&format!("Mesh extraction finished with {} errors", fail_count), ColorType::Red);
+        log_color(
+            &format!("Mesh extraction finished with {} errors", fail_count),
+            ColorType::Red,
+        );
     }
 
     Ok(())
@@ -396,76 +585,90 @@ fn create_resources() -> Result<()> {
         }
     }
 
-    let mut resource_file_contents: String ="// |                                            |\n".to_string();
+    let mut resource_file_contents: String =
+        "// |                                            |\n".to_string();
     resource_file_contents.push_str("// | This file is auto-generated by the builder |\n");
     resource_file_contents.push_str("// |                                            |\n\n");
     resource_file_contents.push_str("#![allow(dead_code)]\n\n");
     resource_file_contents.push_str("#[repr(align(4096))]\n");
     resource_file_contents.push_str("pub struct AlignedAsset(pub &'static[u8]);\n\n");
-   
+
     resource_file_contents.push_str("// ------------KTX2 Textures------------\n\n");
 
     let texture_resources = traverse_directory("assets", vec!["ktx2"])?;
 
     resource_file_contents.push_str("pub const START_ENUM_T: usize = 1;\n");
-    resource_file_contents.push_str(&format!("pub const END_ENUM_T: usize = {};\n", texture_resources.len()));
-    resource_file_contents.push_str(&format!("pub const COUNT_ENUM_T: usize = {};\n\n", texture_resources.len()));
+    resource_file_contents.push_str(&format!(
+        "pub const END_ENUM_T: usize = {};\n",
+        texture_resources.len()
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const COUNT_ENUM_T: usize = {};\n\n",
+        texture_resources.len()
+    ));
 
     let mut texture_file_names: Vec<String> = Vec::new();
 
     for resource in texture_resources.clone() {
         let resource_path = resource.to_string_lossy().replace("\\", "/");
         let resource_path = resource_path.as_str();
-        let file_name = format!("{}_T", resource.file_stem().unwrap().to_ascii_uppercase().into_string().unwrap());
+        let file_name = format!(
+            "{}_T",
+            resource
+                .file_stem()
+                .unwrap()
+                .to_ascii_uppercase()
+                .into_string()
+                .unwrap()
+        );
         let byte_size = fs::read(resource_path).unwrap().len();
         resource_file_contents.push_str(&format!("// {}\n", &file_size_as_string(&byte_size)));
         resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
         texture_file_names.push(file_name);
     }
 
-    resource_file_contents.push_str("\n// ------------Model Vertices-----------\n\n");
+    resource_file_contents.push_str("\n// ------------Model Buffers------------\n\n");
 
-    let vertex_resources = traverse_directory("assets", vec!["vertbuff"])?;
+    let vertex_resources = traverse_directory("assets", vec!["mesh"])?;
 
-    resource_file_contents.push_str(&format!("pub const START_ENUM_V: usize = {};\n", texture_resources.len() + 1));
-    resource_file_contents.push_str(&format!("pub const END_ENUM_V: usize = {};\n", texture_resources.len() + vertex_resources.len()));
-    resource_file_contents.push_str(&format!("pub const COUNT_ENUM_V: usize = {};\n\n", vertex_resources.len()));
+    resource_file_contents.push_str(&format!(
+        "pub const START_ENUM_M: usize = {};\n",
+        texture_resources.len() + 1
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const END_ENUM_M: usize = {};\n",
+        texture_resources.len() + vertex_resources.len()
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const COUNT_ENUM_M: usize = {};\n\n",
+        vertex_resources.len()
+    ));
 
-    let mut vertex_file_names: Vec<String> = Vec::new();
-    
+    let mut model_file_names: Vec<String> = Vec::new();
+
     for resource in vertex_resources.clone() {
         let resource_path = resource.to_string_lossy().replace("\\", "/");
         let resource_path = resource_path.as_str();
-        let file_name = format!("{}_V", resource.file_stem().unwrap().to_ascii_uppercase().into_string().unwrap());
+        let file_name = format!(
+            "{}_M",
+            resource
+                .file_stem()
+                .unwrap()
+                .to_ascii_uppercase()
+                .into_string()
+                .unwrap()
+        );
         let byte_size = fs::read(resource_path).unwrap().len();
         resource_file_contents.push_str(&format!("// {}\n", &file_size_as_string(&byte_size)));
         resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
-        vertex_file_names.push(file_name);
-    }
-
-    resource_file_contents.push_str("\n// ------------Model Indices------------\n\n");
-
-    let index_resources = traverse_directory("assets", vec!["indbuff"])?;
-    
-    resource_file_contents.push_str(&format!("pub const START_ENUM_I: usize = {};\n", texture_resources.len() + vertex_resources.len() + 1));
-    resource_file_contents.push_str(&format!("pub const END_ENUM_I: usize = {};\n", texture_resources.len() + vertex_resources.len() + index_resources.len()));
-    resource_file_contents.push_str(&format!("pub const COUNT_ENUM_I: usize = {};\n\n", index_resources.len()));
-    
-    let mut index_file_names: Vec<String> = Vec::new();
-
-    for resource in index_resources {
-        let resource_path = resource.to_string_lossy().replace("\\", "/");
-        let resource_path = resource_path.as_str();
-        let file_name = format!("{}_I", resource.file_stem().unwrap().to_ascii_uppercase().into_string().unwrap());
-        let byte_size = fs::read(resource_path).unwrap().len();
-        resource_file_contents.push_str(&format!("// {}\n", &file_size_as_string(&byte_size)));
-        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
-        index_file_names.push(file_name);
+        model_file_names.push(file_name);
     }
 
     // Create asset ids
-    resource_file_contents.push_str("\n#[derive(Clone, Copy, Debug, Default, Eq, strum::FromRepr, Hash, PartialEq)]\n");
-    resource_file_contents.push_str("#[repr(usize)]\n");
+    resource_file_contents.push_str(
+        "\n#[derive(Clone, Copy, Debug, Default, Eq, strum::FromRepr, Hash, PartialEq)]\n",
+    );
+    resource_file_contents.push_str("#[repr(u16)]\n");
 
     resource_file_contents.push_str("pub enum AssetId {\n");
     resource_file_contents.push_str("\t#[default] None,\n");
@@ -473,8 +676,11 @@ fn create_resources() -> Result<()> {
     let mut enum_texture_names: Vec<String> = Vec::new();
     for tex_name in texture_file_names.clone() {
         // Split name into individual words
-        let mut name_words: Vec<String> = tex_name.split("_").map(|s| s.to_ascii_lowercase().to_string()).collect();
-        
+        let mut name_words: Vec<String> = tex_name
+            .split("_")
+            .map(|s| s.to_ascii_lowercase().to_string())
+            .collect();
+
         // Remove asset type suffix
         name_words.remove(name_words.len() - 1);
 
@@ -494,10 +700,13 @@ fn create_resources() -> Result<()> {
     }
 
     let mut enum_vertex_names: Vec<String> = Vec::new();
-    for vert_name in vertex_file_names.clone() {
+    for vert_name in model_file_names.clone() {
         // Split name into individual words
-        let mut name_words: Vec<String> = vert_name.split("_").map(|s| s.to_ascii_lowercase().to_string()).collect();
-        
+        let mut name_words: Vec<String> = vert_name
+            .split("_")
+            .map(|s| s.to_ascii_lowercase().to_string())
+            .collect();
+
         // Remove asset type suffix
         name_words.remove(name_words.len() - 1);
 
@@ -507,36 +716,13 @@ fn create_resources() -> Result<()> {
         }
 
         // Add asset type suffix
-        name_words.push("Vertices".to_string());
+        name_words.push("Mesh".to_string());
 
         let vert_name = name_words.concat();
 
         // Add the enum name
         resource_file_contents.push_str(&format!("\t{},\n", vert_name));
         enum_vertex_names.push(vert_name);
-    }
-
-    let mut enum_index_names: Vec<String> = Vec::new();
-    for index_name in index_file_names.clone() {
-        // Split name into individual words
-        let mut name_words: Vec<String> = index_name.split("_").map(|s| s.to_ascii_lowercase().to_string()).collect();
-        
-        // Remove asset type suffix
-        name_words.remove(name_words.len() - 1);
-
-        // Capitalize first letter of every word
-        for name in &mut name_words {
-            name.get_mut(0..1).unwrap().make_ascii_uppercase();
-        }
-
-        // Add asset type suffix
-        name_words.push("Indices".to_string());
-
-        let index_name = name_words.concat();
-        
-        // Add the enum name
-        resource_file_contents.push_str(&format!("\t{},\n", index_name));
-        enum_index_names.push(index_name);
     }
 
     resource_file_contents.push_str("}\n\n");
@@ -552,18 +738,12 @@ fn create_resources() -> Result<()> {
         resource_file_contents.push_str("\t\t},\n");
     }
 
-    for i in 0..vertex_file_names.len() {
+    for i in 0..model_file_names.len() {
         resource_file_contents.push_str(&format!("\t\tAssetId::{} => {{\n", enum_vertex_names[i]));
-        resource_file_contents.push_str(&format!("\t\t\t{}\n", vertex_file_names[i]));
+        resource_file_contents.push_str(&format!("\t\t\t{}\n", model_file_names[i]));
         resource_file_contents.push_str("\t\t},\n");
     }
 
-    for i in 0..index_file_names.len() {
-        resource_file_contents.push_str(&format!("\t\tAssetId::{} => {{\n", enum_index_names[i]));
-        resource_file_contents.push_str(&format!("\t\t\t{}\n", index_file_names[i]));
-        resource_file_contents.push_str("\t\t},\n");
-    }
-    
     resource_file_contents.push_str("\t}\n");
     resource_file_contents.push_str("}\n");
 
@@ -586,20 +766,23 @@ fn build() -> Result<()> {
                 "-Zno-embed-metadata",
                 "--release",
             ])
-            .status() {
-                Ok(_) => { log_color("Build finished.", ColorType::Green) },
-                Err(_) => { log_color("Build failed!", ColorType::Red); },
+            .status()
+        {
+            Ok(_) => log_color("Build finished.", ColorType::Green),
+            Err(_) => {
+                log_color("Build failed!", ColorType::Red);
             }
+        }
     } else {
         print_banner("4/5  Build App (Dev)");
         log_color("Building dev...", ColorType::Blue);
 
-        match Command::new("cargo")
-            .arg(cargo_command)
-            .status() {
-                Ok(_) => { log_color("Build finished.", ColorType::Green) },
-                Err(_) => { log_color("Build failed!", ColorType::Red); },
+        match Command::new("cargo").arg(cargo_command).status() {
+            Ok(_) => log_color("Build finished.", ColorType::Green),
+            Err(_) => {
+                log_color("Build failed!", ColorType::Red);
             }
+        }
     }
 
     Ok(())
@@ -616,26 +799,102 @@ fn upx_compress(exe_path: &PathBuf) -> Result<()> {
 
     match Command::new(upx_command)
         .args(&["--best", exe_path.to_str().unwrap()])
-        .status() {
-            Ok(status) => {
-                if status.success() {
-                    log_color("UPX compression finished successfully.", ColorType::Green);
-                } else {
-                    log_color("UPX compression failed!", ColorType::Red);
-                }
-            },
-            Err(e) => {
-                log_color(&format!("UPX compression error: {}", e), ColorType::Red);
+        .status()
+    {
+        Ok(status) => {
+            if status.success() {
+                log_color("UPX compression finished successfully.", ColorType::Green);
+            } else {
+                log_color("UPX compression failed!", ColorType::Red);
             }
         }
+        Err(e) => {
+            log_color(&format!("UPX compression error: {}", e), ColorType::Red);
+        }
+    }
 
     Ok(())
 }
 
-fn compress_glb(glb: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+fn read_glbs(
+    model: &Model,
+    gathered_glbs: Vec<gltf::Document>,
+    gathered_buffers: Vec<Vec<gltf::buffer::Data>>,
+) -> Vec<u8> {
+    if gathered_glbs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut gathered_vertex_bytes: Vec<u8> = Vec::new();
+    let mut gathered_index_bytes: Vec<u8> = Vec::new();
+    let mut bytes: Vec<u8> = Vec::new();
+
+    let mut best_min_aabb: [f32; 3] = std::array::repeat(f32::INFINITY);
+    let mut best_max_aabb: [f32; 3] = std::array::repeat(f32::NEG_INFINITY);
+
+    for i in 0..gathered_glbs.len() {
+        let (min_aabb, max_aabb, vertices, indices, vertex_count, index_count) =
+            read_glb(&gathered_glbs[i], &gathered_buffers[i])
+                .unwrap()
+                .unwrap();
+
+        if min_aabb[0] < best_min_aabb[0] {
+            best_min_aabb[0] = min_aabb[0];
+        }
+        if min_aabb[1] < best_min_aabb[1] {
+            best_min_aabb[1] = min_aabb[1];
+        }
+        if min_aabb[2] < best_min_aabb[2] {
+            best_min_aabb[2] = min_aabb[2];
+        }
+        if max_aabb[0] > best_max_aabb[0] {
+            best_max_aabb[0] = max_aabb[0];
+        }
+        if max_aabb[1] > best_max_aabb[1] {
+            best_max_aabb[1] = max_aabb[1];
+        }
+        if max_aabb[2] > best_max_aabb[2] {
+            best_max_aabb[2] = max_aabb[2];
+        }
+
+        bytes.extend((vertex_count as u32).to_be_bytes());
+        bytes.extend((index_count as u32).to_be_bytes());
+        bytes.extend((vertices.len() as u32).to_be_bytes());
+        bytes.extend((indices.len() as u32).to_be_bytes());
+
+        gathered_vertex_bytes.extend(vertices);
+        gathered_index_bytes.extend(indices);
+    }
+
+    for _ in gathered_glbs.len()..4 {
+        bytes.extend(0u128.to_be_bytes());
+    }
+
+    bytes.extend(best_min_aabb[0].to_be_bytes());
+    bytes.extend(best_min_aabb[1].to_be_bytes());
+    bytes.extend(best_min_aabb[2].to_be_bytes());
+    bytes.extend(best_max_aabb[0].to_be_bytes());
+    bytes.extend(best_max_aabb[1].to_be_bytes());
+    bytes.extend(best_max_aabb[2].to_be_bytes());
+
+    bytes.extend(model.lod_percentages.lod1.to_be_bytes());
+    bytes.extend(model.lod_percentages.lod2.to_be_bytes());
+    bytes.extend(model.lod_percentages.lod3.to_be_bytes());
+    bytes.extend(model.lod_percentages.cull.to_be_bytes());
+
+    bytes.extend(gathered_vertex_bytes);
+    bytes.extend(gathered_index_bytes);
+
+    bytes
+}
+
+fn read_glb(
+    glb: &gltf::Document,
+    buffers: &Vec<gltf::buffer::Data>,
+) -> Result<Option<([f32; 3], [f32; 3], Vec<u8>, Vec<u8>, usize, usize)>> {
     let mut glb_vertices: Vec<Vertex> = vec![];
     let mut glb_indices: Vec<u32> = vec![];
-    
+
     for mesh in glb.meshes() {
         for primitive in mesh.primitives() {
             // Get the index offset
@@ -651,8 +910,10 @@ fn compress_glb(glb: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> Result
     }
 
     // Remap vertex and index data
-    let (vertex_count, remapped) = meshopt::generate_vertex_remap(glb_vertices.as_slice(), Some(glb_indices.as_slice()));
-    glb_indices = meshopt::remap_index_buffer(Some(glb_indices.as_slice()), vertex_count, &remapped);
+    let (vertex_count, remapped) =
+        meshopt::generate_vertex_remap(glb_vertices.as_slice(), Some(glb_indices.as_slice()));
+    glb_indices =
+        meshopt::remap_index_buffer(Some(glb_indices.as_slice()), vertex_count, &remapped);
     glb_vertices = meshopt::remap_vertex_buffer(glb_vertices.as_slice(), vertex_count, &remapped);
 
     // Optimize vertex cache
@@ -662,8 +923,9 @@ fn compress_glb(glb: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> Result
     glb_vertices = meshopt::optimize_vertex_fetch(&mut glb_indices, glb_vertices.as_slice());
 
     // Quantization
-    let quantized_vertices = glb_vertices.iter().map(|v| {
-        QuantizedVertex {
+    let quantized_vertices = glb_vertices
+        .iter()
+        .map(|v| QuantizedVertex {
             position: [
                 quantize_half(v.position[0]),
                 quantize_half(v.position[1]),
@@ -682,16 +944,16 @@ fn compress_glb(glb: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> Result
             uv: [
                 quantize_unorm(v.uv[0], 16) as u16,
                 quantize_unorm(v.uv[1], 16) as u16,
-            ]
-        }
-    }).collect::<Vec<QuantizedVertex>>();
+            ],
+        })
+        .collect::<Vec<QuantizedVertex>>();
 
     // Compress vertices
     let vertex_bytes = match meshopt::encode_vertex_buffer(&quantized_vertices) {
         Ok(comp_verts) => comp_verts,
         Err(e) => {
             eprintln!("Failed to compress vertex data! {e}");
-            return Ok((None, None))
+            return Ok(None);
         }
     };
 
@@ -700,26 +962,64 @@ fn compress_glb(glb: gltf::Document, buffers: Vec<gltf::buffer::Data>) -> Result
         Ok(comp_indices) => comp_indices,
         Err(e) => {
             eprintln!("Failed to compress index data! {e}");
-            return Ok((None, None))
+            return Ok(None);
         }
     };
-    
-    // Embed vertex count
-    let mut final_vertex_bytes: Vec<u8> = vec![];
-    final_vertex_bytes.extend((vertex_count as u32).to_be_bytes());
-    final_vertex_bytes.extend(vertex_bytes);
 
-    // Embed index count
-    let mut final_index_bytes: Vec<u8> = vec![];
-    final_index_bytes.extend((glb_indices.len() as u32).to_be_bytes());
-    final_index_bytes.extend(index_bytes);
+    // Detect the mesh's AABB
+    let mut min_aabb: [f32; 3] = std::array::repeat(f32::INFINITY);
+    let mut max_aabb: [f32; 3] = std::array::repeat(f32::NEG_INFINITY);
+    for vertex in quantized_vertices {
+        let x = meshopt::dequantize_half(vertex.position[0]);
+        let y = meshopt::dequantize_half(vertex.position[1]);
+        let z = meshopt::dequantize_half(vertex.position[2]);
+        if x < min_aabb[0] {
+            min_aabb[0] = x;
+        }
+        if y < min_aabb[1] {
+            min_aabb[1] = y;
+        }
+        if z < min_aabb[2] {
+            min_aabb[2] = z;
+        }
 
-    Ok((Some(final_vertex_bytes), Some(final_index_bytes)))
+        if x > max_aabb[0] {
+            max_aabb[0] = x;
+        }
+        if y > max_aabb[1] {
+            max_aabb[1] = y;
+        }
+        if z > max_aabb[2] {
+            max_aabb[2] = z;
+        }
+    }
+    min_aabb[0] -= 0.01;
+    min_aabb[1] -= 0.01;
+    min_aabb[2] -= 0.01;
+    max_aabb[0] += 0.01;
+    max_aabb[1] += 0.01;
+    max_aabb[2] += 0.01;
+
+    Ok(Some((
+        min_aabb,
+        max_aabb,
+        vertex_bytes,
+        index_bytes,
+        vertex_count,
+        glb_indices.len(),
+    )))
 }
 
-fn write_mesh_to_file(source_root_dir: &String, dest_root_dir: &String, source_path_dir: &OsStr, source_path_file_name: &OsStr, vertices: Option<Vec<u8>>, indices: Option<Vec<u8>>) -> Result<()> {
-    let vertices = vertices.unwrap();
-    let indices = indices.unwrap();
+fn write_mesh_to_file(
+    source_root_dir: &String,
+    dest_root_dir: &String,
+    source_path_dir: &OsStr,
+    file_name: &String,
+    mesh_bytes: Vec<u8>,
+) -> Result<()> {
+    if mesh_bytes.is_empty() {
+        return Ok(());
+    }
 
     let dest_path_dir = {
         let source_path_string = String::from(source_path_dir.to_str().unwrap());
@@ -728,27 +1028,28 @@ fn write_mesh_to_file(source_root_dir: &String, dest_root_dir: &String, source_p
 
     // Create a new directory
     match fs::create_dir_all(&dest_path_dir) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => eprintln!("{e}"),
     };
 
-    // Write vertex contents to file
-    let file_name = format!("{}{}{}.vertbuff", dest_path_dir.as_str(), std::path::MAIN_SEPARATOR, source_path_file_name.to_str().unwrap());
-    if let Err(e) = fs::write(file_name, vertices.as_slice()) {
-        eprintln!("{e}");
-    }
-
-    // Write index contents to file
-    let file_name = format!("{}{}{}.indbuff", dest_path_dir.as_str(), std::path::MAIN_SEPARATOR, source_path_file_name.to_str().unwrap());
-    if let Err(e) = fs::write(file_name, indices.as_slice()) {
+    // Write contents to file
+    let file_name = format!(
+        "{}{}{}.mesh",
+        dest_path_dir.as_str(),
+        std::path::MAIN_SEPARATOR,
+        file_name,
+    );
+    if let Err(e) = fs::write(file_name, mesh_bytes.as_slice()) {
         eprintln!("{e}");
     }
 
     Ok(())
 }
 
-fn get_data_from_primitive(buffers: Vec<gltf::buffer::Data>, primitive: gltf::Primitive) -> Result<(Vec<Vertex>, Vec<u32>)> {
-    
+fn get_data_from_primitive(
+    buffers: Vec<gltf::buffer::Data>,
+    primitive: gltf::Primitive,
+) -> Result<(Vec<Vertex>, Vec<u32>)> {
     // Read all the vertex attributes
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
     let _tangents = reader.read_tangents();
@@ -756,7 +1057,7 @@ fn get_data_from_primitive(buffers: Vec<gltf::buffer::Data>, primitive: gltf::Pr
     let colors = reader.read_colors(0);
     let normals = reader.read_normals();
     let tex_coords = reader.read_tex_coords(0);
-    
+
     // Get indices
     let indices = match reader.read_indices().unwrap() {
         gltf::mesh::util::ReadIndices::U8(iter) => iter.map(|i| i as u32).collect::<Vec<_>>(),
@@ -768,10 +1069,9 @@ fn get_data_from_primitive(buffers: Vec<gltf::buffer::Data>, primitive: gltf::Pr
     let num_verts = &positions.len();
     let mut vertices: Vec<Vertex> = vec![];
     vertices.reserve(*num_verts);
-    
+
     // Create vertices from the data
     for i in 0..*num_verts {
-        
         // Position
         let pos: [f32; 3] = positions.next().unwrap_or_default().into();
 
@@ -779,35 +1079,31 @@ fn get_data_from_primitive(buffers: Vec<gltf::buffer::Data>, primitive: gltf::Pr
         let color: [f32; 3] = match colors.to_owned() {
             Some(gltf::mesh::util::ReadColors::RgbF32(mut rgb_iter)) => {
                 rgb_iter.nth(i).unwrap_or([1.0; 3])
-            },
+            }
             Some(gltf::mesh::util::ReadColors::RgbaF32(mut rgb_iter)) => {
-                rgb_iter.nth(i).unwrap_or([1.0; 4])[0..3].try_into().unwrap()
-            },
-            _ => {
-                [1.0; 3]
-            },
+                rgb_iter.nth(i).unwrap_or([1.0; 4])[0..3]
+                    .try_into()
+                    .unwrap()
+            }
+            _ => [1.0; 3],
         };
 
         // Normal
         let normal: [f32; 3] = match normals.to_owned() {
             Some(gltf::mesh::util::ReadNormals::Standard(mut normal_iter)) => {
                 normal_iter.nth(i).unwrap_or([0.0, 0.0, 1.0])
-            },
-            _ => {
-                [0.0, 0.0, 1.0]
-            },
+            }
+            _ => [0.0, 0.0, 1.0],
         };
 
         // UV
         let tex_coord: [f32; 2] = match tex_coords.to_owned() {
             Some(gltf::mesh::util::ReadTexCoords::F32(mut tex_coord_iter)) => {
-                let mut coord:[f32; 2] = tex_coord_iter.nth(i).unwrap_or([0.0, 1.0]);
+                let mut coord: [f32; 2] = tex_coord_iter.nth(i).unwrap_or([0.0, 1.0]);
                 coord[1] = 1.0 - coord[1];
                 coord
-            },
-            _ => {
-                [0.0, 1.0]
-            },
+            }
+            _ => [0.0, 1.0],
         };
 
         let new_vertex = Vertex {
@@ -818,7 +1114,6 @@ fn get_data_from_primitive(buffers: Vec<gltf::buffer::Data>, primitive: gltf::Pr
         };
 
         vertices.push(new_vertex);
-
     }
 
     Ok((vertices, indices))
@@ -836,7 +1131,9 @@ fn traverse_directory(dir: &str, ext: Vec<&str>) -> Result<Vec<PathBuf>> {
             continue;
         }
 
-        if path.extension().is_some_and(|candidate_ext| ext.contains(&candidate_ext.to_ascii_lowercase().to_str().unwrap())) {
+        if path.extension().is_some_and(|candidate_ext| {
+            ext.contains(&candidate_ext.to_ascii_lowercase().to_str().unwrap())
+        }) {
             paths.push(path);
         }
     }

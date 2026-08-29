@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
+#![allow(unused_imports)]
 use bevy_app::{Startup, Update};
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
@@ -8,40 +8,13 @@ use vulkanalia_project::components::RenderComponent;
 use vulkanalia_project::engine::Material;
 use vulkanalia_project::engine::SamplerContents;
 use vulkanalia_project::engine::VulkanRenderer;
+use vulkanalia_project::prefabs::*;
 use vulkanalia_project::resources::*;
 use winit::event::{Event, WindowEvent};
 
 // Runs exactly once at startup
 fn init_spawn(mut commands: Commands) {
-    let sampler_contents = SamplerContents::new(
-        vk::Filter::LINEAR,
-        vk::SamplerAddressMode::REPEAT,
-        vk::SamplerAddressMode::REPEAT,
-        vk::SamplerAddressMode::REPEAT,
-        vk::SamplerMipmapMode::LINEAR,
-    );
-
-    let material = Material {
-        albedo: AssetId::BlankAlbedoTexture,
-        normal_ao: AssetId::None,
-        metallic_roughness_emissive: AssetId::None,
-        sampler_contents: sampler_contents,
-    };
-    commands.spawn(RenderComponent::new(
-        AssetId::CubeVertices,
-        AssetId::CubeIndices,
-        material.clone(),
-        false,
-        false,
-    ));
-
-    // commands.spawn(RenderComponent::new(
-    //     AssetId::LimpetVertices,
-    //     AssetId::LimpetIndices,
-    //     material,
-    //     false,
-    //     false,
-    // ));
+    commands.spawn(LimpetPrefab::component_bundle());
 }
 
 fn gameplay_update(mut _commands: Commands) {
@@ -49,19 +22,6 @@ fn gameplay_update(mut _commands: Commands) {
 }
 
 fn main() {
-    // let mut bevy_app = bevy_app::App::new();
-    // bevy_app.insert_resource(VulkanRenderer::new().unwrap());
-
-    // bevy_app
-    //     .add_systems(Startup, init_spawn)
-    //     .add_systems(Update, gameplay_update);
-
-    // let mut vulkan_renderer = bevy_app
-    //     .world_mut()
-    //     .get_resource_mut::<VulkanRenderer>()
-    //     .unwrap();
-
-    // vulkan_renderer.run(&mut bevy_app).unwrap();
     let mut bevy_app = bevy_app::App::new();
 
     // 1. Initialize renderer

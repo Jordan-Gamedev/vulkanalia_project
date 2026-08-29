@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::components::TransformComponent;
 use crate::engine::Material;
 use crate::engine::QuantizedModelMatrix;
@@ -10,29 +12,26 @@ use bevy_ecs::world::DeferredWorld;
 use glam::Quat;
 use glam::Vec3;
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy)]
 #[require(TransformComponent::default())]
 #[component(on_add = Self::on_add, on_remove = Self::on_remove)]
 pub struct RenderComponent {
-    pub model_vertices: AssetId, // An asset reference to the chosen model's vertices
-    pub model_indices: AssetId,  // An asset reference to the chosen model's indices
-    pub material: Material,      // The material that this entity uses
-    pub model_matrix_info: u32,  // The model matrix
+    pub mesh: AssetId,              // An asset reference to the renderer's mesh
+    pub material: Material,         // The material that this entity uses
+    pub model_matrix_info: u32,     // The model matrix
     pub is_receiving_shadows: bool, // Whether this entity should receive shadows from other shadow casters
     pub is_casting_shadows: bool,   // Whether this entity is a shadow caster
 }
 
 impl RenderComponent {
     pub fn new(
-        model_vertices: AssetId,
-        model_indices: AssetId,
+        mesh: AssetId,
         material: Material,
         receives_shadows: bool,
         casts_shadows: bool,
     ) -> Self {
         Self {
-            model_vertices,
-            model_indices,
+            mesh,
             material,
             model_matrix_info: u32::MAX,
             is_receiving_shadows: receives_shadows,
@@ -56,14 +55,6 @@ impl RenderComponent {
         };
         transform_component.scale = Vec3::new(1.0, 1.0, 1.0);
 
-        // Create model matrix
-        let model_matrix_index = vulkan_renderer
-            .create_model_matrix(
-                transform_component.to_quantized_matrix(),
-                transform_component.is_static,
-            )
-            .unwrap();
-
         // Fetch the render component directly from cell
         let mut render = unsafe {
             cell.get_entity(hook_context.entity)
@@ -71,20 +62,22 @@ impl RenderComponent {
                 .get_mut::<RenderComponent>()
                 .unwrap()
         };
-        render.set_model_matrix_index(model_matrix_index);
-        render.set_is_static(false);
-        transform_component.model_matrix_index = model_matrix_index;
 
         // Create instance
-        vulkan_renderer
+        let model_matrix_info = vulkan_renderer
             .add_instance(
-                render.model_vertices,
-                render.model_indices,
+                render.mesh,
                 render.material.albedo,
                 render.material.sampler_contents,
-                render.model_matrix_info,
+                transform_component.to_quantized_matrix(),
+                transform_component.is_static,
             )
-            .unwrap();
+            .unwrap()
+            .model_matrix_info;
+
+        render.model_matrix_info = model_matrix_info;
+        transform_component.model_matrix_index =
+            VulkanRenderer::get_model_matrix_index(model_matrix_info);
     }
 
     fn on_remove(mut world: DeferredWorld, hook_context: HookContext) {
@@ -102,25 +95,14 @@ impl RenderComponent {
         // Fetch the resource directly from cell
         let mut vulkan_renderer = unsafe { cell.get_resource_mut::<VulkanRenderer>().unwrap() };
 
-        // Remove instance and model matrix
-        unsafe {
-            for i in 0..vulkan_renderer.command_handle.instance_buffer.capacity {
-                let instance = vulkan_renderer.command_handle.instance_buffer.mapped.add(i);
-                if instance.read().model_matrix_info == render.model_matrix_info {
-                    vulkan_renderer
-                        .remove_instance(
-                            render.model_vertices,
-                            render.model_indices,
-                            render.material.albedo,
-                            render.material.sampler_contents,
-                            instance,
-                        )
-                        .unwrap();
-                }
-            }
-        }
+        // Remove instance
         vulkan_renderer
-            .remove_model_matrix(render.get_model_matrix_index(), render.is_static())
+            .remove_instance(
+                render.mesh,
+                render.material.albedo,
+                render.material.sampler_contents,
+                render.model_matrix_info,
+            )
             .unwrap();
 
         // Transform no longer has a model matrix index or a render
@@ -168,6 +150,7 @@ impl RenderComponent {
             .unwrap();
     }
 
+    /// TODO: Connect to world to get vulkan renderer instance and make it moveable between buffers
     /// Mark this render transform as static (only works before adding component)
     pub fn set_is_static(&mut self, is_static: bool) {
         self.model_matrix_info &= 0x7FFFFFFF;

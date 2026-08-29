@@ -8,7 +8,6 @@
 )]
 
 use anyhow::Result;
-use core::slice;
 use std::mem::size_of;
 use std::ptr::copy_nonoverlapping as memcpy;
 use vulkanalia::prelude::v1_0::*;
@@ -31,6 +30,7 @@ pub struct Buffer<T: Clone + std::fmt::Debug + Default> {
     pub usage: vk::BufferUsageFlags,
     pub properties: vk::MemoryPropertyFlags,
     pub is_host_visible: bool,
+    pub is_preserving_indices: bool,
 }
 
 unsafe impl<T: Clone + std::fmt::Debug + Default> Sync for Buffer<T> {}
@@ -45,6 +45,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         properties: vk::MemoryPropertyFlags,
         alloc_dealloc_threshold: u32,
         initial_contents: Vec<T>,
+        should_preserve_indices: bool,
     ) -> Self {
         unsafe {
             let device = device_context.device.clone();
@@ -53,7 +54,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             if properties.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL) {
                 // Create (staging)
 
-                let (staging_buffer, staging_buffer_memory) = Buffer::<T>::create_buffer(
+                let (staging_buffer, staging_buffer_memory, mapped) = Buffer::<T>::create_buffer(
                     &device_context,
                     initial_capacity as u64,
                     vk::BufferUsageFlags::TRANSFER_SRC,
@@ -63,15 +64,6 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
                 // Copy (staging)
 
-                let mapped = device
-                    .map_memory(
-                        staging_buffer_memory,
-                        0,
-                        initial_capacity,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .unwrap()
-                    .cast();
                 memcpy(initial_contents.as_ptr(), mapped, initial_contents.len());
                 device.unmap_memory(staging_buffer_memory);
 
@@ -79,13 +71,16 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
                 let usage =
                     vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST | usage;
-                let (device_buffer, device_buffer_memory) = Buffer::<T>::create_buffer(
+                let (device_buffer, device_buffer_memory, _) = Buffer::<T>::create_buffer(
                     &device_context,
                     initial_capacity,
                     usage,
                     properties,
                 )
                 .unwrap();
+                if properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+                    device.unmap_memory(device_buffer_memory);
+                }
 
                 // Copy (device local)
 
@@ -112,9 +107,10 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                     usage: usage,
                     properties: properties,
                     is_host_visible: false,
+                    is_preserving_indices: should_preserve_indices,
                 }
             } else {
-                let (buffer, memory) = Buffer::<T>::create_buffer(
+                let (buffer, memory, mapped) = Buffer::<T>::create_buffer(
                     &device_context,
                     initial_capacity,
                     usage,
@@ -122,15 +118,6 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 )
                 .unwrap();
 
-                let mapped = device
-                    .map_memory(
-                        memory,
-                        0,
-                        initial_capacity as u64 * size_of::<T>() as u64,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .unwrap()
-                    .cast::<T>();
                 memcpy(initial_contents.as_ptr(), mapped, initial_contents.len());
 
                 Self {
@@ -145,6 +132,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                     usage: usage,
                     properties: properties,
                     is_host_visible: true,
+                    is_preserving_indices: should_preserve_indices,
                 }
             }
         }
@@ -196,6 +184,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             self.properties,
             self.alloc_dealloc_threshold,
             contents,
+            self.is_preserving_indices,
         );
     }
 
@@ -229,35 +218,22 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         }
     }
 
-    pub fn get_buffer_items(
+    pub fn get_buffer_parts(
         &self,
         device_context: &DeviceContext,
         command_pool: vk::CommandPool,
-        include_empty: bool,
-    ) -> Result<Vec<T>> {
-        // Return empty vector if there are no elements in buffer and empty items are not desired
-        if !include_empty {
-            return Ok(Vec::new());
-        }
-
-        unsafe {
-            let mut contents: Vec<T> = Vec::with_capacity(self.element_capacity as usize);
-            if self.is_host_visible {
-                for i in 0..self.element_capacity {
-                    if include_empty || !self.available_indices.contains(&i) {
-                        contents.push(self.mapped.add(i as usize).read());
-                    }
-                }
-                return Ok(contents);
-            }
-
+    ) -> (vk::Buffer, vk::DeviceMemory, *const T) {
+        if self.is_host_visible {
+            (self.buffer, self.memory, self.mapped)
+        } else {
             // Create staging buffer to read data from GPU
-            let (staging_buffer, staging_memory) = Buffer::<T>::create_buffer(
+            let (staging_buffer, staging_memory, mapped) = Buffer::<T>::create_buffer(
                 &device_context,
                 self.element_capacity as u64,
-                vk::BufferUsageFlags::TRANSFER_DST,
+                vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )?;
+            )
+            .unwrap();
 
             // Copy buffer contents to staging buffer to make the contents readable
             Buffer::<T>::copy_buffer(
@@ -266,30 +242,49 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 self.buffer,
                 staging_buffer,
                 self.element_capacity as u64,
-            )?;
+            )
+            .unwrap();
 
             // Read the data from the buffer
-            let memory = device_context
-                .device
-                .map_memory(
-                    staging_memory,
-                    0,
-                    self.element_capacity as u64,
-                    vk::MemoryMapFlags::empty(),
-                )
-                .unwrap()
-                .cast::<T>();
+            let mapped = mapped.cast_const();
 
-            // Create a Vector out of the memory
-            let vec: Vec<T> =
-                slice::from_raw_parts(memory.cast(), self.element_capacity as usize).to_vec();
+            (staging_buffer, staging_memory, mapped)
+        }
+    }
+
+    pub fn get_buffer_items(
+        &self,
+        device_context: &DeviceContext,
+        command_pool: vk::CommandPool,
+        include_empty: bool,
+    ) -> Result<Vec<T>> {
+        // Return empty vector if there are no elements in buffer and empty items are not desired
+        if !include_empty && self.element_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        unsafe {
+            // Get CPU visible buffer data
+            let (buffer, memory, mapped) = self.get_buffer_parts(device_context, command_pool);
+
+            // Collect contents
+            let mut contents: Vec<T> = Vec::with_capacity(self.element_capacity as usize);
+            if self.is_host_visible {
+                for i in 0..self.element_capacity {
+                    if include_empty || !self.available_indices.contains(&i) {
+                        contents.push(self.mapped.add(i as usize).read());
+                    }
+                }
+            }
 
             // Cleanup
-            device_context.device.destroy_buffer(staging_buffer, None);
-            device_context.device.unmap_memory(staging_memory);
-            device_context.device.free_memory(staging_memory, None);
+            if !self.is_host_visible {
+                device_context.device.destroy_buffer(buffer, None);
+                device_context.device.unmap_memory(memory);
+                device_context.device.free_memory(memory, None);
+            }
 
-            Ok(vec)
+            Ok(contents)
         }
     }
 
@@ -299,24 +294,36 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         command_pool: vk::CommandPool,
         mut items: Vec<T>,
     ) -> Result<()> {
-        while self.is_host_visible
+        let (buffer, memory, mapped) = self.get_buffer_parts(device_context, command_pool);
+
+        while self.is_preserving_indices
             && items.len() > 0
             && let Some(available_index) = self.available_indices.pop_first()
-            && let Some(next_content) = items.pop()
+            && let Some(next_item) = items.pop()
         {
-            unsafe { *self.mapped.add(available_index as usize).cast_mut() = next_content };
+            unsafe { *self.mapped.add(available_index as usize).cast_mut() = next_item };
             self.element_count += 1;
         }
 
         if items.len() > 0 {
             // Get items from current buffer
-            let mut total_items: Vec<T> =
-                self.get_buffer_items(device_context, command_pool, false)?;
+            let mut total_items: Vec<T> = unsafe {
+                std::slice::from_raw_parts(mapped.cast(), self.element_capacity as usize).to_vec()
+            };
 
             // Combine old and new items
             total_items.extend(items);
 
             self.recreate(device_context, command_pool, total_items);
+        }
+
+        // Cleanup
+        unsafe {
+            if !self.is_host_visible {
+                device_context.device.destroy_buffer(buffer, None);
+                device_context.device.unmap_memory(memory);
+                device_context.device.free_memory(memory, None);
+            }
         }
 
         Ok(())
@@ -329,7 +336,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         start_remove_index: u32,
         stop_remove_index: u32,
     ) -> Result<()> {
-        if self.is_host_visible {
+        if self.is_preserving_indices {
             self.element_count -= stop_remove_index - start_remove_index;
             self.available_indices
                 .extend(start_remove_index..stop_remove_index);
@@ -392,7 +399,6 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         command_pool: vk::CommandPool,
         item: T,
     ) -> Result<u32> {
-        let available_indices_size = self.available_indices.len();
         let chosen_index = if self.available_indices.len() > 0 {
             self.available_indices.first()
         } else {
@@ -418,7 +424,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
-    ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut T)> {
         unsafe {
             // Buffer
 
@@ -448,7 +454,17 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 .device
                 .bind_buffer_memory(buffer, buffer_memory, 0)?;
 
-            Ok((buffer, buffer_memory))
+            let mapped = if properties.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+                device_context
+                    .device
+                    .map_memory(buffer_memory, 0, size.max(1), vk::MemoryMapFlags::empty())
+                    .unwrap()
+                    .cast::<T>()
+            } else {
+                std::ptr::null_mut()
+            };
+
+            Ok((buffer, buffer_memory, mapped))
         }
     }
 

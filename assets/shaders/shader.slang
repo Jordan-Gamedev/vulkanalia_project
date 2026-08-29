@@ -31,9 +31,10 @@ struct IndirectDrawData
 struct PerInstanceData
 {
     uint modelMatrixInfo;
-    uint textureIndex;
-    uint samplerIndex;
-    uint padding;
+    uint16_t textureIndex;
+    uint16_t samplerIndex;
+    uint16_t meshMetadataIndex;
+    uint16_t meshAssetId;
 };
 
 [[vk::binding(0, 0)]]

@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 gltf = "1.4.1"
 meshopt = "0.6.2"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.4"
 
 [[bin]]
 name = "builder"

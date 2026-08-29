@@ -1,0 +1,15 @@
+name = "none"
+
+# model glb paths for each level of detail
+[lods]
+lod0 = "none"
+lod1 = "none"
+lod2 = "none"
+lod3 = "none"
+
+# percentage on screen at which each lod is chosen
+[lod_percentages]
+lod1 = 0.0
+lod2 = 0.0
+lod3 = 0.0
+cull = 0.0
