@@ -36,3 +36,30 @@ impl Prefab<(TransformComponent, RenderComponent)> for LimpetPrefab {
         )
     }
 }
+
+pub struct CubePrefab;
+
+impl Prefab<(TransformComponent, RenderComponent)> for CubePrefab {
+    fn component_bundle() -> (TransformComponent, RenderComponent) {
+        (
+            TransformComponent::new(Vec3::ZERO, Vec3::ONE, Quat::IDENTITY, false),
+            RenderComponent::new(
+                AssetId::CubeMesh,
+                Material::new(
+                    AssetId::CuttlefishAlbedoTexture,
+                    AssetId::None,
+                    AssetId::None,
+                    SamplerContents::new(
+                        vk::Filter::LINEAR,
+                        vk::SamplerAddressMode::REPEAT,
+                        vk::SamplerAddressMode::REPEAT,
+                        vk::SamplerAddressMode::REPEAT,
+                        vk::SamplerMipmapMode::LINEAR,
+                    ),
+                ),
+                true,
+                true,
+            ),
+        )
+    }
+}

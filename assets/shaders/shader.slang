@@ -6,6 +6,15 @@ struct VSInput
     float2 inUv;
 };
 
+struct VSOutput
+{
+    float4 pos : SV_Position;
+    float3 fragColor;
+    float2 fragUv;
+    uint textureIndex;
+    uint samplerIndex;
+};
+
 struct UniformBuffer
 {
     float4x4 view;
@@ -58,14 +67,8 @@ StructuredBuffer<IndirectDrawData> indirectDrawData;
 [[vk::binding(6, 0)]]
 StructuredBuffer<PerInstanceData> instanceData;
 
-struct VSOutput
-{
-    float4 pos : SV_Position;
-    float3 fragColor;
-    float2 fragUv;
-    uint textureIndex;
-    uint samplerIndex;
-};
+[[vk::binding(8, 0)]]
+StructuredBuffer<uint> visbuffer;
 
 float4 decodeQuaternion(int16_t[4] packedRotation)
 {
@@ -95,16 +98,14 @@ float4x4 buildModelMatrix(QuantizedModelMatrix modelMatrix)
 }
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint drawId: SV_DrawIndex, uint instanceId: SV_InstanceID)
+VSOutput vertMain(VSInput input, uint startInstanceId: SV_StartInstanceLocation, uint instanceId: SV_InstanceID)
 {
     VSOutput output;
+    uint instanceIndex = visbuffer[1 + startInstanceId + instanceId];
+    PerInstanceData instance = instanceData[instanceIndex];
 
-    IndirectDrawData drawData = indirectDrawData[drawId];
-    uint instanceIndex = drawData.firstInstance + instanceId;
-    PerInstanceData pi = instanceData[instanceIndex];
-
-    bool isStatic = (pi.modelMatrixInfo & 0x80000000u) != 0;
-    uint modelMatrixIndex = pi.modelMatrixInfo & 0x7FFFFFFFu;
+    bool isStatic = (instance.modelMatrixInfo & 0x80000000u) != 0;
+    uint modelMatrixIndex = instance.modelMatrixInfo & 0x7FFFFFFFu;
 
     QuantizedModelMatrix modelMatrix = isStatic ? staticModelMatrices[modelMatrixIndex] : dynamicModelMatrices[modelMatrixIndex];
     float4x4 model = buildModelMatrix(modelMatrix);
@@ -112,8 +113,8 @@ VSOutput vertMain(VSInput input, uint drawId: SV_DrawIndex, uint instanceId: SV_
     output.pos = mul(ubo.proj, mul(ubo.view, mul(model, float4(input.inPos, 1.0))));
     output.fragColor = input.inColor;
     output.fragUv = input.inUv;
-    output.textureIndex = pi.textureIndex;
-    output.samplerIndex = pi.samplerIndex;
+    output.textureIndex = instance.textureIndex;
+    output.samplerIndex = instance.samplerIndex;
     return output;
 }
 

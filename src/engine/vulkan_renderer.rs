@@ -67,8 +67,7 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 3;
 #[error("{0}")]
 struct SuitabilityError(&'static str);
 
-#[derive(bevy_ecs::resource::Resource)]
-#[derive(Clone)]
+#[derive(bevy_ecs::resource::Resource, Clone)]
 pub struct VulkanRenderer {
     pub device_context: DeviceContext,
     pub present_handle: PresentHandle,
@@ -109,8 +108,12 @@ impl VulkanRenderer {
                 create_logical_device(messenger, &entry, &instance, physical_device, surface)?;
 
             // Get device queues
-            let device_queue_handle =
-                get_device_graphics_present_queues(device.clone(), &instance, physical_device, &surface)?;
+            let device_queue_handle = get_device_graphics_present_queues(
+                device.clone(),
+                &instance,
+                physical_device,
+                &surface,
+            )?;
 
             // Finalize device context
             let device_context = DeviceContext {
@@ -126,21 +129,16 @@ impl VulkanRenderer {
             let msaa_samples = set_default_msaa(&device_context);
 
             // Create the window's swapchain
-            let swapchain_handle = create_swapchain(&device_context, &window_handle.window, surface)?;
+            let swapchain_handle =
+                create_swapchain(&device_context, &window_handle.window, surface)?;
 
             // Create screen color texture
-            let color_texture = create_color_texture(
-                &device_context,
-                &swapchain_handle,
-                msaa_samples
-            )?;
+            let color_texture =
+                create_color_texture(&device_context, &swapchain_handle, msaa_samples)?;
 
             // Create screen depth texture
-            let depth_texture = create_depth_texture(
-                &device_context,
-                &swapchain_handle,
-                msaa_samples,
-            )?;
+            let depth_texture =
+                create_depth_texture(&device_context, &swapchain_handle, msaa_samples)?;
 
             // Finalize present handle
             let present_handle = PresentHandle {
@@ -152,17 +150,18 @@ impl VulkanRenderer {
             };
 
             // Create base render pass
-            let base_render_pass = create_base_render_pass(
-                &device_context,
-                &swapchain_handle,
-                msaa_samples,
-            )?;
+            let base_render_pass =
+                create_base_render_pass(&device_context, &swapchain_handle, msaa_samples)?;
 
             // Create a descriptor set layout for gpu objects
             let descriptor_set_layout = create_descriptor_set_layout(device.clone())?;
 
             // Create a descriptor pool
             let descriptor_pool = create_descriptor_pool(device.clone())?;
+
+            // Create the compute pipeline
+            let (compute_pipeline, compute_pipeline_layout) =
+                create_compute_pipeline(descriptor_set_layout, &device_context)?;
 
             // Create the render pipeline
             let (pipeline, pipeline_layout) = create_pipeline(
@@ -189,7 +188,8 @@ impl VulkanRenderer {
             let main_camera_visbuffers = create_visbuffers(&device_context, command_pool);
 
             // Create source instance buffer that stores all active instances
-            let source_instance_buffer = create_source_instance_buffer(&device_context, command_pool);
+            let source_instance_buffer =
+                create_source_instance_buffer(&device_context, command_pool);
 
             // Create vertex and index buffers
             let (vertex_buffer, index_buffer) =
@@ -242,11 +242,14 @@ impl VulkanRenderer {
                 descriptor_handle,
                 pipeline,
                 pipeline_layout,
+                compute_pipeline,
+                compute_pipeline_layout,
                 framebuffers: framebuffers.clone(),
             };
 
             // Create command buffers
-            let command_buffers = create_command_buffers(device.clone(), command_pool, framebuffers.len())?;
+            let command_buffers =
+                create_command_buffers(device.clone(), command_pool, framebuffers.len())?;
 
             // Create sync objects
             let sync_handle = create_sync_objects(device, &swapchain_handle)?;
@@ -273,7 +276,7 @@ impl VulkanRenderer {
 
     pub fn destroy(&mut self) {
         let device = self.device_context.device.clone();
-        
+
         unsafe {
             device.device_wait_idle().unwrap();
 
@@ -281,52 +284,85 @@ impl VulkanRenderer {
 
             self.present_handle.depth_texture.destroy(device.clone());
             self.present_handle.color_texture.destroy(device.clone());
-            self.present_handle.swapchain_handle.image_views
+            self.present_handle
+                .swapchain_handle
+                .image_views
                 .iter()
                 .for_each(|v| device.destroy_image_view(*v, None));
             device.destroy_swapchain_khr(self.present_handle.swapchain_handle.swapchain, None);
-        
+
             // Render Pipeline Handle
 
-            self.render_pipeline_handle.framebuffers
+            self.render_pipeline_handle
+                .framebuffers
                 .iter()
                 .for_each(|f| device.destroy_framebuffer(*f, None));
+            device.destroy_pipeline(self.render_pipeline_handle.compute_pipeline, None);
+            device
+                .destroy_pipeline_layout(self.render_pipeline_handle.compute_pipeline_layout, None);
             device.destroy_pipeline(self.render_pipeline_handle.pipeline, None);
             device.destroy_pipeline_layout(self.render_pipeline_handle.pipeline_layout, None);
-            device.destroy_descriptor_pool(self.render_pipeline_handle.descriptor_handle.descriptor_pool, None);
+            device.destroy_descriptor_pool(
+                self.render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_pool,
+                None,
+            );
             device.destroy_render_pass(self.render_pipeline_handle.base_render_pass, None);
-            device.destroy_descriptor_set_layout(self.render_pipeline_handle.descriptor_handle.descriptor_set_layout, None);
-        
+            device.destroy_descriptor_set_layout(
+                self.render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_set_layout,
+                None,
+            );
+
             // Command Handle
 
-            self.command_handle.sync_handle.in_flight_fences
+            self.command_handle
+                .sync_handle
+                .in_flight_fences
                 .iter()
                 .for_each(|f| device.destroy_fence(*f, None));
-            self.command_handle.sync_handle.render_finished_semaphores
+            self.command_handle
+                .sync_handle
+                .render_finished_semaphores
                 .iter()
                 .for_each(|f| device.destroy_semaphore(*f, None));
-            self.command_handle.sync_handle.image_available_semaphores
+            self.command_handle
+                .sync_handle
+                .image_available_semaphores
                 .iter()
                 .for_each(|f| device.destroy_semaphore(*f, None));
-            if self.command_handle.command_pool != vk::CommandPool::null() && !self.command_handle.command_buffers.is_empty() {
-                device.free_command_buffers(self.command_handle.command_pool, &self.command_handle.command_buffers);
+            if self.command_handle.command_pool != vk::CommandPool::null()
+                && !self.command_handle.command_buffers.is_empty()
+            {
+                device.free_command_buffers(
+                    self.command_handle.command_pool,
+                    &self.command_handle.command_buffers,
+                );
             }
             if self.command_handle.command_pool != vk::CommandPool::null() {
                 device.destroy_command_pool(self.command_handle.command_pool, None);
             }
             self.command_handle.source_instance_buffer.destroy(&device);
-            self.command_handle.main_camera_visbuffers.iter_mut().for_each(|v| v.destroy(&device));
+            self.command_handle
+                .main_camera_visbuffers
+                .iter_mut()
+                .for_each(|v| v.destroy(&device));
 
             // Model Handle
 
             self.model_handle.vertex_buffer.destroy(&device);
             self.model_handle.index_buffer.destroy(&device);
             self.model_handle.loaded_meshes.clear();
-            self.model_handle.uniform_buffers
+            self.model_handle
+                .uniform_buffers
                 .iter_mut()
                 .for_each(|b| b.destroy(&device));
             self.model_handle.dyn_model_matrix_buffer.destroy(&device);
-            self.model_handle.static_model_matrix_buffer.destroy(&device);
+            self.model_handle
+                .static_model_matrix_buffer
+                .destroy(&device);
             self.model_handle.mesh_uniform_buffer.destroy(&device);
 
             // Texture Handle
@@ -334,7 +370,8 @@ impl VulkanRenderer {
             self.texture_handle.loaded_textures.values().for_each(|t| {
                 t.texture.destroy(device.clone());
             });
-            self.texture_handle.samplers
+            self.texture_handle
+                .samplers
                 .iter()
                 .for_each(|(_, s)| device.destroy_sampler(s.sampler, None));
             self.texture_handle.samplers.clear();
@@ -366,14 +403,10 @@ impl VulkanRenderer {
             .clone();
 
         // Get bindless texture index
-        let texture_index = self
-            .get_texture_slot_index(texture_asset_id)
-            .unwrap_or(0) as u16;
+        let texture_index = self.get_texture_slot_index(texture_asset_id).unwrap_or(0) as u16;
 
         // Get bindless sampler index
-        let sampler_index = self
-            .get_sampler_slot_index(sampler_contents)
-            .unwrap_or(0) as u16;        
+        let sampler_index = self.get_sampler_slot_index(sampler_contents).unwrap_or(0) as u16;
 
         // Create model matrix
         let model_matrix_info = self.create_model_matrix(matrix, is_static)?;
@@ -386,7 +419,11 @@ impl VulkanRenderer {
             mesh_metadata_index,
             mesh_asset_id: mesh_asset_id as u16,
         };
-        self.command_handle.source_instance_buffer.add_item(&self.device_context, self.command_handle.command_pool, new_instance)?;
+        self.command_handle.source_instance_buffer.add_item(
+            &self.device_context,
+            self.command_handle.command_pool,
+            new_instance,
+        )?;
 
         Ok(new_instance)
     }
@@ -405,10 +442,26 @@ impl VulkanRenderer {
 
         // Remove instance and model matrix
 
-        let source_instances = self.command_handle.source_instance_buffer.get_buffer_items(&self.device_context, self.command_handle.command_pool, true)?;
-        let instance_index = source_instances.iter().position(|instance| instance.model_matrix_info == model_matrix_info).expect(&format!("Instance with model matrix info of {} not found!", model_matrix_info));
-        self.command_handle.source_instance_buffer.remove_item_at(&self.device_context, self.command_handle.command_pool, instance_index as u32)?;
-        self.remove_model_matrix(VulkanRenderer::get_model_matrix_index(model_matrix_info), VulkanRenderer::is_model_matrix_static(model_matrix_info))?;
+        let source_instances = self
+            .command_handle
+            .source_instance_buffer
+            .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)?;
+        let instance_index = source_instances
+            .iter()
+            .position(|instance| instance.model_matrix_info == model_matrix_info)
+            .expect(&format!(
+                "Instance with model matrix info of {} not found!",
+                model_matrix_info
+            ));
+        self.command_handle.source_instance_buffer.remove_item_at(
+            &self.device_context,
+            self.command_handle.command_pool,
+            instance_index as u32,
+        )?;
+        self.remove_model_matrix(
+            VulkanRenderer::get_model_matrix_index(model_matrix_info),
+            VulkanRenderer::is_model_matrix_static(model_matrix_info),
+        )?;
         Ok(())
     }
 
@@ -660,7 +713,11 @@ impl VulkanRenderer {
             let prev_buffer = self.model_handle.static_model_matrix_buffer.buffer;
             self.model_handle
                 .static_model_matrix_buffer
-                .remove_item_at(&self.device_context, self.command_handle.command_pool, model_matrix_index)?;
+                .remove_item_at(
+                    &self.device_context,
+                    self.command_handle.command_pool,
+                    model_matrix_index,
+                )?;
             let new_buffer = self.model_handle.static_model_matrix_buffer.buffer;
 
             if prev_buffer != new_buffer {
@@ -685,7 +742,7 @@ impl VulkanRenderer {
 
     pub fn is_model_matrix_static(model_matrix_info: u32) -> bool {
         model_matrix_info & 0x80000000 > 0
-    }    
+    }
 
     pub fn get_model_matrix_index(model_matrix_info: u32) -> u32 {
         model_matrix_info & 0x7FFFFFFF
@@ -780,14 +837,14 @@ impl VulkanRenderer {
     /// Returns mesh metadata index inside uniform buffer
     pub fn load_mesh(&mut self, mesh_asset_id: AssetId) -> Result<u16> {
         if mesh_asset_id == AssetId::None {
-            return Ok(u16::MAX)
+            return Ok(u16::MAX);
         }
 
         // Do not load mesh if it is already loaded
 
         if let Some(mesh) = self.model_handle.loaded_meshes.get_mut(&mesh_asset_id) {
             mesh.usage_count += 1;
-            return Ok(u16::MAX)
+            return Ok(u16::MAX);
         }
 
         let asset = get_asset_from_id(mesh_asset_id);
@@ -811,7 +868,8 @@ impl VulkanRenderer {
         let vertex_byte_count3 = u32::from_be_bytes(asset.0[56..60].try_into().unwrap()) as usize;
         let index_byte_count3 = u32::from_be_bytes(asset.0[60..64].try_into().unwrap()) as usize;
 
-        let total_vertex_byte_count = vertex_byte_count0 + vertex_byte_count1 + vertex_byte_count2 + vertex_byte_count3;
+        let total_vertex_byte_count =
+            vertex_byte_count0 + vertex_byte_count1 + vertex_byte_count2 + vertex_byte_count3;
 
         // Get AABB
 
@@ -832,7 +890,7 @@ impl VulkanRenderer {
         let lod2_percentage = f32::from_be_bytes(asset.0[92..96].try_into().unwrap());
         let lod3_percentage = f32::from_be_bytes(asset.0[96..100].try_into().unwrap());
         let cull_percentage = f32::from_be_bytes(asset.0[100..104].try_into().unwrap());
-        
+
         // Get vertex and index bytes
 
         let mut vertex_offset = 104;
@@ -861,11 +919,13 @@ impl VulkanRenderer {
 
         // Decode vertices and indices
 
-        let mut vertices0: Vec<QuantizedVertex> = match meshopt::decode_vertex_buffer(vertex_bytes0, vertex_count0) {
-            Ok(bytes) => bytes,
-            Err(_) => return Err(anyhow!("Failed to decode vertex buffer 0")),
-        };
-        let mut indices0: Vec<u32> = match meshopt::decode_index_buffer(index_bytes0, index_count0) {
+        let mut vertices0: Vec<QuantizedVertex> =
+            match meshopt::decode_vertex_buffer(vertex_bytes0, vertex_count0) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(anyhow!("Failed to decode vertex buffer 0")),
+            };
+        let mut indices0: Vec<u32> = match meshopt::decode_index_buffer(index_bytes0, index_count0)
+        {
             Ok(indices) => indices,
             Err(_) => return Err(anyhow!("Failed to decode index buffer 0")),
         };
@@ -945,7 +1005,14 @@ impl VulkanRenderer {
             indices0,
         )?;
 
-        let mesh_metadata = MeshMetadata::new(min_aabb, max_aabb, lod1_percentage, lod2_percentage, lod3_percentage, cull_percentage);
+        let mesh_metadata = MeshMetadata::new(
+            min_aabb,
+            max_aabb,
+            lod1_percentage,
+            lod2_percentage,
+            lod3_percentage,
+            cull_percentage,
+        );
         let mesh = Mesh {
             mesh_asset_id,
             metadata: mesh_metadata,
@@ -964,9 +1031,13 @@ impl VulkanRenderer {
 
         self.model_handle.loaded_meshes.insert(mesh_asset_id, mesh);
 
-        let (mesh_buffer, mesh_buffer_memory, mesh_buffer_mapped) = self.model_handle.mesh_uniform_buffer.get_buffer_parts(&self.device_context, self.command_handle.command_pool);
+        // Add mesh metadata to uniform buffer
+        let (mesh_buffer, mesh_buffer_memory, mesh_buffer_mapped) = self
+            .model_handle
+            .mesh_uniform_buffer
+            .get_buffer_parts(&self.device_context, self.command_handle.command_pool);
         let mesh_buffer_layout = unsafe { mesh_buffer_mapped.cast_mut().as_mut().unwrap() };
-        
+
         let mut mesh_metadata_index = u16::MAX;
         for i in 0..2048 {
             if mesh_buffer_layout.0[i] == mesh_metadata {
@@ -988,10 +1059,18 @@ impl VulkanRenderer {
         // Finalize and Cleanup
         unsafe {
             if !self.model_handle.mesh_uniform_buffer.is_host_visible {
-                Buffer::<MeshBufferLayout>::copy_buffer(&self.device_context, self.command_handle.command_pool, mesh_buffer, self.model_handle.mesh_uniform_buffer.buffer, 1u64)?;
+                Buffer::<MeshBufferLayout>::copy_buffer(
+                    &self.device_context,
+                    self.command_handle.command_pool,
+                    mesh_buffer,
+                    self.model_handle.mesh_uniform_buffer.buffer,
+                    1u64,
+                )?;
                 self.device_context.device.destroy_buffer(mesh_buffer, None);
                 self.device_context.device.unmap_memory(mesh_buffer_memory);
-                self.device_context.device.free_memory(mesh_buffer_memory, None);
+                self.device_context
+                    .device
+                    .free_memory(mesh_buffer_memory, None);
             }
         }
 
@@ -1001,11 +1080,17 @@ impl VulkanRenderer {
     pub fn unload_mesh(&mut self, mesh_asset_id: AssetId) -> Result<()> {
         // Do not unload mesh if it is not loaded
 
-        if mesh_asset_id == AssetId::None || !self.model_handle.loaded_meshes.contains_key(&mesh_asset_id) {
-            return Ok(())
+        if mesh_asset_id == AssetId::None
+            || !self.model_handle.loaded_meshes.contains_key(&mesh_asset_id)
+        {
+            return Ok(());
         }
 
-        self.model_handle.loaded_meshes.get_mut(&mesh_asset_id).unwrap().usage_count -= 1;
+        self.model_handle
+            .loaded_meshes
+            .get_mut(&mesh_asset_id)
+            .unwrap()
+            .usage_count -= 1;
 
         let unloading_mesh = self
             .model_handle
@@ -1015,8 +1100,14 @@ impl VulkanRenderer {
             .clone();
 
         if unloading_mesh.usage_count == 0 {
-            let unloaded_vertex_count = unloading_mesh.lod0_vertex_length + unloading_mesh.lod1_vertex_length + unloading_mesh.lod2_vertex_length + unloading_mesh.lod3_vertex_length;
-            let unloaded_index_count = unloading_mesh.lod0_index_length + unloading_mesh.lod1_index_length + unloading_mesh.lod2_index_length + unloading_mesh.lod3_index_length;
+            let unloaded_vertex_count = unloading_mesh.lod0_vertex_length
+                + unloading_mesh.lod1_vertex_length
+                + unloading_mesh.lod2_vertex_length
+                + unloading_mesh.lod3_vertex_length;
+            let unloaded_index_count = unloading_mesh.lod0_index_length
+                + unloading_mesh.lod1_index_length
+                + unloading_mesh.lod2_index_length
+                + unloading_mesh.lod3_index_length;
 
             self.model_handle.vertex_buffer.remove_items(
                 &self.device_context,
@@ -1041,18 +1132,59 @@ impl VulkanRenderer {
                     m.index_offset -= unloaded_index_count;
                 });
 
+            // Unload mesh
             self.model_handle.loaded_meshes.remove(&mesh_asset_id);
+
+            // Unload mesh metadata from uniform buffer
+            let (mesh_buffer, mesh_buffer_memory, mesh_buffer_mapped) = self
+                .model_handle
+                .mesh_uniform_buffer
+                .get_buffer_parts(&self.device_context, self.command_handle.command_pool);
+            let mesh_buffer_layout = unsafe { mesh_buffer_mapped.cast_mut().as_mut().unwrap() };
+
+            for i in 0..2048 {
+                if mesh_buffer_layout.0[i] == unloading_mesh.metadata {
+                    mesh_buffer_layout.0[i] = MeshMetadata::default();
+                    break;
+                }
+            }
+
+            // Finalize and Cleanup
+            unsafe {
+                if !self.model_handle.mesh_uniform_buffer.is_host_visible {
+                    Buffer::<MeshBufferLayout>::copy_buffer(
+                        &self.device_context,
+                        self.command_handle.command_pool,
+                        mesh_buffer,
+                        self.model_handle.mesh_uniform_buffer.buffer,
+                        1u64,
+                    )?;
+                    self.device_context.device.destroy_buffer(mesh_buffer, None);
+                    self.device_context.device.unmap_memory(mesh_buffer_memory);
+                    self.device_context
+                        .device
+                        .free_memory(mesh_buffer_memory, None);
+                }
+            }
         }
 
         Ok(())
     }
 
-    pub fn load_texture(&mut self, texture_asset_id: AssetId, sampler_contents: SamplerContents) -> Result<()> {
+    pub fn load_texture(
+        &mut self,
+        texture_asset_id: AssetId,
+        sampler_contents: SamplerContents,
+    ) -> Result<()> {
         if texture_asset_id == AssetId::None {
             return Ok(());
         }
 
-        if let Some(texture) = self.texture_handle.loaded_textures.get_mut(&texture_asset_id) {
+        if let Some(texture) = self
+            .texture_handle
+            .loaded_textures
+            .get_mut(&texture_asset_id)
+        {
             texture.instance_count += 1;
             return Ok(());
         }
@@ -1111,12 +1243,13 @@ impl VulkanRenderer {
 
         // Create (staging)
 
-        let (staging_buffer, staging_buffer_memory, staging_buffer_mapped) = Buffer::<*const c_void>::create_buffer(
-            &device_context,
-            total_size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )?;
+        let (staging_buffer, staging_buffer_memory, staging_buffer_mapped) =
+            Buffer::<*const c_void>::create_buffer(
+                &device_context,
+                total_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+            )?;
 
         // Copy (staging)
 
@@ -1133,7 +1266,10 @@ impl VulkanRenderer {
                 offset += mip_pixel_data.len();
             }
 
-            device_context.clone().device.unmap_memory(staging_buffer_memory);
+            device_context
+                .clone()
+                .device
+                .unmap_memory(staging_buffer_memory);
         }
 
         // Create (Image)
@@ -1163,7 +1299,10 @@ impl VulkanRenderer {
         )?;
 
         // Copy each mip level from the staging buffer into the corresponding image mip level
-        let command_buffer = begin_single_time_commands(self.command_handle.command_pool, device_context.clone().device)?;
+        let command_buffer = begin_single_time_commands(
+            self.command_handle.command_pool,
+            device_context.clone().device,
+        )?;
 
         let mut buffer_offset: u64 = 0;
         let mut regions: Vec<vk::BufferImageCopy> = Vec::with_capacity(mipmap_levels as usize);
@@ -1206,7 +1345,12 @@ impl VulkanRenderer {
             );
         }
 
-        end_single_time_commands(self.command_handle.command_pool, command_buffer, device_context.device.clone(), device_context.clone().device_queue_handle)?;
+        end_single_time_commands(
+            self.command_handle.command_pool,
+            command_buffer,
+            device_context.device.clone(),
+            device_context.clone().device_queue_handle,
+        )?;
 
         transition_image_layout(
             device_context.clone(),
@@ -1222,7 +1366,9 @@ impl VulkanRenderer {
 
         unsafe {
             device_context.device.destroy_buffer(staging_buffer, None);
-            device_context.device.free_memory(staging_buffer_memory, None);
+            device_context
+                .device
+                .free_memory(staging_buffer_memory, None);
         }
 
         // Create view
@@ -1252,10 +1398,15 @@ impl VulkanRenderer {
                 sampler,
                 instance_count: 1,
             };
-            self.texture_handle.samplers.insert(sampler_contents, sampler_usage);
+            self.texture_handle
+                .samplers
+                .insert(sampler_contents, sampler_usage);
             update_bindless_sampler(
                 &device_context,
-                &self.render_pipeline_handle.descriptor_handle.descriptor_sets,
+                &self
+                    .render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_sets,
                 &self.texture_handle,
                 slot_index,
                 sampler,
@@ -1285,8 +1436,13 @@ impl VulkanRenderer {
         // Update bindless descriptor
         update_bindless_texture(
             &device_context,
-            &self.render_pipeline_handle.descriptor_handle.descriptor_sets,
-            &self.texture_handle,slot_index, image_view
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            &self.texture_handle,
+            slot_index,
+            image_view,
         )?;
 
         Ok(())
@@ -1301,27 +1457,39 @@ impl VulkanRenderer {
             return Ok(());
         }
 
-        let (unloading_texture, fully_unloaded) =
-            if let Some(texture) = self.texture_handle.loaded_textures.get_mut(&texture_asset_id) {
-                texture.instance_count -= 1;
-                (*texture, texture.instance_count == 0)
-            } else {
-                return Err(anyhow!("Texture not found"));
-            };
+        let (unloading_texture, fully_unloaded) = if let Some(texture) = self
+            .texture_handle
+            .loaded_textures
+            .get_mut(&texture_asset_id)
+        {
+            texture.instance_count -= 1;
+            (*texture, texture.instance_count == 0)
+        } else {
+            return Err(anyhow!("Texture not found"));
+        };
 
         if fully_unloaded {
-            self.texture_handle.loaded_textures.remove(&texture_asset_id);
-            self.texture_handle.available_texture_slots
+            self.texture_handle
+                .loaded_textures
+                .remove(&texture_asset_id);
+            self.texture_handle
+                .available_texture_slots
                 .push(unloading_texture.slot_index);
             unsafe {
                 self.device_context
                     .device
                     .destroy_image_view(unloading_texture.texture.image_view, None);
-                self.device_context.device.destroy_image(unloading_texture.texture.image, None);
-                self.device_context.device.free_memory(unloading_texture.texture.image_memory, None);
+                self.device_context
+                    .device
+                    .destroy_image(unloading_texture.texture.image, None);
+                self.device_context
+                    .device
+                    .free_memory(unloading_texture.texture.image_memory, None);
 
                 // Unload sampler if no more textures use this sampler
-                let sampler = self.texture_handle.samplers[&sampler_contents].sampler.clone();
+                let sampler = self.texture_handle.samplers[&sampler_contents]
+                    .sampler
+                    .clone();
                 let slot_index = self.texture_handle.samplers[&sampler_contents].slot_index;
                 let should_unload_sampler: bool =
                     if let Some(usage) = self.texture_handle.samplers.get_mut(&sampler_contents) {
@@ -1343,13 +1511,17 @@ impl VulkanRenderer {
     }
 
     pub fn get_texture_slot_index(&self, texture_asset_id: AssetId) -> Option<u32> {
-        self.texture_handle.loaded_textures
+        self.texture_handle
+            .loaded_textures
             .get(&texture_asset_id)
             .map(|texture| texture.slot_index)
     }
 
     pub fn get_sampler_slot_index(&self, sampler_contents: SamplerContents) -> Option<u32> {
-        self.texture_handle.samplers.get(&sampler_contents).map(|s| s.slot_index)
+        self.texture_handle
+            .samplers
+            .get(&sampler_contents)
+            .map(|s| s.slot_index)
     }
 
     /// Recreates the swapchain for the Vulkan app
@@ -1363,12 +1535,12 @@ impl VulkanRenderer {
 
             self.device_context.device.device_wait_idle()?;
             self.destroy_swapchain();
-            
+
             // Update presentation
             self.present_handle.swapchain_handle = create_swapchain(&self.device_context, &self.present_handle.window_handle.window, self.present_handle.window_handle.surface)?;
             self.present_handle.color_texture = create_color_texture(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
             self.present_handle.depth_texture = create_depth_texture(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
-            
+
             // Update ubos
             self.model_handle.uniform_buffers = create_uniform_buffers(&self.device_context, self.command_handle.command_pool);
 
@@ -1400,7 +1572,7 @@ impl VulkanRenderer {
             // Update command buffers
             self.command_handle.command_buffers = create_command_buffers(self.device_context.device.clone(), self.command_handle.command_pool, self.render_pipeline_handle.framebuffers.len())?;
             self.command_handle.sync_handle.images_in_flight.resize(self.present_handle.swapchain_handle.images.len(), vk::Fence::null());
-            
+
             Ok(())
         }
     }
@@ -1434,11 +1606,7 @@ impl VulkanRenderer {
 
             let device = self.device_context.device.clone();
 
-            let size = self
-                .present_handle
-                .window_handle
-                .window
-                .inner_size();
+            let size = self.present_handle.window_handle.window.inner_size();
             if size.width == 0 || size.height == 0 {
                 return Ok(());
             }
@@ -1446,8 +1614,7 @@ impl VulkanRenderer {
             let current_frame = self.command_handle.sync_handle.current_frame;
             let max_frames_in_flight = self.command_handle.sync_handle.max_frames_in_flight;
 
-            let in_flight_fence =
-                self.command_handle.sync_handle.in_flight_fences[current_frame];
+            let in_flight_fence = self.command_handle.sync_handle.in_flight_fences[current_frame];
 
             device.wait_for_fences(&[in_flight_fence], true, u64::MAX)?;
 
@@ -1486,11 +1653,10 @@ impl VulkanRenderer {
             //let start = Instant::now();
 
             let command_buffer = self.command_handle.command_buffers[image_index];
-            let indirect_draw_buffer = &self.command_handle.main_camera_visbuffers[current_frame].indirect_draw_buffer;
+            let indirect_draw_buffer =
+                &self.command_handle.main_camera_visbuffers[current_frame].indirect_draw_buffer;
 
             // Culling Pass
-
-
 
             // Commands
 
@@ -1553,7 +1719,10 @@ impl VulkanRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.render_pipeline_handle.pipeline_layout,
                 0,
-                &[self.render_pipeline_handle.descriptor_handle.descriptor_sets[current_frame]],
+                &[self
+                    .render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_sets[current_frame]],
                 &[],
             );
 
@@ -1571,10 +1740,12 @@ impl VulkanRenderer {
             //println!("Indirect drawing took: {:?}", start.elapsed());
             //let start = Instant::now();
 
-            let wait_semaphores = &[self.command_handle.sync_handle.image_available_semaphores[current_frame]];
+            let wait_semaphores =
+                &[self.command_handle.sync_handle.image_available_semaphores[current_frame]];
             let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let command_buffers = &[command_buffer];
-            let signal_semaphores = &[self.command_handle.sync_handle.render_finished_semaphores[image_index]];
+            let signal_semaphores =
+                &[self.command_handle.sync_handle.render_finished_semaphores[image_index]];
             let submit_info = vk::SubmitInfo::builder()
                 .wait_semaphores(wait_semaphores)
                 .wait_dst_stage_mask(wait_stages)
@@ -1583,7 +1754,11 @@ impl VulkanRenderer {
 
             device.reset_fences(&[in_flight_fence])?;
 
-            device.queue_submit(self.device_context.device_queue_handle.graphics_queue, &[submit_info], in_flight_fence)?;
+            device.queue_submit(
+                self.device_context.device_queue_handle.graphics_queue,
+                &[submit_info],
+                in_flight_fence,
+            )?;
 
             //println!("Sem and fences took: {:?}", start.elapsed());
             //let start = Instant::now();
@@ -1595,7 +1770,10 @@ impl VulkanRenderer {
                 .swapchains(swapchains)
                 .image_indices(image_indices);
 
-            let result = device.queue_present_khr(self.device_context.device_queue_handle.present_queue, &present_info);
+            let result = device.queue_present_khr(
+                self.device_context.device_queue_handle.present_queue,
+                &present_info,
+            );
 
             let is_changed = result == Ok(vk::SuccessCode::SUBOPTIMAL_KHR)
                 || result == Err(vk::ErrorCode::OUT_OF_DATE_KHR);
@@ -1607,7 +1785,8 @@ impl VulkanRenderer {
                 return Err(anyhow!(e));
             }
 
-            self.command_handle.sync_handle.current_frame = (current_frame + 1) % max_frames_in_flight;
+            self.command_handle.sync_handle.current_frame =
+                (current_frame + 1) % max_frames_in_flight;
 
             //println!("Finishing took: {:?}", start.elapsed());
 
@@ -1641,14 +1820,25 @@ impl VulkanRenderer {
         // Copy
 
         unsafe {
-            memcpy(&ubo, self.model_handle.uniform_buffers[frame_index].mapped.cast_mut(), 1);
+            memcpy(
+                &ubo,
+                self.model_handle.uniform_buffers[frame_index]
+                    .mapped
+                    .cast_mut(),
+                1,
+            );
         }
 
         Ok(())
     }
 
     fn update_model_matrix_buffer_descriptors(&self) -> Result<()> {
-        if self.render_pipeline_handle.descriptor_handle.descriptor_sets.is_empty() {
+        if self
+            .render_pipeline_handle
+            .descriptor_handle
+            .descriptor_sets
+            .is_empty()
+        {
             return Ok(());
         }
 
@@ -1660,7 +1850,11 @@ impl VulkanRenderer {
 
             let static_model_matrix_buffer_info = [static_model_matrix_info];
             let static_model_matrix_write = vk::WriteDescriptorSet::builder()
-                .dst_set(self.render_pipeline_handle.descriptor_handle.descriptor_sets[i])
+                .dst_set(
+                    self.render_pipeline_handle
+                        .descriptor_handle
+                        .descriptor_sets[i],
+                )
                 .dst_binding(2)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -1673,7 +1867,11 @@ impl VulkanRenderer {
 
             let dyn_model_matrix_buffer_info = [dyn_model_matrix_info];
             let dyn_model_matrix_write = vk::WriteDescriptorSet::builder()
-                .dst_set(self.render_pipeline_handle.descriptor_handle.descriptor_sets[i])
+                .dst_set(
+                    self.render_pipeline_handle
+                        .descriptor_handle
+                        .descriptor_sets[i],
+                )
                 .dst_binding(3)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -1874,12 +2072,13 @@ unsafe fn create_logical_device(
 ) -> Result<Device> {
     // Queue Create Infos
 
-    let (graphics_index, present_index) =
+    let (graphics_index, present_index, compute_index) =
         get_queue_family_indices(instance, physical_device, &surface)?;
 
     let mut unique_indices = HashSet::new();
     unique_indices.insert(graphics_index);
     unique_indices.insert(present_index);
+    unique_indices.insert(compute_index);
 
     let queue_priorities = &[1.0];
     let queue_infos = unique_indices
@@ -1947,13 +2146,15 @@ unsafe fn get_device_graphics_present_queues(
     physical_device: vk::PhysicalDevice,
     surface: &vk::SurfaceKHR,
 ) -> Result<DeviceQueueHandle> {
-    let (graphics_index, present_index) =
+    let (graphics_index, present_index, compute_index) =
         get_queue_family_indices(instance, physical_device, surface)?;
     let graphics_queue = device.get_device_queue(graphics_index, 0);
     let present_queue = device.get_device_queue(present_index, 0);
+    let compute_queue = device.get_device_queue(compute_index, 0);
     Ok(DeviceQueueHandle {
         graphics_queue,
         present_queue,
+        compute_queue,
         graphics_queue_family_index: graphics_index,
         present_queue_family_index: present_index,
     })
@@ -2039,7 +2240,7 @@ pub fn get_queue_family_indices(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     surface: &vk::SurfaceKHR,
-) -> Result<(u32, u32)> {
+) -> Result<(u32, u32, u32)> {
     unsafe {
         let properties = instance.get_physical_device_queue_family_properties(physical_device);
 
@@ -2062,8 +2263,19 @@ pub fn get_queue_family_indices(
             }
         }
 
-        if let (Some(graphics), Some(present)) = (graphics, present) {
-            Ok((graphics, present))
+        // Get compute queue
+        let mut compute = None;
+        for (index, properties) in properties.iter().enumerate() {
+            if properties.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                && properties.queue_flags.contains(vk::QueueFlags::COMPUTE)
+            {
+                compute = Some(index as u32);
+                break;
+            }
+        }
+
+        if let (Some(graphics), Some(present), Some(compute)) = (graphics, present, compute) {
+            Ok((graphics, present, compute))
         } else {
             Err(anyhow!(SuitabilityError("Missing required queue families")))
         }
@@ -2148,7 +2360,10 @@ unsafe fn create_surface(instance: Instance, window: &Window) -> Result<vk::Surf
 }
 
 fn set_default_msaa(device_context: &DeviceContext) -> vulkanalia::vk::SampleCountFlags {
-    let max_msaa = get_max_msaa_samples(device_context.clone().instance, device_context.physical_device);
+    let max_msaa = get_max_msaa_samples(
+        device_context.clone().instance,
+        device_context.physical_device,
+    );
     let chosen_msaa = if max_msaa < vk::SampleCountFlags::_4 {
         max_msaa
     } else {
@@ -2166,11 +2381,20 @@ unsafe fn create_swapchain(
 ) -> Result<SwapchainHandle> {
     // Image
 
-    let swapchain_capabilities =
-        device_context.instance.get_physical_device_surface_capabilities_khr(device_context.physical_device, surface)?;
+    let swapchain_capabilities = device_context
+        .instance
+        .get_physical_device_surface_capabilities_khr(device_context.physical_device, surface)?;
 
-    let surface_format = get_swapchain_surface_format(device_context.clone().instance, device_context.physical_device, surface);
-    let present_mode = get_swapchain_present_mode(device_context.clone().instance, device_context.physical_device, surface);
+    let surface_format = get_swapchain_surface_format(
+        device_context.clone().instance,
+        device_context.physical_device,
+        surface,
+    );
+    let present_mode = get_swapchain_present_mode(
+        device_context.clone().instance,
+        device_context.physical_device,
+        surface,
+    );
     let swapchain_extent = get_swapchain_extent(window, swapchain_capabilities);
     let swapchain_format = surface_format.format;
 
@@ -2182,11 +2406,23 @@ unsafe fn create_swapchain(
     }
 
     let mut queue_family_indices = vec![];
-    let image_sharing_mode = if device_context.device_queue_handle.graphics_queue_family_index
-        != device_context.device_queue_handle.present_queue_family_index
+    let image_sharing_mode = if device_context
+        .device_queue_handle
+        .graphics_queue_family_index
+        != device_context
+            .device_queue_handle
+            .present_queue_family_index
     {
-        queue_family_indices.push(device_context.device_queue_handle.graphics_queue_family_index);
-        queue_family_indices.push(device_context.device_queue_handle.present_queue_family_index);
+        queue_family_indices.push(
+            device_context
+                .device_queue_handle
+                .graphics_queue_family_index,
+        );
+        queue_family_indices.push(
+            device_context
+                .device_queue_handle
+                .present_queue_family_index,
+        );
         vk::SharingMode::CONCURRENT
     } else {
         vk::SharingMode::EXCLUSIVE
@@ -2286,7 +2522,10 @@ unsafe fn create_depth_texture(
 ) -> Result<Texture> {
     // Image + Image Memory
 
-    let format = get_depth_format(device_context.clone().instance, device_context.physical_device)?;
+    let format = get_depth_format(
+        device_context.clone().instance,
+        device_context.physical_device,
+    )?;
 
     let (depth_image, depth_image_memory) = create_image(
         device_context.clone(),
@@ -2413,7 +2652,10 @@ pub unsafe fn get_swapchain_present_mode(
         .unwrap_or(vk::PresentModeKHR::FIFO)
 }
 
-pub fn get_depth_format(instance: Instance, physical_device: vk::PhysicalDevice) -> Result<vk::Format> {
+pub fn get_depth_format(
+    instance: Instance,
+    physical_device: vk::PhysicalDevice,
+) -> Result<vk::Format> {
     let candidates = &[
         vk::Format::D32_SFLOAT,
         vk::Format::D32_SFLOAT_S8_UINT,
@@ -2486,7 +2728,10 @@ unsafe fn create_base_render_pass(
         .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
     let depth_stencil_attachment = vk::AttachmentDescription::builder()
-        .format(get_depth_format(device_context.clone().instance, device_context.physical_device)?)
+        .format(get_depth_format(
+            device_context.clone().instance,
+            device_context.physical_device,
+        )?)
         .samples(msaa_samples)
         .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -2600,13 +2845,13 @@ unsafe fn create_descriptor_set_layout(device: Device) -> Result<vk::DescriptorS
         .binding(5)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::VERTEX);
+        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
 
     let instance_data_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(6)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::VERTEX);
+        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
 
     let binding_flags = &[
         vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND,
@@ -2784,6 +3029,45 @@ unsafe fn create_descriptor_sets(
     Ok(descriptor_sets)
 }
 
+unsafe fn create_compute_pipeline(
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    device_context: &DeviceContext,
+) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
+    let shader = include_bytes!("../../assets/shaders/culling.spv");
+
+    let shader_module = create_shader_module(&device_context.device, shader)?;
+
+    let culling_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::COMPUTE)
+        .module(shader_module)
+        .name(b"computeMain\0");
+
+    // Layout
+    let set_layouts = &[descriptor_set_layout];
+    let layout_info = vk::PipelineLayoutCreateInfo::builder().set_layouts(set_layouts);
+    let pipeline_layout = device_context
+        .device
+        .create_pipeline_layout(&layout_info, None)?;
+
+    // Create
+    let pipeline_info = vk::ComputePipelineCreateInfo::builder()
+        .stage(culling_stage)
+        .layout(pipeline_layout);
+
+    let pipeline = device_context
+        .device
+        .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)?
+        .0[0];
+
+    // Cleanup
+
+    device_context
+        .device
+        .destroy_shader_module(shader_module, None);
+
+    Ok((pipeline, pipeline_layout))
+}
+
 unsafe fn create_pipeline(
     swapchain_handle: &SwapchainHandle,
     msaa_samples: vk::SampleCountFlags,
@@ -2810,8 +3094,10 @@ unsafe fn create_pipeline(
     // Vertex Input State
 
     let binding_descriptions = &[QuantizedVertex::binding_description()];
-    let attribute_descriptions =
-        QuantizedVertex::attribute_descriptions(&device_context.instance, &device_context.physical_device)?;
+    let attribute_descriptions = QuantizedVertex::attribute_descriptions(
+        &device_context.instance,
+        &device_context.physical_device,
+    )?;
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
         .vertex_binding_descriptions(binding_descriptions)
         .vertex_attribute_descriptions(&attribute_descriptions);
@@ -2890,7 +3176,9 @@ unsafe fn create_pipeline(
     let layout_info = vk::PipelineLayoutCreateInfo::builder()
         .set_layouts(set_layouts)
         .push_constant_ranges(push_constant_ranges);
-    let pipeline_layout = device_context.device.create_pipeline_layout(&layout_info, None)?;
+    let pipeline_layout = device_context
+        .device
+        .create_pipeline_layout(&layout_info, None)?;
 
     // Create
 
@@ -2908,13 +3196,16 @@ unsafe fn create_pipeline(
         .render_pass(render_pass)
         .subpass(0);
 
-    let pipeline = device_context.device
+    let pipeline = device_context
+        .device
         .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
         .0[0];
 
     // Cleanup
 
-    device_context.device.destroy_shader_module(shader_module, None);
+    device_context
+        .device
+        .destroy_shader_module(shader_module, None);
 
     Ok((pipeline, pipeline_layout))
 }
@@ -3031,7 +3322,10 @@ unsafe fn create_sync_objects(
     })
 }
 
-fn create_source_instance_buffer(device_context: &DeviceContext, command_pool: vk::CommandPool) -> Buffer<PerInstanceData> {
+fn create_source_instance_buffer(
+    device_context: &DeviceContext,
+    command_pool: vk::CommandPool,
+) -> Buffer<PerInstanceData> {
     Buffer::new(
         device_context,
         command_pool,
@@ -3046,7 +3340,7 @@ fn create_source_instance_buffer(device_context: &DeviceContext, command_pool: v
 
 fn create_visbuffers(
     device_context: &DeviceContext,
-    command_pool: vk::CommandPool
+    command_pool: vk::CommandPool,
 ) -> Vec<Visbuffer> {
     let mut visbuffers: Vec<Visbuffer> = Vec::new();
     for i in 0..MAX_FRAMES_IN_FLIGHT {
@@ -3213,7 +3507,7 @@ fn create_mesh_buffer(
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
         0,
         vec![MeshBufferLayout::default()],
-    false,
+        false,
     )
 }
 
@@ -3260,9 +3554,7 @@ pub fn get_supported_image_format(
                 let properties =
                     instance.get_physical_device_format_properties(physical_device, *f);
                 match tiling {
-                    vk::ImageTiling::LINEAR => {
-                        properties.linear_tiling_features.contains(features)
-                    }
+                    vk::ImageTiling::LINEAR => properties.linear_tiling_features.contains(features),
                     vk::ImageTiling::OPTIMAL => {
                         properties.optimal_tiling_features.contains(features)
                     }
@@ -3345,11 +3637,18 @@ pub fn create_image(
 
         let info = vk::MemoryAllocateInfo::builder()
             .allocation_size(requirements.size)
-            .memory_type_index(get_memory_type_index(&device_context.instance, device_context.physical_device, properties, requirements)?);
+            .memory_type_index(get_memory_type_index(
+                &device_context.instance,
+                device_context.physical_device,
+                properties,
+                requirements,
+            )?);
 
         let image_memory = device_context.device.allocate_memory(&info, None)?;
 
-        device_context.device.bind_image_memory(image, image_memory, 0)?;
+        device_context
+            .device
+            .bind_image_memory(image, image_memory, 0)?;
 
         Ok((image, image_memory))
     }
@@ -3395,10 +3694,7 @@ pub fn transition_image_layout(
                 vk::PipelineStageFlags::TOP_OF_PIPE,
                 vk::PipelineStageFlags::TRANSFER,
             ),
-            (
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            ) => (
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
                 vk::AccessFlags::TRANSFER_WRITE,
                 vk::AccessFlags::SHADER_READ,
                 vk::PipelineStageFlags::TRANSFER,
@@ -3438,7 +3734,12 @@ pub fn transition_image_layout(
         );
     }
 
-    end_single_time_commands(command_pool, command_buffer, device_context.device, device_context.device_queue_handle)?;
+    end_single_time_commands(
+        command_pool,
+        command_buffer,
+        device_context.device,
+        device_context.device_queue_handle,
+    )?;
 
     Ok(())
 }
@@ -3456,7 +3757,6 @@ pub fn update_bindless_texture(
 
     let info = vk::DescriptorImageInfo::builder()
         .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-
         .image_view(view);
 
     let image_info = &[info];
@@ -3469,7 +3769,9 @@ pub fn update_bindless_texture(
             .image_info(image_info);
 
         unsafe {
-            device_context.device.update_descriptor_sets(&[write_set], &[] as &[vk::CopyDescriptorSet]);
+            device_context
+                .device
+                .update_descriptor_sets(&[write_set], &[] as &[vk::CopyDescriptorSet]);
         }
     }
     Ok(())
@@ -3497,7 +3799,9 @@ pub fn update_bindless_sampler(
             .image_info(sampler_info);
 
         unsafe {
-            device_context.device.update_descriptor_sets(&[write_set], &[] as &[vk::CopyDescriptorSet]);
+            device_context
+                .device
+                .update_descriptor_sets(&[write_set], &[] as &[vk::CopyDescriptorSet]);
         }
     }
     Ok(())
@@ -3506,7 +3810,7 @@ pub fn update_bindless_sampler(
 pub fn refresh_bindless_textures(
     device_context: &DeviceContext,
     descriptor_sets: &Vec<vk::DescriptorSet>,
-    texture_handle: &TextureHandle
+    texture_handle: &TextureHandle,
 ) -> Result<()> {
     for texture in texture_handle.loaded_textures.values() {
         update_bindless_texture(

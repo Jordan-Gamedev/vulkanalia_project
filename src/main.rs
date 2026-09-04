@@ -14,7 +14,7 @@ use winit::event::{Event, WindowEvent};
 
 // Runs exactly once at startup
 fn init_spawn(mut commands: Commands) {
-    commands.spawn(LimpetPrefab::component_bundle());
+    commands.spawn(CubePrefab::component_bundle());
 }
 
 fn gameplay_update(mut _commands: Commands) {

@@ -48,97 +48,162 @@ struct PerInstanceData
 ConstantBuffer<UniformBuffer> ubo;
 
 [[vk::binding(3, 0)]]
-ConstantBuffer<MeshBufferLayout, Std430DataLayout> meshUniformBuffer;
-
-[[vk::binding(4, 0)]]
 StructuredBuffer<QuantizedModelMatrix> staticModelMatrices;
 
-[[vk::binding(5, 0)]]
+[[vk::binding(4, 0)]]
 StructuredBuffer<QuantizedModelMatrix> dynamicModelMatrices;
 
+[[vk::binding(5, 0)]]
+RWStructuredBuffer<IndirectDrawData> indirectDrawData;
+
 [[vk::binding(6, 0)]]
-StructuredBuffer<PerInstanceData> sourceInstanceData;
+StructuredBuffer<PerInstanceData> instanceData;
 
 [[vk::binding(7, 0)]]
-RWStructuredBuffer<IndirectDrawData> outputIndirectDrawBuffer;
+ConstantBuffer<MeshBufferLayout, Std430DataLayout> meshUniformBuffer;
 
 [[vk::binding(8, 0)]]
-RWStructuredBuffer<PerInstanceData> outputInstanceBuffer;
+RWStructuredBuffer<uint> visbuffer;
 
-// First pass updates IndirectDrawData Buffer instance counts based on the count of visible instances
+// First pass fills in the visbuffer
 
+[require(spvGroupNonUniform, sm_6_6)]
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void pass1(uint3 threadId: SV_DispatchThreadID, uniform uint elementCount)
 {
     uint gID = threadId.x;
+    bool isVisible = false;
+    uint32_t drawIndex = uint32_t::maxValue;
 
-    if (gID >= elementCount)
-        return;
-
-    // Get instance and associated mesh
-    const PerInstanceData sourceInstance = sourceInstanceData[gID];
-    MeshMetadata sourceInstanceMesh = meshUniformBuffer.meshes[sourceInstance.meshMetadataIndex];
-
-    // Temp set isVisible to true
-    bool isVisible = true;
-
-    if (!isVisible)
-        return;
-
-    // Calculate lod and determine IndirectDrawBuffer index (temp chosen as 0)
-    uint8_t chosenLod = 0;
-    uint32_t drawIndex = sourceInstance.meshMetadataIndex * 4 + chosenLod;
-
-    // Count number of visible instances for the chosen draw call
-    InterlockedAdd(outputIndirectDrawBuffer[drawIndex].instanceCount, 1);
-}
-
-// Second pass updates IndirectDrawData Buffer instance offsets based on instance counts
-
-[shader("compute")]
-[numthreads(1, 1, 1)]
-void pass2(uint3 threadId: SV_DispatchThreadID)
-{
-    uint currentOffset = 0;
-    for (uint32_t i = 0; i < 8192; i++)
+    if (gID < elementCount)
     {
-        uint count = outputIndirectDrawBuffer[i].instanceCount;
-        outputIndirectDrawBuffer[i].instanceCount = 0;
-        outputIndirectDrawBuffer[i].firstInstance = currentOffset;
-        currentOffset += count;
+        // Get instance and associated mesh
+        const PerInstanceData sourceInstance = instanceData[gID];
+        MeshMetadata sourceInstanceMesh = meshUniformBuffer.meshes[sourceInstance.meshMetadataIndex];
+
+        // Temp set isVisible to trued (place cull arithmetic here)
+        isVisible = true;
+
+        if (isVisible)
+        {
+            // Calculate lod and determine IndirectDrawBuffer index (temp chosen as 0)
+            uint8_t chosenLod = 0;
+            drawIndex = sourceInstance.meshMetadataIndex * 4 + chosenLod;
+        }
+    }
+
+    if (isVisible)
+    {
+        // Get number of threads returning isVisible as true
+        uint waveMatchCount = WaveActiveCountBits(isVisible);
+
+        // Get this shader program's active thread index
+        uint waveMultiPrefix = WavePrefixCountBits(isVisible);
+
+        uint globalBaseIndex = 0;
+
+        // Make only one lane access Vram
+        if (WaveIsFirstLane())
+        {
+            // Reserve a chunk of memory for the whole wave
+            InterlockedAdd(visbuffer[0], waveMatchCount, globalBaseIndex);
+        }
+
+        // Broadcast base index to all other lanes in the wave
+        globalBaseIndex = WaveReadLaneFirst(globalBaseIndex);
+        uint flatAllocationIndex = globalBaseIndex + waveMultiPrefix + 1;
+
+        // Write to visbuffer
+        visbuffer[flatAllocationIndex] = gID;
+    }
+
+    while (WaveActiveAnyTrue(isVisible))
+    {
+        uint32_t currentDrawIndex = WaveReadLaneFirst(drawIndex);
+        bool isMatch = isVisible && drawIndex == currentDrawIndex;
+        uint matchCount = WaveActiveCountBits(isMatch);
+
+        if (isMatch && WaveIsFirstLane())
+        {
+            // Track how many instances this draw call has
+            InterlockedAdd(indirectDrawData[drawIndex].instanceCount, matchCount);
+        }
+
+        // Mark matching threads as processed
+        if (isMatch)
+        {
+            isVisible = false;
+        }
     }
 }
 
-// Third pass organizes them inside the Instance Buffer using IndirectDrawData Buffer
+// TODO: Verify if this is good code since this pass was written entirely with AI
+
+// Allocate scratch space for inter-wave communication
+// (256 threads / 32 lane wave size = max 8 waves)
+groupshared uint sharedScratch[8];
 
 [shader("compute")]
-[numthreads(64, 1, 1)]
-void pass3(uint3 threadId: SV_DispatchThreadID, uniform uint elementCount)
+[numthreads(256, 1, 1)]
+void pass2(uint3 threadId: SV_GroupThreadID)
 {
-    uint gID = threadId.x;
+    uint tid = threadId.x;
 
-    if (gID >= elementCount)
-        return;
+    // 8,192 total draws / 256 threads = exactly 32 draws assigned per thread
+    const uint DRAWS_PER_THREAD = 32;
+    uint startIndex = tid * DRAWS_PER_THREAD;
 
-    // Get instance and associated mesh
-    const PerInstanceData sourceInstance = sourceInstanceData[gID];
-    MeshMetadata sourceInstanceMesh = meshUniformBuffer.meshes[sourceInstance.meshMetadataIndex];
+    // Step 1: Read the scattered instance counts from Pass 1 into local registers
+    // Accumulate a local running sum for this thread's 32-draw chunk
+    uint localSum = 0;
+    uint threadCounts[DRAWS_PER_THREAD];
 
-    // Temp set isVisible to true
-    bool isVisible = true;
+    [unroll]
+    for (uint i = 0; i < DRAWS_PER_THREAD; ++i)
+    {
+        threadCounts[i] = indirectDrawData[startIndex + i].instanceCount;
+        localSum += threadCounts[i];
+    }
 
-    if (!isVisible)
-        return;
+    // Step 2: Intra-Wave Scan
+    // Calculate the running sum prefix across threads inside the same hardware wave
+    uint waveSum = WaveActiveSum(localSum);
+    uint wavePrefix = WavePrefixSum(localSum);
 
-    // Calculate lod and determine IndirectDrawBuffer index
-    uint8_t chosenLod = 0;
-    uint32_t drawIndex = sourceInstance.meshMetadataIndex * 4 + chosenLod;
+    // Step 3: Inter-Wave Communication
+    uint laneId = tid % WaveGetLaneCount();
+    uint waveId = tid / WaveGetLaneCount();
 
-    // Add to the count of instances for the draw call
-    uint32_t instanceIndexOffset;
-    InterlockedAdd(outputIndirectDrawBuffer[drawIndex].instanceCount, 1, instanceIndexOffset);
+    // The first lane of each wave publishes that wave's total sum to group memory
+    if (laneId == 0)
+    {
+        sharedScratch[waveId] = waveSum;
+    }
 
-    // Place visible instance in instance buffer
-    outputInstanceBuffer[outputIndirectDrawBuffer[drawIndex].firstInstance + instanceIndexOffset] = sourceInstance;
+    // Sync to guarantee all waves have successfully checked in
+    GroupMemoryBarrierWithGroupSync();
+
+    // The first wave handles the prefix sum of the wave totals
+    if (waveId == 0 && laneId < 8)
+    {
+        uint s = sharedScratch[laneId];
+        uint p = WavePrefixSum(s);
+        sharedScratch[laneId] = p; // Store the global base offset for each wave
+    }
+
+    // Sync again so all threads can safely read the finalized wave base offsets
+    GroupMemoryBarrierWithGroupSync();
+
+    // Step 4: Combine the wave base and lane prefix to find this thread's global chunk starting point
+    uint globalChunkOffset = sharedScratch[waveId] + wavePrefix;
+
+    // Step 5: Iteratively unpack and write the sequential prefix sum back to firstInstance
+    uint runningOffset = globalChunkOffset;
+
+    for (uint j = 0; j < DRAWS_PER_THREAD; ++j)
+    {
+        indirectDrawData[startIndex + j].firstInstance = runningOffset;
+        runningOffset += threadCounts[j];
+    }
 }
