@@ -24,7 +24,6 @@ pub mod texture_handle;
 pub mod texture_usage;
 pub mod uniform_buffer_object;
 pub mod vertex;
-pub mod visbuffer;
 pub mod vulkan_renderer;
 pub mod window_handle;
 
@@ -54,6 +53,5 @@ pub use texture_handle::TextureHandle;
 pub use texture_usage::TextureUsage;
 pub use uniform_buffer_object::UniformBufferObject;
 pub use vertex::Vertex;
-pub use visbuffer::Visbuffer;
 pub use vulkan_renderer::VulkanRenderer;
 pub use window_handle::WindowHandle;

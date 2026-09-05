@@ -48,21 +48,18 @@ struct PerInstanceData
 ConstantBuffer<UniformBuffer> ubo;
 
 [[vk::binding(3, 0)]]
-StructuredBuffer<QuantizedModelMatrix> staticModelMatrices;
+StructuredBuffer<QuantizedModelMatrix> modelMatrixBuffer;
 
 [[vk::binding(4, 0)]]
-StructuredBuffer<QuantizedModelMatrix> dynamicModelMatrices;
-
-[[vk::binding(5, 0)]]
 RWStructuredBuffer<IndirectDrawData> indirectDrawData;
 
-[[vk::binding(6, 0)]]
+[[vk::binding(5, 0)]]
 StructuredBuffer<PerInstanceData> instanceData;
 
-[[vk::binding(7, 0)]]
+[[vk::binding(6, 0)]]
 ConstantBuffer<MeshBufferLayout, Std430DataLayout> meshUniformBuffer;
 
-[[vk::binding(8, 0)]]
+[[vk::binding(7, 0)]]
 RWStructuredBuffer<uint> visbuffer;
 
 // First pass fills in the visbuffer

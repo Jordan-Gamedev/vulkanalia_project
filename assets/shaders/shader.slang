@@ -39,7 +39,6 @@ struct IndirectDrawData
 
 struct PerInstanceData
 {
-    uint modelMatrixInfo;
     uint16_t textureIndex;
     uint16_t samplerIndex;
     uint16_t meshMetadataIndex;
@@ -56,18 +55,15 @@ SamplerState samplers[];
 ConstantBuffer<UniformBuffer> ubo;
 
 [[vk::binding(3, 0)]]
-StructuredBuffer<QuantizedModelMatrix> staticModelMatrices;
+StructuredBuffer<QuantizedModelMatrix> modelMatrixBuffer;
 
 [[vk::binding(4, 0)]]
-StructuredBuffer<QuantizedModelMatrix> dynamicModelMatrices;
-
-[[vk::binding(5, 0)]]
 StructuredBuffer<IndirectDrawData> indirectDrawData;
 
-[[vk::binding(6, 0)]]
+[[vk::binding(5, 0)]]
 StructuredBuffer<PerInstanceData> instanceData;
 
-[[vk::binding(8, 0)]]
+[[vk::binding(7, 0)]]
 StructuredBuffer<uint> visbuffer;
 
 float4 decodeQuaternion(int16_t[4] packedRotation)
@@ -104,10 +100,7 @@ VSOutput vertMain(VSInput input, uint startInstanceId: SV_StartInstanceLocation,
     uint instanceIndex = visbuffer[1 + startInstanceId + instanceId];
     PerInstanceData instance = instanceData[instanceIndex];
 
-    bool isStatic = (instance.modelMatrixInfo & 0x80000000u) != 0;
-    uint modelMatrixIndex = instance.modelMatrixInfo & 0x7FFFFFFFu;
-
-    QuantizedModelMatrix modelMatrix = isStatic ? staticModelMatrices[modelMatrixIndex] : dynamicModelMatrices[modelMatrixIndex];
+    QuantizedModelMatrix modelMatrix = modelMatrixBuffer[instanceIndex];
     float4x4 model = buildModelMatrix(modelMatrix);
 
     output.pos = mul(ubo.proj, mul(ubo.view, mul(model, float4(input.inPos, 1.0))));
