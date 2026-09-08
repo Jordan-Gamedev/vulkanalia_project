@@ -10,7 +10,6 @@ pub struct TransformComponent {
     pub scale: Vec3,
     pub rotation: Quat,
     pub model_matrix_index: u32,
-    pub is_static: bool,
 }
 
 impl Default for TransformComponent {
@@ -20,19 +19,17 @@ impl Default for TransformComponent {
             scale: Vec3::ONE,
             rotation: Quat::IDENTITY,
             model_matrix_index: u32::MAX,
-            is_static: false,
         }
     }
 }
 
 impl TransformComponent {
-    pub fn new(position: Vec3, scale: Vec3, rotation: Quat, is_static: bool) -> Self {
+    pub fn new(position: Vec3, scale: Vec3, rotation: Quat) -> Self {
         Self {
             position,
             scale,
             rotation,
             model_matrix_index: u32::MAX,
-            is_static,
         }
     }
 

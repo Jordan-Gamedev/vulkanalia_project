@@ -1,12 +1,3 @@
-#![allow(
-    dead_code,
-    unsafe_op_in_unsafe_fn,
-    unused_variables,
-    clippy::manual_slice_size_calculation,
-    clippy::too_many_arguments,
-    clippy::unnecessary_wraps
-)]
-
 use anyhow::Result;
 use std::mem::size_of;
 use std::ptr::copy_nonoverlapping as memcpy;
@@ -265,7 +256,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
         unsafe {
             // Get CPU visible buffer data
-            let (buffer, memory, mapped) = self.get_buffer_parts(device_context, command_pool);
+            let (buffer, memory, _) = self.get_buffer_parts(device_context, command_pool);
 
             // Collect contents
             let mut contents: Vec<T> = Vec::with_capacity(self.element_capacity as usize);

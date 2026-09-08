@@ -11,6 +11,7 @@ use crate::engine::CommandHandle;
 use crate::engine::DescriptorHandle;
 use crate::engine::DeviceContext;
 use crate::engine::DeviceQueueHandle;
+use crate::engine::InFlightBuffers;
 use crate::engine::IndirectDrawData;
 use crate::engine::Mesh;
 use crate::engine::MeshBufferLayout;
@@ -31,7 +32,7 @@ use crate::engine::TextureHandle;
 use crate::engine::TextureUsage;
 use crate::engine::UniformBufferObject;
 use crate::engine::WindowHandle;
-use crate::engine::buffers::Buffer;
+use crate::engine::buffer::Buffer;
 use crate::resources::AssetId;
 use crate::resources::get_asset_from_id;
 use anyhow::{Result, anyhow};
@@ -66,7 +67,7 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 #[error("{0}")]
 struct SuitabilityError(&'static str);
 
-#[derive(bevy_ecs::resource::Resource, Clone)]
+#[derive(bevy_ecs::resource::Resource)]
 pub struct VulkanRenderer {
     pub device_context: DeviceContext,
     pub present_handle: PresentHandle,
@@ -347,18 +348,9 @@ impl VulkanRenderer {
             if self.command_handle.command_pool != vk::CommandPool::null() {
                 device.destroy_command_pool(self.command_handle.command_pool, None);
             }
-            self.command_handle
-                .indirect_draw_buffers
-                .iter_mut()
-                .for_each(|b| b.destroy(&device));
-            self.command_handle
-                .instance_buffers
-                .iter_mut()
-                .for_each(|b| b.destroy(&device));
-            self.command_handle
-                .main_camera_visbuffers
-                .iter_mut()
-                .for_each(|b| b.destroy(&device));
+            self.command_handle.indirect_draw_buffers.destroy(&device);
+            self.command_handle.instance_buffers.destroy(&device);
+            self.command_handle.main_camera_visbuffers.destroy(&device);
 
             // Model Handle
 
@@ -370,10 +362,7 @@ impl VulkanRenderer {
                 .uniform_buffers
                 .iter_mut()
                 .for_each(|b| b.destroy(&device));
-            self.model_handle
-                .model_matrix_buffers
-                .iter_mut()
-                .for_each(|b| b.destroy(&device));
+            self.model_handle.model_matrix_buffers.destroy(&device);
             self.model_handle.mesh_uniform_buffer.destroy(&device);
 
             // Texture Handle
@@ -395,12 +384,11 @@ impl VulkanRenderer {
 
     pub fn add_instance(
         &mut self,
-        frame_index: usize,
         mesh_asset_id: AssetId,
         texture_asset_id: AssetId,
         sampler_contents: SamplerContents,
         matrix: QuantizedModelMatrix,
-    ) -> Result<PerInstanceData> {
+    ) -> Result<(PerInstanceData, usize)> {
         // Potentially load model and texture
         let mesh_metadata_index = self.load_mesh(mesh_asset_id)?;
         self.load_texture(texture_asset_id, sampler_contents)?;
@@ -419,21 +407,10 @@ impl VulkanRenderer {
         // Get bindless sampler index
         let sampler_index = self.get_sampler_slot_index(sampler_contents).unwrap_or(0) as u16;
 
-        // New instance data
-        let new_instance = PerInstanceData {
-            texture_index,
-            sampler_index,
-            mesh_metadata_index,
-            mesh_asset_id: mesh_asset_id as u16,
-        };
-
         // The currently used instance and model matrix buffers
-        let instance_buffer = &mut self.command_handle.instance_buffers[frame_index];
-        let model_matrix_buffer = &mut self.model_handle.model_matrix_buffers[frame_index];
+        let instance_buffer = self.command_handle.instance_buffers.get_current_mut();
+        let model_matrix_buffer = &mut self.model_handle.model_matrix_buffers.get_current_mut();
 
-        let mut in_proper_instance_bucket = false;
-        let mut moving_instance = new_instance;
-        let mut moving_model_matrix = matrix;
         instance_buffer.element_count += 1;
         model_matrix_buffer.element_count += 1;
 
@@ -485,6 +462,19 @@ impl VulkanRenderer {
             model_matrix_buffer.available_indices.clear();
         }
 
+        // New instance data
+        let new_instance = PerInstanceData {
+            texture_index,
+            sampler_index,
+            mesh_metadata_index,
+            mesh_asset_id: mesh_asset_id as u16,
+        };
+        let mut new_instance_buffer_index: usize = usize::MAX;
+
+        let mut in_proper_instance_bucket = false;
+        let mut moving_instance = new_instance;
+        let mut moving_model_matrix = matrix;
+
         // Recursively replace end of instance and model matrix buckets with moving instance and moving model matrix until the end is reached
         for i in 0..instance_buffer.element_count as usize {
             let buffer_instance = unsafe { instance_buffer.mapped.add(i).read() };
@@ -496,6 +486,10 @@ impl VulkanRenderer {
                 unsafe {
                     *instance_buffer.mapped.add(i).cast_mut() = moving_instance;
                     *model_matrix_buffer.mapped.add(i).cast_mut() = moving_model_matrix;
+
+                    if new_instance_buffer_index == usize::MAX {
+                        new_instance_buffer_index = i;
+                    }
                 }
 
                 moving_instance = buffer_instance;
@@ -504,12 +498,16 @@ impl VulkanRenderer {
             }
         }
 
-        Ok(new_instance)
+        // Signal to the other frames that the buffer has been changed
+        self.command_handle
+            .instance_buffers
+            .signal_buffer_change_propagation();
+
+        Ok((new_instance, new_instance_buffer_index))
     }
 
     pub fn remove_instance(
         &mut self,
-        frame_index: usize,
         mesh_asset_id: AssetId,
         texture_asset_id: AssetId,
         sampler_contents: SamplerContents,
@@ -520,65 +518,80 @@ impl VulkanRenderer {
         self.unload_mesh(mesh_asset_id)?;
         self.unload_texture(texture_asset_id, sampler_contents)?;
 
-        // The currently used instance and model matrix buffers
-        let instance_buffer = &mut self.command_handle.instance_buffers[frame_index];
-        let model_matrix_buffer = &mut self.model_handle.model_matrix_buffers[frame_index];
-
-        // Get active instances and model matrices
-        let instances = instance_buffer.get_buffer_items(
-            &self.device_context,
-            self.command_handle.command_pool,
-            false,
-        )?;
-        let model_matrices = model_matrix_buffer.get_buffer_items(
-            &self.device_context,
-            self.command_handle.command_pool,
-            false,
-        )?;
-
         // Get the remove index
-        let mut remove_index = usize::MAX;
-        for i in 0..instances.len() {
-            if instances[i] == *instance && model_matrices[i] == *model_matrix {
-                remove_index = i;
-            }
-        }
+        let remove_index: u32 = self.get_model_matrix_index(instance, model_matrix)?;
 
-        // Instance to remove not found
-        if remove_index == usize::MAX {
-            return Err(anyhow!(format!(
-                "Instance: {:?} with model matrix: {:?} not found!",
-                instance, model_matrix
-            )));
-        }
+        // The currently used instance and model matrix buffers
+        let instance_buffer = &mut self.command_handle.instance_buffers.get_current_mut();
+        let model_matrix_buffer = &mut self.model_handle.model_matrix_buffers.get_current_mut();
 
         // Remove instance
         instance_buffer.remove_item_at(
             &self.device_context,
             self.command_handle.command_pool,
-            remove_index as u32,
+            remove_index,
         )?;
 
         // Remove model matrix
         model_matrix_buffer.remove_item_at(
             &self.device_context,
             self.command_handle.command_pool,
-            remove_index as u32,
+            remove_index,
         )?;
+
+        // Signal to the other frames that the buffer has been changed
+        self.command_handle
+            .instance_buffers
+            .signal_buffer_change_propagation();
 
         Ok(())
     }
 
-    pub fn get_model_matrix(
+    pub fn get_model_matrix_index(
         &self,
-        model_matrix_index: u32,
-        frame_index: usize,
-    ) -> QuantizedModelMatrix {
+        instance: &PerInstanceData,
+        model_matrix: &QuantizedModelMatrix,
+    ) -> Result<u32> {
         unsafe {
-            self.model_handle.model_matrix_buffers[frame_index]
-                .mapped
-                .add(model_matrix_index as usize)
-                .read()
+            let model_matrices = self
+                .model_handle
+                .model_matrix_buffers
+                .get_current()
+                .get_buffer_items(
+                    &self.device_context,
+                    self.command_handle.command_pool,
+                    false,
+                )
+                .unwrap();
+
+            let instances = self
+                .command_handle
+                .instance_buffers
+                .get_current()
+                .get_buffer_items(
+                    &self.device_context,
+                    self.command_handle.command_pool,
+                    false,
+                )
+                .unwrap();
+
+            // Get the remove index
+            let mut remove_index = usize::MAX;
+            for i in 0..instances.len() {
+                if instances[i] == *instance && model_matrices[i] == *model_matrix {
+                    remove_index = i;
+                }
+            }
+
+            // Instance to remove not found
+            if remove_index == usize::MAX {
+                return Err(anyhow!(format!(
+                    "Instance: {:?} with model matrix: {:?} not found!",
+                    instance, model_matrix
+                )));
+            }
+
+            Ok(remove_index as u32)
         }
     }
 
@@ -1394,6 +1407,18 @@ impl VulkanRenderer {
         }
     }
 
+    /// Called before system, physics, and render are called
+    pub fn start_of_frame_updates(&mut self) {
+        // Propagate gpu changes across all frames
+
+        self.command_handle
+            .instance_buffers
+            .update(&self.device_context, self.command_handle.command_pool);
+        self.model_handle
+            .model_matrix_buffers
+            .update(&self.device_context, self.command_handle.command_pool);
+    }
+
     /// Renders a frame for the Vulkan app
     pub fn render(&mut self) -> Result<()> {
         unsafe {
@@ -1448,7 +1473,7 @@ impl VulkanRenderer {
             //let start = Instant::now();
 
             let command_buffer = self.command_handle.command_buffers[image_index];
-            let indirect_draw_buffer = &self.command_handle.indirect_draw_buffers[current_frame];
+            let indirect_draw_buffer = &self.command_handle.indirect_draw_buffers.get_current();
 
             // Culling Pass
 
@@ -2742,9 +2767,9 @@ unsafe fn create_descriptor_pool(device: Device) -> Result<vk::DescriptorPool> {
 unsafe fn create_descriptor_sets(
     device_context: &DeviceContext,
     model_handle: &ModelHandle,
-    indirect_draw_buffers: &Vec<Buffer<IndirectDrawData>>,
-    instance_buffers: &Vec<Buffer<PerInstanceData>>,
-    main_camera_visbuffers: &Vec<Buffer<u32>>,
+    indirect_draw_buffers: &InFlightBuffers<IndirectDrawData>,
+    instance_buffers: &InFlightBuffers<PerInstanceData>,
+    main_camera_visbuffers: &InFlightBuffers<u32>,
     texture_handle: &TextureHandle,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
@@ -2774,7 +2799,7 @@ unsafe fn create_descriptor_sets(
             .buffer_info(&ubo_info);
 
         let model_matrix_info = [vk::DescriptorBufferInfo::builder()
-            .buffer(model_handle.model_matrix_buffers[i].buffer)
+            .buffer(model_handle.model_matrix_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
 
@@ -2786,7 +2811,7 @@ unsafe fn create_descriptor_sets(
             .buffer_info(&model_matrix_info);
 
         let indirect_draw_info = [vk::DescriptorBufferInfo::builder()
-            .buffer(indirect_draw_buffers[i].buffer)
+            .buffer(indirect_draw_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
 
@@ -2798,7 +2823,7 @@ unsafe fn create_descriptor_sets(
             .buffer_info(&indirect_draw_info);
 
         let instance_data_info = [vk::DescriptorBufferInfo::builder()
-            .buffer(instance_buffers[i].buffer)
+            .buffer(instance_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
 
@@ -2822,7 +2847,7 @@ unsafe fn create_descriptor_sets(
             .buffer_info(&mesh_uniform_info);
 
         let visbuffer_info = [vk::DescriptorBufferInfo::builder()
-            .buffer(main_camera_visbuffers[i].buffer)
+            .buffer(main_camera_visbuffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
 
@@ -3151,61 +3176,55 @@ unsafe fn create_sync_objects(
 fn create_indirect_draw_buffers(
     device_context: &DeviceContext,
     command_pool: vk::CommandPool,
-) -> Vec<Buffer<IndirectDrawData>> {
-    let mut buffers: Vec<Buffer<IndirectDrawData>> = Vec::new();
-    for i in 0..MAX_FRAMES_IN_FLIGHT {
-        buffers.push(Buffer::new(
-            device_context,
-            command_pool,
-            INDIRECT_DRAW_DATA_COUNT as u64,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            0,
-            vec![IndirectDrawData::default(); INDIRECT_DRAW_DATA_COUNT],
-            false,
-        ));
-    }
-    buffers
+) -> InFlightBuffers<IndirectDrawData> {
+    InFlightBuffers::new(
+        MAX_FRAMES_IN_FLIGHT as usize,
+        MAX_FRAMES_IN_FLIGHT as usize,
+        device_context,
+        command_pool,
+        INDIRECT_DRAW_DATA_COUNT as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        0,
+        vec![IndirectDrawData::default(); INDIRECT_DRAW_DATA_COUNT],
+        false,
+    )
 }
 
 fn create_instance_buffers(
     device_context: &DeviceContext,
     command_pool: vk::CommandPool,
-) -> Vec<Buffer<PerInstanceData>> {
-    let mut buffers: Vec<Buffer<PerInstanceData>> = Vec::new();
-    for i in 0..MAX_FRAMES_IN_FLIGHT {
-        buffers.push(Buffer::new(
-            device_context,
-            command_pool,
-            INSTANCE_CHUNK_COUNT as u64,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            INSTANCE_CHUNK_COUNT as u32,
-            vec![PerInstanceData::default(); INSTANCE_CHUNK_COUNT],
-            false,
-        ));
-    }
-    buffers
+) -> InFlightBuffers<PerInstanceData> {
+    InFlightBuffers::new(
+        MAX_FRAMES_IN_FLIGHT as usize,
+        MAX_FRAMES_IN_FLIGHT as usize,
+        device_context,
+        command_pool,
+        INSTANCE_CHUNK_COUNT as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        INSTANCE_CHUNK_COUNT as u32,
+        vec![PerInstanceData::default(); INSTANCE_CHUNK_COUNT],
+        false,
+    )
 }
 
 fn create_visbuffers(
     device_context: &DeviceContext,
     command_pool: vk::CommandPool,
-) -> Vec<Buffer<u32>> {
-    let mut visbuffers: Vec<Buffer<u32>> = Vec::new();
-    for i in 0..MAX_FRAMES_IN_FLIGHT {
-        visbuffers.push(Buffer::new(
-            device_context,
-            command_pool,
-            INSTANCE_CHUNK_COUNT as u64,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            INSTANCE_CHUNK_COUNT as u32,
-            vec![u32::MAX; INSTANCE_CHUNK_COUNT],
-            false,
-        ));
-    }
-    visbuffers
+) -> InFlightBuffers<u32> {
+    InFlightBuffers::new(
+        MAX_FRAMES_IN_FLIGHT as usize,
+        MAX_FRAMES_IN_FLIGHT as usize,
+        device_context,
+        command_pool,
+        INSTANCE_CHUNK_COUNT as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        INSTANCE_CHUNK_COUNT as u32,
+        vec![u32::MAX; INSTANCE_CHUNK_COUNT],
+        false,
+    )
 }
 
 // Helper Functions
@@ -3327,21 +3346,19 @@ fn create_uniform_buffers(
 fn create_model_matrix_buffers(
     device_context: DeviceContext,
     command_pool: vk::CommandPool,
-) -> Vec<Buffer<QuantizedModelMatrix>> {
-    let mut buffers: Vec<Buffer<QuantizedModelMatrix>> = Vec::new();
-    for i in 0..MAX_FRAMES_IN_FLIGHT {
-        buffers.push(Buffer::new(
-            &device_context,
-            command_pool,
-            INSTANCE_CHUNK_COUNT as u64,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-            INSTANCE_CHUNK_COUNT as u32,
-            vec![QuantizedModelMatrix::default(); INSTANCE_CHUNK_COUNT],
-            false,
-        ));
-    }
-    buffers
+) -> InFlightBuffers<QuantizedModelMatrix> {
+    InFlightBuffers::new(
+        MAX_FRAMES_IN_FLIGHT as usize,
+        MAX_FRAMES_IN_FLIGHT as usize,
+        &device_context,
+        command_pool,
+        INSTANCE_CHUNK_COUNT as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        INSTANCE_CHUNK_COUNT as u32,
+        vec![QuantizedModelMatrix::default(); INSTANCE_CHUNK_COUNT],
+        false,
+    )
 }
 
 fn create_mesh_buffer(

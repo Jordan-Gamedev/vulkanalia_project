@@ -1,18 +1,19 @@
+use crate::engine::InFlightBuffers;
 use crate::engine::Mesh;
 use crate::engine::MeshBufferLayout;
 use crate::engine::QuantizedModelMatrix;
 use crate::engine::QuantizedVertex;
 use crate::engine::UniformBufferObject;
-use crate::engine::buffers::Buffer;
+use crate::engine::buffer::Buffer;
 use crate::resources::AssetId;
 use std::collections::HashMap;
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct ModelHandle {
     pub vertex_buffer: Buffer<QuantizedVertex>,
     pub index_buffer: Buffer<u32>,
-    pub uniform_buffers: Vec<Buffer<UniformBufferObject>>,
-    pub model_matrix_buffers: Vec<Buffer<QuantizedModelMatrix>>,
+    pub uniform_buffers: InFlightBuffers<UniformBufferObject>,
+    pub model_matrix_buffers: InFlightBuffers<QuantizedModelMatrix>,
     pub loaded_meshes: HashMap<AssetId, Mesh>,
-    pub mesh_uniform_buffer: Buffer<MeshBufferLayout>,
+    pub mesh_uniform_buffer: InFlightBuffers<MeshBufferLayout>,
 }

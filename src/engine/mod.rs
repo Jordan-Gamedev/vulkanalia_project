@@ -1,8 +1,9 @@
-pub mod buffers;
+pub mod buffer;
 pub mod command_handle;
 pub mod descriptor_handle;
 pub mod device_context;
 pub mod device_queue_handle;
+pub mod in_flight_buffers;
 pub mod indirect_draw_data;
 pub mod material;
 pub mod mesh;
@@ -27,11 +28,12 @@ pub mod vertex;
 pub mod vulkan_renderer;
 pub mod window_handle;
 
-pub use buffers::Buffer;
+pub use buffer::Buffer;
 pub use command_handle::CommandHandle;
 pub use descriptor_handle::DescriptorHandle;
 pub use device_context::DeviceContext;
 pub use device_queue_handle::DeviceQueueHandle;
+pub use in_flight_buffers::InFlightBuffers;
 pub use indirect_draw_data::IndirectDrawData;
 pub use material::Material;
 pub use mesh::Mesh;

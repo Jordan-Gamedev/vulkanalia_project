@@ -18,7 +18,7 @@ use glam::Vec3;
 pub struct RenderComponent {
     pub mesh: AssetId,              // An asset reference to the renderer's mesh
     pub material: Material,         // The material that this entity uses
-    pub model_matrix_info: u32,     // The model matrix
+    pub model_matrix_index: u32,    // The model matrix
     pub is_receiving_shadows: bool, // Whether this entity should receive shadows from other shadow casters
     pub is_casting_shadows: bool,   // Whether this entity is a shadow caster
 }
@@ -38,6 +38,10 @@ impl RenderComponent {
             is_casting_shadows: casts_shadows,
         }
     }
+
+    //
+    // TODO: model_matrix_index does not update when adding or removing instances
+    //
 
     fn on_add(mut world: DeferredWorld, hook_context: HookContext) {
         // Get an unsafe world cell view
@@ -64,20 +68,17 @@ impl RenderComponent {
         };
 
         // Create instance
-        let model_matrix_info = vulkan_renderer
+        let (_, model_matrix_index) = vulkan_renderer
             .add_instance(
                 render.mesh,
                 render.material.albedo,
                 render.material.sampler_contents,
                 transform_component.to_quantized_matrix(),
-                transform_component.is_static,
             )
-            .unwrap()
-            .model_matrix_info;
+            .unwrap();
 
-        render.model_matrix_info = model_matrix_info;
-        transform_component.model_matrix_index =
-            VulkanRenderer::get_model_matrix_index(model_matrix_info);
+        render.model_matrix_index = model_matrix_index as u32;
+        transform_component.model_matrix_index = model_matrix_index as u32;
     }
 
     fn on_remove(mut world: DeferredWorld, hook_context: HookContext) {
@@ -115,49 +116,49 @@ impl RenderComponent {
         transform.model_matrix_index = u32::MAX;
     }
 
-    pub fn get_model_matrix_index(&self) -> u32 {
-        self.model_matrix_info & 0x7FFFFFFF
-    }
+    // pub fn get_model_matrix_index(&self) -> u32 {
+    //     self.model_matrix_info & 0x7FFFFFFF
+    // }
 
-    pub fn get_quantized_model_matrix(
-        &self,
-        vulkan_renderer: &VulkanRenderer,
-    ) -> Result<QuantizedModelMatrix> {
-        let model_matrix =
-            vulkan_renderer.get_model_matrix(self.get_model_matrix_index(), self.is_static());
-        Ok(model_matrix)
-    }
+    // pub fn get_quantized_model_matrix(
+    //     &self,
+    //     vulkan_renderer: &VulkanRenderer,
+    // ) -> Result<QuantizedModelMatrix> {
+    //     let model_matrix =
+    //         vulkan_renderer.get_model_matrix(self.get_model_matrix_index(), self.is_static());
+    //     Ok(model_matrix)
+    // }
 
-    pub fn is_static(&self) -> bool {
-        self.model_matrix_info & 0x80000000 > 0
-    }
+    // pub fn is_static(&self) -> bool {
+    //     self.model_matrix_info & 0x80000000 > 0
+    // }
 
-    pub fn set_model_matrix(
-        &self,
-        vulkan_renderer: &mut VulkanRenderer,
-        position: Vec3,
-        rotation: Quat,
-        scale: Vec3,
-    ) {
-        vulkan_renderer
-            .set_model_matrix(
-                self.get_model_matrix_index(),
-                position,
-                rotation,
-                scale,
-                self.is_static(),
-            )
-            .unwrap();
-    }
+    // pub fn set_model_matrix(
+    //     &self,
+    //     vulkan_renderer: &mut VulkanRenderer,
+    //     position: Vec3,
+    //     rotation: Quat,
+    //     scale: Vec3,
+    // ) {
+    //     vulkan_renderer
+    //         .set_model_matrix(
+    //             self.get_model_matrix_index(),
+    //             position,
+    //             rotation,
+    //             scale,
+    //             self.is_static(),
+    //         )
+    //         .unwrap();
+    // }
 
-    /// TODO: Connect to world to get vulkan renderer instance and make it moveable between buffers
-    /// Mark this render transform as static (only works before adding component)
-    pub fn set_is_static(&mut self, is_static: bool) {
-        self.model_matrix_info &= 0x7FFFFFFF;
-        self.model_matrix_info |= (is_static as u32) << 31;
-    }
+    // /// TODO: Connect to world to get vulkan renderer instance and make it moveable between buffers
+    // /// Mark this render transform as static (only works before adding component)
+    // pub fn set_is_static(&mut self, is_static: bool) {
+    //     self.model_matrix_info &= 0x7FFFFFFF;
+    //     self.model_matrix_info |= (is_static as u32) << 31;
+    // }
 
-    fn set_model_matrix_index(&mut self, val: u32) {
-        self.model_matrix_info = (self.model_matrix_info & 0x80000000) | val;
-    }
+    // fn set_model_matrix_index(&mut self, val: u32) {
+    //     self.model_matrix_info = (self.model_matrix_info & 0x80000000) | val;
+    // }
 }

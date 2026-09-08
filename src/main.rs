@@ -61,14 +61,18 @@ fn main() {
                     }
                     Event::WindowEvent { event, .. } => match event {
                         WindowEvent::RedrawRequested if !elwt.exiting() => {
-                            // 1. Run systems
-                            app.update();
-
-                            // 2. Render
                             let mut renderer = app
                                 .world_mut()
                                 .get_resource_mut::<VulkanRenderer>()
                                 .unwrap();
+
+                            // 1. Start of frame updates from the renderer
+                            renderer.start_of_frame_updates();
+
+                            // 2. Run systems
+                            app.update();
+
+                            // 3. Render
                             renderer.render().unwrap();
                         }
 
