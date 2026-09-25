@@ -131,8 +131,6 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
     pub fn destroy(&mut self, device: &Device) {
         unsafe {
-            device.device_wait_idle().unwrap();
-
             if self.mapped != std::ptr::null_mut() {
                 device.unmap_memory(self.memory);
                 self.mapped = std::ptr::null_mut();

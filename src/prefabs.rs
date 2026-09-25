@@ -15,7 +15,7 @@ pub struct LimpetPrefab;
 impl Prefab<(TransformComponent, RenderComponent)> for LimpetPrefab {
     fn component_bundle() -> (TransformComponent, RenderComponent) {
         (
-            TransformComponent::new(Vec3::ZERO, Vec3::ONE, Quat::IDENTITY, false),
+            TransformComponent::new(Vec3::ZERO, Vec3::ONE, Quat::IDENTITY),
             RenderComponent::new(
                 AssetId::LimpetMesh,
                 Material::new(
@@ -42,7 +42,7 @@ pub struct CubePrefab;
 impl Prefab<(TransformComponent, RenderComponent)> for CubePrefab {
     fn component_bundle() -> (TransformComponent, RenderComponent) {
         (
-            TransformComponent::new(Vec3::ZERO, Vec3::ONE, Quat::IDENTITY, false),
+            TransformComponent::new(Vec3::ZERO, Vec3::ONE, Quat::IDENTITY),
             RenderComponent::new(
                 AssetId::CubeMesh,
                 Material::new(

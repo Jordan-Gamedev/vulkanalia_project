@@ -8,6 +8,7 @@ use vulkanalia_project::components::RenderComponent;
 use vulkanalia_project::engine::Material;
 use vulkanalia_project::engine::SamplerContents;
 use vulkanalia_project::engine::VulkanRenderer;
+use vulkanalia_project::engine::vulkan_renderer::VULKAN_RENDERER_SINGLETON;
 use vulkanalia_project::prefabs::*;
 use vulkanalia_project::resources::*;
 use winit::event::{Event, WindowEvent};
@@ -24,22 +25,18 @@ fn gameplay_update(mut _commands: Commands) {
 fn main() {
     let mut bevy_app = bevy_app::App::new();
 
-    // 1. Initialize renderer
-    let mut renderer = VulkanRenderer::new().unwrap();
-
     // 2. Take the event loop out completely so it doesn't tie up 'self'
-    let event_loop = Arc::into_inner(
-        renderer
-            .present_handle
-            .window_handle
-            .event_loop
-            .take()
-            .unwrap(),
-    )
-    .unwrap();
-
-    // 3. Put the renderer into Bevy
-    bevy_app.insert_resource(renderer);
+    let event_loop = unsafe {
+        Arc::into_inner(
+            VULKAN_RENDERER_SINGLETON
+                .present_handle
+                .window_handle
+                .event_loop
+                .take()
+                .unwrap(),
+        )
+        .unwrap()
+    };
 
     bevy_app
         .add_systems(Startup, init_spawn)

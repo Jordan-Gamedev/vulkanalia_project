@@ -1,47 +1,40 @@
 Forward+ Pipeline
 ______________________
 
-┌─────────────┐
-│ GPU Culling │ → Fill visbuffers for cameras, lights, planar reflections, and reflection probes using frustum culling aabb testing
-└──────┬──────┘
+┌───────────────────┐
+│ Reflection Gather │ → Determine which reflections to render and their quality based on simple cpu frustum culling for planar reflection and distance
+└──────┬────────────┘
+       ▼
+┌──────────────────┐
+│ Main GPU Culling │ → Fill visbuffers for cameras, planar reflections, and reflection probes using frustum culling aabb testing
+└──────┬───────────┘
        ▼
 ┌──────────────┐
-│ Light Culling│ → Reduce active lights per object with cluster-based culling
+│ Depth Prepass│ → Calculate depth for good occluders as well as important foreground objects for SSS
 └──────┬───────┘
-       ▼
-┌─────────────┐
-│ Gather Pass │ → Gather info used for Reflections and Shadows
-└──────┬──────┘
-       │
-       ├── Planar Reflections gather
-       └── Shadow gather pass (for SSS depth prepass + volumetric shadows)
        ▼
 ┌──────────────┐
-│ Depth Prepass│ → SSS on important objects only + occluder depths
+│ Light Culling│ → Cluster-based light culling using depth buffer and determine what lights use shadow maps or shadow volumes
 └──────┬───────┘
        ▼
-┌─────────────┐
-│ Base Pass   │ → Forward rendering of cullable geometry
-└──────┬──────┘
-       ▼
-┌─────────┐
-│ VXGI    │ → Render Voxel Global Illumination and Irradiance
-└──────┬──┘
-       ▼       
-┌──────────────────────┐
-│ Screen Space Shadows │ → Gather → Depth Prepass (SSS) → Render
-└──────┬───────────────┘
+┌────────────────────┐
+│ Shadow GPU Culling │ → Fill visbuffers for lights
+└──────┬─────────────┘
        ▼
 ┌─────────────┐
-│ Shadow Maps │ → High-res for close-to-medium distance geometry
+│ Shadow Maps │ → High resolution perspective shadow maps (PSMs) for close-to-medium distance geometry
 └──────┬──────┘
        ▼
 ┌───────────────┐
-│ Shadow Volumes│ → Medium-to-far + large-volumed objects (PSSM/CS)
+│ Shadow Volumes│ → Medium-to-far + large-volumed objects
 └──────┬────────┘
        ▼
+┌──────────────────────┐
+│ Screen Space Shadows │ → For depth rendered objects
+└──────┬───────────────┘
+       ▼
 ┌─────────────┐
-│ Resolve Pass│ → Combine shadow depth/stencil into render target
+│ Base Pass   │ → Forward rendering of cullable geometry + lighting + shadows
 └──────┬──────┘
        ▼
 ┌───────────────────┐
@@ -49,12 +42,12 @@ ______________________
 └──────┬────────────┘
        ▼
 ┌──────────────────────┐
-│ Realtime Reflection  │ → Update/Read reflection probe & blend into scene
+│ Realtime Reflection  │ → Update reflection probe & blend into scene
 │    Probe             │
 └──────┬───────────────┘
        ▼
 ┌────────────────┐
-│ Post Processing│ → Tone mapping, color grading, FXAA/SSAO
+│ Post Processing│ → Tone mapping, color grading, etc.
 └────────────────┘
        │
        ├── Bloom, Lens Flares
@@ -89,7 +82,7 @@ VXGI scheme:
 
        Toroidal Addressing: Use modular arithmetic (wrap-around addressing) in your shader lookups for the voxel grid center.
        This allows the physical memory allocation of the 3D texture to stay fixed while logically shifting around the player
-       
+
        Partial Re-voxelization: Only re-voxelize the newly exposed slices/columns of the grid that enter the player's vicinity as they move,
        leaving the overlapping interior intact.
 

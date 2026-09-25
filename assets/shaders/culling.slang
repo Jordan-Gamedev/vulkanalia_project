@@ -37,7 +37,6 @@ struct IndirectDrawData
 
 struct PerInstanceData
 {
-    uint modelMatrixInfo;
     uint16_t textureIndex;
     uint16_t samplerIndex;
     uint16_t meshMetadataIndex;

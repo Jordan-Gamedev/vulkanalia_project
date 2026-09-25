@@ -18,12 +18,8 @@ unsafe impl<T: Clone + std::fmt::Debug + Default> Sync for InFlightBuffers<T> {}
 unsafe impl<T: Clone + std::fmt::Debug + Default> Send for InFlightBuffers<T> {}
 
 impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
-    /// buffer_count = MAX_FRAMES_IN_FLIGHT if you want duplicated data per frame whose changes are reflected instantly
-    ///
-    /// buffer_count = 1 if you plan on using command delaying in the case you prefer delayed changes over duplicated data
     pub fn new(
         max_frames_in_flight: usize,
-        buffer_count: usize,
         device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         initial_capacity: vk::DeviceSize,
@@ -45,7 +41,7 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
                     initial_contents,
                     should_preserve_indices
                 );
-                buffer_count
+                max_frames_in_flight
             ],
             updated_buffer_frame_index: 0,
             num_frames_needing_update: 0,
@@ -66,6 +62,7 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
         &mut self.buffers[self.current_frame_index]
     }
 
+    // Call if you want the other frame's versions of the buffer to be overwritten by data from this buffer
     pub fn signal_buffer_change_propagation(&mut self) {
         self.num_frames_needing_update = self.buffers.len() - 1;
     }

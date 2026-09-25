@@ -4,6 +4,7 @@ use crate::components::TransformComponent;
 use crate::engine::Material;
 use crate::engine::QuantizedModelMatrix;
 use crate::engine::VulkanRenderer;
+use crate::engine::vulkan_renderer::VULKAN_RENDERER_SINGLETON;
 use crate::resources::AssetId;
 use anyhow::Result;
 use bevy_ecs::component::Component;
@@ -47,8 +48,11 @@ impl RenderComponent {
         // Get an unsafe world cell view
         let cell = world.as_unsafe_world_cell();
 
-        // Fetch the resource directly from cell
-        let mut vulkan_renderer = unsafe { cell.get_resource_mut::<VulkanRenderer>().unwrap() };
+        // // Fetch the resource directly from cell
+        // let mut vulkan_renderer = unsafe { cell.get_resource_mut::<VulkanRenderer>().unwrap() };
+
+        // Get the renderer
+        let vulkan_renderer = unsafe { &mut VULKAN_RENDERER_SINGLETON };
 
         // Update transform component
         let mut transform_component = unsafe {
@@ -93,8 +97,11 @@ impl RenderComponent {
                 .unwrap()
         };
 
-        // Fetch the resource directly from cell
-        let mut vulkan_renderer = unsafe { cell.get_resource_mut::<VulkanRenderer>().unwrap() };
+        // // Fetch the resource directly from cell
+        // let mut vulkan_renderer = unsafe { cell.get_resource_mut::<VulkanRenderer>().unwrap() };
+
+        // Get the renderer
+        let vulkan_renderer = unsafe { &mut VULKAN_RENDERER_SINGLETON };
 
         // Remove instance
         vulkan_renderer

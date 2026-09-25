@@ -1,3 +1,47 @@
+Low End (1080p@60hz)
+
+Vram usage:
+    - 1300 MiB Operating system + outside programs
+    -   10 MiB Vulkan driver overhead
+    -   90 MiB Color/depth buffers w/ 4x MSAA + triple buffering (MAX_FRAMES_IN_FLIGHT=2)
+    -   40 MiB Instance Data
+    -  256 MiB Vertex Buffer
+    -   48 MiB Index Buffer
+    -  300 MiB Global Illumination
+    -  100 MiB Shadowmaps
+    -  128 MiB Reflections
+    -  800 MiB Textures
+
+Vertex and Index Buffers
+_____________________________
+
+32 bytes / Vertex
+4 bytes / Index
+
+12_582_912 Indices   =  48  MiB
+ 8_388_608 Vertices  = 256 MiB
+ 3_725_000 Triangles ≈ 304 MiB
+
+Textures
+_____________________________
+
+1 bc7 rg: bent normal + ba: tangent texture
+1 bc3 rgb: albedo + a: roughness texture
+1 bc3 r: specular + g: ao + b: metallic + a: depth texture
+3 bytes per pixel
+
+1 mipmapped 512x512 material   =  1 MiB
+1 mipmapped 1024x1024 material =  4 MiB
+1 mipmapped 2048x2048 material = 16 MiB
+1 mipmapped 4096x4096 material = 64 MiB
+
+Textures: 800 MiB
+_________________
+300 512x  300 MiB
+81 1024x  324 MiB
+11 2048x  176 MiB
+
+
 Low End (720p@60)
 
 Memory Requirements: 512 MiB free
@@ -52,7 +96,7 @@ Foliage rendering advice from the internet:
 
 1.
     Some things you can do to further optimize this,Instead of having a single blade per unit of grass have multiple,
-    This means you have significantly fewer objects to render. 
+    This means you have significantly fewer objects to render.
 
     Also over distance start randomly culling The shorter blades, they are very unlikely to be seen so you can just remove those.
     This removes the harsh edge at the end of the grass as well because we are slowly fading in the grass instead of there being a harsh line all of a sudden.
@@ -83,34 +127,34 @@ Foliage rendering advice from the internet:
     If your grass is a similar color to the terrain you can't see where it ends and then you also don't need fog
 
 7 (AI).
-    To make 3D grass "pop" more, the most effective normals method is Upward Vertex Normals (Flattening the Normals). By forcing every vertex normal on your grass blades to point straight up (toward the sky) or radiate outward, you create softer, spherical lighting that makes the grass look full, lush, and naturally lit from all sides, regardless of the actual sun position. [1, 2]  
-    Top 3 Normals Methods for Grass 
-    1. Upward / Flat Normals (The "Anime / Stylized" Trick) 
+    To make 3D grass "pop" more, the most effective normals method is Upward Vertex Normals (Flattening the Normals). By forcing every vertex normal on your grass blades to point straight up (toward the sky) or radiate outward, you create softer, spherical lighting that makes the grass look full, lush, and naturally lit from all sides, regardless of the actual sun position. [1, 2]
+    Top 3 Normals Methods for Grass
+    1. Upward / Flat Normals (The "Anime / Stylized" Trick)
 
-    • The Method: Force all vertex normals of your grass mesh to point directly upward (or toward the terrain normal). 
-    • The Result: Both sides of the grass blade are lit equally by the ambient light. It stops grass from turning completely black when the sun hits the "wrong" side of the blade, giving it a vibrant, stylized "pop." 
-    • How to do it in Blender: Use the Data Transfer modifier or a Normal Edit modifier to project the normals of an underlying surface (like a sphere or a flat ground plane) onto your grass blades. [1, 2, 3]  
+    • The Method: Force all vertex normals of your grass mesh to point directly upward (or toward the terrain normal).
+    • The Result: Both sides of the grass blade are lit equally by the ambient light. It stops grass from turning completely black when the sun hits the "wrong" side of the blade, giving it a vibrant, stylized "pop."
+    • How to do it in Blender: Use the Data Transfer modifier or a Normal Edit modifier to project the normals of an underlying surface (like a sphere or a flat ground plane) onto your grass blades. [1, 2, 3]
 
-    2. Spherical / Radial Normals 
+    2. Spherical / Radial Normals
 
-    • The Method: Modify the normals to radiate outward from the center point of the grass clump or object origin. 
-    • The Result: This implies a roundness to the grass blades, making a flat 2D plane look like a 3D volume, and adding noticeable highlights and shadows along the curves. 
-    • How to do it in Blender: Use the Data Transfer modifier and select a cylinder or a sphere as your source object to transfer rounded normals. [3]  
+    • The Method: Modify the normals to radiate outward from the center point of the grass clump or object origin.
+    • The Result: This implies a roundness to the grass blades, making a flat 2D plane look like a 3D volume, and adding noticeable highlights and shadows along the curves.
+    • How to do it in Blender: Use the Data Transfer modifier and select a cylinder or a sphere as your source object to transfer rounded normals. [3]
 
-    3. Face Weighted Normals 
+    3. Face Weighted Normals
 
-    • The Method: Weight the vertex normals based on the size and angle of the surrounding faces. 
-    • The Result: This gives you beautifully shaded edges without having to build ultra-high poly models, making geometry pop naturally. 
-    • How to do it in Blender: Add a Bevel modifier (set to limit by angle) followed by the Harden Normals auto-smooth feature. [4, 5]  
+    • The Method: Weight the vertex normals based on the size and angle of the surrounding faces.
+    • The Result: This gives you beautifully shaded edges without having to build ultra-high poly models, making geometry pop naturally.
+    • How to do it in Blender: Add a Bevel modifier (set to limit by angle) followed by the Harden Normals auto-smooth feature. [4, 5]
 
-    Why Normals Alone Aren't Enough 
-    For your grass to truly pop, your normal manipulation should be paired with these environmental tweaks: 
+    Why Normals Alone Aren't Enough
+    For your grass to truly pop, your normal manipulation should be paired with these environmental tweaks:
 
-    • Translucency / Subsurface Scattering: Plug a Translucent BSDF node into a mix shader so light passes through the tips of the grass. 
-    • Color Variation: Add a node that randomizes the hue and saturation based on object info. 
-    • Frosted / Lighter Tips: Fade the very top of the grass texture to a bright, almost white/yellow-green to mimic natural sun-bleaching. [6, 7, 8]  
+    • Translucency / Subsurface Scattering: Plug a Translucent BSDF node into a mix shader so light passes through the tips of the grass.
+    • Color Variation: Add a node that randomizes the hue and saturation based on object info.
+    • Frosted / Lighter Tips: Fade the very top of the grass texture to a bright, almost white/yellow-green to mimic natural sun-bleaching. [6, 7, 8]
 
-    If you are working in a specific program, tell me if you are using Blender, Unity, Unreal Engine, or Godot. I can give you the exact node setups or modifier stacks needed for your engine. 
+    If you are working in a specific program, tell me if you are using Blender, Unity, Unreal Engine, or Godot. I can give you the exact node setups or modifier stacks needed for your engine.
     AI responses may include mistakes.
 
     [1] https://torque3d.org/forums/topic/3663-the-manfisher-public-alpha-has-been-released-on-itchio/

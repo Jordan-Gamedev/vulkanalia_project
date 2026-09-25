@@ -1,4 +1,4 @@
-use meshopt::{quantize_half, quantize_snorm, quantize_unorm};
+use meshopt::{quantize_half, quantize_snorm};
 use serde::Deserialize;
 use std::ffi::OsStr;
 use std::fs;
@@ -6,24 +6,36 @@ use std::io::{Result, Write, stdout};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+static mut SIZE_OF_INDEX: usize = 2;
+static mut TOTAL_LOADABLE_VERTEX_COUNT: usize = 0;
+static mut TOTAL_LOADABLE_INDEX_COUNT: usize = 0;
+static mut MAX_MESH_VERTEX_COUNT: usize = 1;
+static mut MAX_MESH_INDEX_COUNT: usize = 1;
+const MIN_VERTEX_BUFFER_COUNT: usize = 6_000_000;
+const MIN_INDEX_BUFFER_COUNT: usize = 9_000_000;
+const QUANTIZED_VERTEX_SIZE: usize = 32;
 const BAR_WIDTH: usize = 28;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
 struct Vertex {
     position: [f32; 3],
-    color: [f32; 3],
+    color: [u8; 4],
     normal: [f32; 3],
+    tangent: [f32; 4],
     uv: [f32; 2],
+    bone_ids: [u8; 4],
+    bone_weights: [u8; 4],
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Default)]
-struct QuantizedVertex {
-    position: [u16; 3],
-    color: [u8; 3],
-    normal: [i8; 3],
-    uv: [u16; 2],
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QuantizedVertex {
+    pub position_boneids: [f32; 4],
+    pub normal: u32,
+    pub tangent: u32,
+    pub uv: [u16; 2],
+    pub bone_weights: [u8; 4],
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,9 +236,6 @@ fn find_executable() -> Result<PathBuf> {
     }
 }
 
-/// TODO: Fully update instance and draw buffer workflow
-/// ALSO TODO: Actually make frustum culling and lod selection
-/// ALSO TODO: Make dynamic model matrix buffer be per frame in flight
 fn compile_shaders() -> Result<()> {
     print_banner("1/5  Shader Compilation");
     let shader_paths = traverse_directory("assets/shaders", vec!["slang"])?;
@@ -573,7 +582,7 @@ fn mesher() -> Result<()> {
 }
 
 fn create_resources() -> Result<()> {
-    fn file_size_as_string(size: &usize) -> String {
+    fn byte_size_as_string(size: &usize) -> String {
         if *size >= 1024_usize.pow(3) {
             format!("{:.2} GiB", (*size as f32 / 1024.0_f32.powf(3.0)) as f32)
         } else if *size >= 1024_usize.pow(2) {
@@ -621,13 +630,30 @@ fn create_resources() -> Result<()> {
                 .into_string()
                 .unwrap()
         );
-        let byte_size = fs::read(resource_path).unwrap().len();
-        resource_file_contents.push_str(&format!("// {}\n", &file_size_as_string(&byte_size)));
+
+        let file_size = fs::read(resource_path).unwrap().len();
+
+        // Print file size of resource
+        resource_file_contents.push_str(&format!(
+            "/// File Size: {}\n",
+            &byte_size_as_string(&file_size)
+        ));
+
         resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
         texture_file_names.push(file_name);
     }
 
     resource_file_contents.push_str("\n// ------------Model Buffers------------\n\n");
+
+    resource_file_contents.push_str("#[derive(Clone, Debug, Default)]\n");
+    resource_file_contents.push_str(&format!(
+        "pub struct Index({});\n\n",
+        if unsafe { SIZE_OF_INDEX == 2 } {
+            "u16"
+        } else {
+            "u32"
+        },
+    ));
 
     let vertex_resources = traverse_directory("assets", vec!["mesh"])?;
 
@@ -644,6 +670,51 @@ fn create_resources() -> Result<()> {
         vertex_resources.len()
     ));
 
+    resource_file_contents.push_str(&format!(
+        "pub const VULKAN_INDEX_TYPE: vulkanalia::vk::IndexType = {};\n",
+        if unsafe { SIZE_OF_INDEX == 2 } {
+            "vulkanalia::vk::IndexType::UINT16"
+        } else {
+            "vulkanalia::vk::IndexType::UINT32"
+        }
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const TOTAL_LOADABLE_VERTEX_COUNT: usize = {};\n",
+        unsafe { TOTAL_LOADABLE_VERTEX_COUNT }
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const TOTAL_LOADABLE_INDEX_COUNT: usize = {};\n",
+        unsafe { TOTAL_LOADABLE_INDEX_COUNT }
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const MAX_MESH_VERTEX_COUNT: usize = {};\n",
+        unsafe { MAX_MESH_VERTEX_COUNT }
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const MAX_MESH_INDEX_COUNT: usize = {};\n",
+        unsafe { MAX_MESH_INDEX_COUNT }
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const VERTEX_BUFFER_COUNT: usize = {};\n",
+        unsafe {
+            if TOTAL_LOADABLE_VERTEX_COUNT * 3 / 4 < MIN_VERTEX_BUFFER_COUNT {
+                TOTAL_LOADABLE_VERTEX_COUNT.max(1)
+            } else {
+                TOTAL_LOADABLE_VERTEX_COUNT * 3 / 4
+            }
+        }
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const INDEX_BUFFER_COUNT: usize = {};\n\n",
+        unsafe {
+            if TOTAL_LOADABLE_INDEX_COUNT * 3 / 4 < MIN_INDEX_BUFFER_COUNT {
+                TOTAL_LOADABLE_INDEX_COUNT.max(1)
+            } else {
+                TOTAL_LOADABLE_INDEX_COUNT * 3 / 4
+            }
+        }
+    ));
+
     let mut model_file_names: Vec<String> = Vec::new();
 
     for resource in vertex_resources.clone() {
@@ -658,9 +729,181 @@ fn create_resources() -> Result<()> {
                 .into_string()
                 .unwrap()
         );
-        let byte_size = fs::read(resource_path).unwrap().len();
-        resource_file_contents.push_str(&format!("// {}\n", &file_size_as_string(&byte_size)));
-        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
+
+        let bytes = fs::read(resource_path).unwrap();
+
+        // Print vertex, index, and triangle counts for each LOD
+        let vertex_count0 = u32::from_be_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let index_count0 = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let vertex_byte_count0 = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let index_byte_count0 = u32::from_be_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let vertex_mem_usage0 = vertex_count0 * QUANTIZED_VERTEX_SIZE;
+        let index_mem_usage0 = index_count0 * unsafe { SIZE_OF_INDEX };
+        let vertex_count1 = u32::from_be_bytes(bytes[16..20].try_into().unwrap()) as usize;
+        let index_count1 = u32::from_be_bytes(bytes[20..24].try_into().unwrap()) as usize;
+        let vertex_byte_count1 = u32::from_be_bytes(bytes[24..28].try_into().unwrap()) as usize;
+        let index_byte_count1 = u32::from_be_bytes(bytes[28..32].try_into().unwrap()) as usize;
+        let vertex_mem_usage1 = vertex_count1 * QUANTIZED_VERTEX_SIZE;
+        let index_mem_usage1 = index_count1 * unsafe { SIZE_OF_INDEX };
+        let vertex_count2 = u32::from_be_bytes(bytes[32..36].try_into().unwrap()) as usize;
+        let index_count2 = u32::from_be_bytes(bytes[36..40].try_into().unwrap()) as usize;
+        let vertex_byte_count2 = u32::from_be_bytes(bytes[40..44].try_into().unwrap()) as usize;
+        let index_byte_count2 = u32::from_be_bytes(bytes[44..48].try_into().unwrap()) as usize;
+        let vertex_mem_usage2 = vertex_count2 * QUANTIZED_VERTEX_SIZE;
+        let index_mem_usage2 = index_count2 * unsafe { SIZE_OF_INDEX };
+        let vertex_count3 = u32::from_be_bytes(bytes[48..52].try_into().unwrap()) as usize;
+        let index_count3 = u32::from_be_bytes(bytes[52..56].try_into().unwrap()) as usize;
+        let vertex_byte_count3 = u32::from_be_bytes(bytes[56..60].try_into().unwrap()) as usize;
+        let index_byte_count3 = u32::from_be_bytes(bytes[60..64].try_into().unwrap()) as usize;
+        let vertex_mem_usage3 = vertex_count3 * QUANTIZED_VERTEX_SIZE;
+        let index_mem_usage3 = index_count3 * unsafe { SIZE_OF_INDEX };
+
+        if vertex_count0 > 0 {
+            resource_file_contents.push_str(&format!("///### LOD 0:\n"));
+            resource_file_contents.push_str(&format!("///  - Triangles: {} \n", index_count0 / 3));
+            resource_file_contents.push_str(&format!("///  - Vertices: {}\n", vertex_count0));
+            resource_file_contents.push_str(&format!("///  - Indices: {}\n", index_count0));
+            resource_file_contents.push_str(&format!(
+                "///  - File: {}\n",
+                byte_size_as_string(&(vertex_byte_count0 + index_byte_count0))
+            ));
+            resource_file_contents.push_str("///  - VRAM:\n");
+            resource_file_contents.push_str(&format!(
+                "///    - Vertices: {}\n",
+                byte_size_as_string(&vertex_mem_usage0),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Indices: {}\n",
+                byte_size_as_string(&index_mem_usage0),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Total: {}\n",
+                byte_size_as_string(&(vertex_mem_usage0 + index_mem_usage0))
+            ));
+        }
+
+        if vertex_count1 > 0 {
+            resource_file_contents.push_str(&format!("///\n///### LOD 1:\n"));
+            resource_file_contents.push_str(&format!("///  - Triangles: {}\n", index_count1 / 3));
+            resource_file_contents.push_str(&format!("///  - Vertices: {}\n", vertex_count1));
+            resource_file_contents.push_str(&format!("///  - Indices: {}\n", index_count1));
+            resource_file_contents.push_str(&format!(
+                "///  - File: {}\n",
+                byte_size_as_string(&(vertex_byte_count1 + index_byte_count1))
+            ));
+            resource_file_contents.push_str("///  - VRAM:\n");
+            resource_file_contents.push_str(&format!(
+                "///    - Vertices: {}\n",
+                byte_size_as_string(&vertex_mem_usage1),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Indices: {}\n",
+                byte_size_as_string(&index_mem_usage1),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Total: {}\n",
+                byte_size_as_string(&(vertex_mem_usage1 + index_mem_usage1))
+            ));
+        }
+
+        if vertex_count2 > 0 {
+            resource_file_contents.push_str(&format!("///\n///### LOD 2:\n"));
+            resource_file_contents.push_str(&format!("///  - Triangles: {}\n", index_count2 / 3));
+            resource_file_contents.push_str(&format!("///  - Vertices: {}\n", vertex_count2));
+            resource_file_contents.push_str(&format!("///  - Indices: {}\n", index_count2));
+            resource_file_contents.push_str(&format!(
+                "///  - File: {}\n",
+                byte_size_as_string(&(vertex_byte_count2 + index_byte_count2))
+            ));
+            resource_file_contents.push_str("///  - VRAM:\n");
+            resource_file_contents.push_str(&format!(
+                "///    - Vertices: {}\n",
+                byte_size_as_string(&vertex_mem_usage2),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Indices: {}\n",
+                byte_size_as_string(&index_mem_usage2),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Total: {}\n",
+                byte_size_as_string(&(vertex_mem_usage2 + index_mem_usage2))
+            ));
+        }
+
+        if vertex_count3 > 0 {
+            resource_file_contents.push_str(&format!("///\n///### LOD 3:\n"));
+            resource_file_contents.push_str(&format!("///  - Triangles: {}\n", index_count3 / 3));
+            resource_file_contents.push_str(&format!("///  - Vertices: {}\n", vertex_count3));
+            resource_file_contents.push_str(&format!("///  - Indices: {}\n", index_count3));
+            resource_file_contents.push_str(&format!(
+                "///  - File: {}\n",
+                byte_size_as_string(&(vertex_byte_count3 + index_byte_count3))
+            ));
+            resource_file_contents.push_str("///  - VRAM:\n");
+            resource_file_contents.push_str(&format!(
+                "///    - Vertices: {}\n",
+                byte_size_as_string(&vertex_mem_usage3),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Indices: {}\n",
+                byte_size_as_string(&index_mem_usage3),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Total: {}\n",
+                byte_size_as_string(&(vertex_mem_usage3 + index_mem_usage3))
+            ));
+        }
+
+        if vertex_count0 + vertex_count1 + vertex_count2 + vertex_count3 > vertex_count0 {
+            resource_file_contents.push_str(&format!("///\n///### Total:\n"));
+            resource_file_contents.push_str(&format!(
+                "///  - Triangles: {}\n",
+                (index_count0 + index_count1 + index_count2 + index_count3) / 3
+            ));
+            resource_file_contents.push_str(&format!(
+                "///  - Vertices: {}\n",
+                vertex_count0 + vertex_count1 + vertex_count2 + vertex_count3
+            ));
+            resource_file_contents.push_str(&format!(
+                "///  - Indices: {}\n",
+                index_count0 + index_count1 + index_count2 + index_count3
+            ));
+            resource_file_contents.push_str(&format!(
+                "///  - File: {}\n",
+                byte_size_as_string(&bytes.len())
+            ));
+            resource_file_contents.push_str("///  - VRAM:\n");
+            resource_file_contents.push_str(&format!(
+                "///    - Vertices: {}\n",
+                byte_size_as_string(
+                    &(vertex_mem_usage0
+                        + vertex_byte_count1
+                        + vertex_mem_usage2
+                        + vertex_mem_usage3)
+                ),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Indices: {}\n",
+                byte_size_as_string(
+                    &(index_mem_usage0 + index_mem_usage1 + index_mem_usage2 + index_mem_usage3)
+                ),
+            ));
+            resource_file_contents.push_str(&format!(
+                "///    - Total: {}\n",
+                byte_size_as_string(
+                    &(vertex_mem_usage0
+                        + vertex_byte_count1
+                        + vertex_mem_usage2
+                        + vertex_mem_usage3
+                        + index_mem_usage0
+                        + index_mem_usage1
+                        + index_mem_usage2
+                        + index_mem_usage3)
+                )
+            ));
+        }
+
+        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n\n", file_name, resource_path).as_str());
         model_file_names.push(file_name);
     }
 
@@ -838,6 +1081,24 @@ fn read_glbs(
                 .unwrap()
                 .unwrap();
 
+        // Update project-wide vertex and index data
+
+        unsafe {
+            if vertex_count > u16::MAX as usize {
+                SIZE_OF_INDEX = 4;
+            }
+            if vertex_count > MAX_MESH_VERTEX_COUNT {
+                MAX_MESH_VERTEX_COUNT = vertex_count;
+            }
+            if index_count > MAX_MESH_INDEX_COUNT {
+                MAX_MESH_INDEX_COUNT = index_count;
+            }
+            TOTAL_LOADABLE_VERTEX_COUNT += vertex_count;
+            TOTAL_LOADABLE_INDEX_COUNT += index_count;
+        }
+
+        // Set AABB
+
         if min_aabb[0] < best_min_aabb[0] {
             best_min_aabb[0] = min_aabb[0];
         }
@@ -925,26 +1186,33 @@ fn read_glb(
     // Quantization
     let quantized_vertices = glb_vertices
         .iter()
-        .map(|v| QuantizedVertex {
-            position: [
-                quantize_half(v.position[0]),
-                quantize_half(v.position[1]),
-                quantize_half(v.position[2]),
-            ],
-            color: [
-                quantize_unorm(v.color[0], 8) as u8,
-                quantize_unorm(v.color[1], 8) as u8,
-                quantize_unorm(v.color[2], 8) as u8,
-            ],
-            normal: [
-                quantize_snorm(v.normal[0], 8) as i8,
-                quantize_snorm(v.normal[1], 8) as i8,
-                quantize_snorm(v.normal[2], 8) as i8,
-            ],
-            uv: [
-                quantize_unorm(v.uv[0], 16) as u16,
-                quantize_unorm(v.uv[1], 16) as u16,
-            ],
+        .map(|v| {
+            // A2R10G10B10 format 0XYZ
+            let mut normal: u32 = (quantize_snorm(v.normal[0], 10) as u32) << 20;
+            normal |= (quantize_snorm(v.normal[1], 10) as u32) << 10;
+            normal |= quantize_snorm(v.normal[2], 10) as u32;
+
+            // A2R10G10B10 format WXYZ
+            let mut tangent: u32 = (quantize_snorm(v.tangent[0], 10) as u32) << 20;
+            tangent |= (quantize_snorm(v.tangent[1], 10) as u32) << 10;
+            tangent |= quantize_snorm(v.tangent[2], 10) as u32;
+            if v.tangent[3] > 0.0 {
+                tangent |= 0x10000000;
+            }
+
+            // Pack bone ids inside a float to pack with positions
+            let bone_ids = f32::from_bits(u32::from_be_bytes(v.bone_ids));
+
+            // Quantize the uv into halfs
+            let uv: [u16; 2] = [quantize_half(v.uv[0]), quantize_half(v.uv[1])];
+
+            QuantizedVertex {
+                position_boneids: [v.position[0], v.position[1], v.position[2], bone_ids],
+                normal,
+                tangent,
+                uv,
+                bone_weights: v.bone_weights,
+            }
         })
         .collect::<Vec<QuantizedVertex>>();
 
@@ -970,9 +1238,9 @@ fn read_glb(
     let mut min_aabb: [f32; 3] = std::array::repeat(f32::INFINITY);
     let mut max_aabb: [f32; 3] = std::array::repeat(f32::NEG_INFINITY);
     for vertex in quantized_vertices {
-        let x = meshopt::dequantize_half(vertex.position[0]);
-        let y = meshopt::dequantize_half(vertex.position[1]);
-        let z = meshopt::dequantize_half(vertex.position[2]);
+        let x = vertex.position_boneids[0];
+        let y = vertex.position_boneids[1];
+        let z = vertex.position_boneids[2];
         if x < min_aabb[0] {
             min_aabb[0] = x;
         }
@@ -1052,11 +1320,13 @@ fn get_data_from_primitive(
 ) -> Result<(Vec<Vertex>, Vec<u32>)> {
     // Read all the vertex attributes
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-    let _tangents = reader.read_tangents();
     let mut positions = reader.read_positions().unwrap();
     let colors = reader.read_colors(0);
     let normals = reader.read_normals();
+    let tangents = reader.read_tangents();
     let tex_coords = reader.read_tex_coords(0);
+    let bone_ids = reader.read_joints(0);
+    let bone_weights = reader.read_weights(0);
 
     // Get indices
     let indices = match reader.read_indices().unwrap() {
@@ -1073,19 +1343,14 @@ fn get_data_from_primitive(
     // Create vertices from the data
     for i in 0..*num_verts {
         // Position
-        let pos: [f32; 3] = positions.next().unwrap_or_default().into();
+        let position: [f32; 3] = positions.next().unwrap_or_default().into();
 
         // Color
-        let color: [f32; 3] = match colors.to_owned() {
-            Some(gltf::mesh::util::ReadColors::RgbF32(mut rgb_iter)) => {
-                rgb_iter.nth(i).unwrap_or([1.0; 3])
+        let color: [u8; 4] = match colors.to_owned() {
+            Some(gltf::mesh::util::ReadColors::RgbaU8(mut rgb_iter)) => {
+                rgb_iter.nth(i).unwrap_or([u8::MAX; 4])
             }
-            Some(gltf::mesh::util::ReadColors::RgbaF32(mut rgb_iter)) => {
-                rgb_iter.nth(i).unwrap_or([1.0; 4])[0..3]
-                    .try_into()
-                    .unwrap()
-            }
-            _ => [1.0; 3],
+            _ => [u8::MAX; 4],
         };
 
         // Normal
@@ -1094,6 +1359,14 @@ fn get_data_from_primitive(
                 normal_iter.nth(i).unwrap_or([0.0, 0.0, 1.0])
             }
             _ => [0.0, 0.0, 1.0],
+        };
+
+        // Tangent
+        let tangent: [f32; 4] = match tangents.to_owned() {
+            Some(gltf::mesh::util::ReadTangents::Standard(mut tangent_iter)) => {
+                tangent_iter.nth(i).unwrap_or([0.0, 0.0, 1.0, 1.0])
+            }
+            _ => [1.0, 0.0, 0.0, 1.0],
         };
 
         // UV
@@ -1106,11 +1379,30 @@ fn get_data_from_primitive(
             _ => [0.0, 1.0],
         };
 
+        // Bone Id
+        let bone_id: [u8; 4] = match bone_ids.to_owned() {
+            Some(gltf::mesh::util::ReadJoints::U8(mut bone_id_iter)) => bone_id_iter
+                .nth(i)
+                .unwrap_or([u8::MIN, u8::MIN, u8::MIN, u8::MIN]),
+            _ => [u8::MIN, u8::MIN, u8::MIN, u8::MIN],
+        };
+
+        // Bone Weight
+        let bone_weight: [u8; 4] = match bone_weights.to_owned() {
+            Some(gltf::mesh::util::ReadWeights::U8(mut bone_weight_iter)) => bone_weight_iter
+                .nth(i)
+                .unwrap_or([u8::MIN, u8::MIN, u8::MIN, u8::MIN]),
+            _ => [u8::MIN, u8::MIN, u8::MIN, u8::MIN],
+        };
+
         let new_vertex = Vertex {
-            position: pos,
-            color: color,
-            normal: normal,
+            position,
+            color,
+            normal,
+            tangent,
             uv: tex_coord,
+            bone_ids: bone_id,
+            bone_weights: bone_weight,
         };
 
         vertices.push(new_vertex);

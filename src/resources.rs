@@ -13,23 +13,81 @@ pub const START_ENUM_T: usize = 1;
 pub const END_ENUM_T: usize = 2;
 pub const COUNT_ENUM_T: usize = 2;
 
-// 670 B
+/// File Size: 670 B
 pub const BLANK_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/blank_albedo.ktx2").as_slice());
-// 221.05 KiB
+/// File Size: 221.05 KiB
 pub const CUTTLEFISH_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/cuttlefish_albedo.ktx2").as_slice());
 
 // ------------Model Buffers------------
+
+#[derive(Clone, Debug, Default)]
+pub struct Index(u16);
 
 pub const START_ENUM_M: usize = 3;
 pub const END_ENUM_M: usize = 5;
 pub const COUNT_ENUM_M: usize = 3;
 
-// 1.99 KiB
+pub const VULKAN_INDEX_TYPE: vulkanalia::vk::IndexType = vulkanalia::vk::IndexType::UINT16;
+pub const TOTAL_LOADABLE_VERTEX_COUNT: usize = 2150;
+pub const TOTAL_LOADABLE_INDEX_COUNT: usize = 3180;
+pub const MAX_MESH_VERTEX_COUNT: usize = 1966;
+pub const MAX_INDEX_COUNT: usize = 2904;
+pub const VERTEX_BUFFER_COUNT: usize = 2150;
+pub const INDEX_BUFFER_COUNT: usize = 3180;
+
+///### LOD 0:
+///  - Triangles: 68 
+///  - Vertices: 156
+///  - Indices: 204
+///  - File: 2.50 KiB
+///  - VRAM:
+///    - Vertices: 4.88 KiB
+///    - Indices: 408 B
+///    - Total: 5.27 KiB
+///
+///### LOD 1:
+///  - Triangles: 12
+///  - Vertices: 14
+///  - Indices: 36
+///  - File: 142 B
+///  - VRAM:
+///    - Vertices: 448 B
+///    - Indices: 72 B
+///    - Total: 520 B
+///
+///### Total:
+///  - Triangles: 80
+///  - Vertices: 170
+///  - Indices: 240
+///  - File: 2.74 KiB
+///  - VRAM:
+///    - Vertices: 4.98 KiB
+///    - Indices: 480 B
+///    - Total: 5.45 KiB
 pub const LIMPET_M: AlignedAsset = AlignedAsset(include_bytes!("../assets/mesh_files/Limpet.mesh").as_slice());
-// 243 B
+
+///### LOD 0:
+///  - Triangles: 12 
+///  - Vertices: 14
+///  - Indices: 36
+///  - File: 142 B
+///  - VRAM:
+///    - Vertices: 448 B
+///    - Indices: 72 B
+///    - Total: 520 B
 pub const CUBE_M: AlignedAsset = AlignedAsset(include_bytes!("../assets/mesh_files/Cube.mesh").as_slice());
-// 19.35 KiB
+
+///### LOD 0:
+///  - Triangles: 968 
+///  - Vertices: 1966
+///  - Indices: 2904
+///  - File: 16.96 KiB
+///  - VRAM:
+///    - Vertices: 61.44 KiB
+///    - Indices: 5.67 KiB
+///    - Total: 67.11 KiB
 pub const MONKEY_M: AlignedAsset = AlignedAsset(include_bytes!("../assets/mesh_files/Monkey.mesh").as_slice());
+
 
 #[derive(Clone, Copy, Debug, Default, Eq, strum::FromRepr, Hash, PartialEq)]
 #[repr(u16)]

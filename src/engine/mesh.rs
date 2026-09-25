@@ -1,23 +1,13 @@
-use crate::engine::MeshMetadata;
-use crate::resources::AssetId;
+use crate::engine::{MeshAllocation, MeshMetadata};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Default, PartialEq)]
 pub struct Mesh {
-    pub mesh_asset_id: AssetId,
+    pub mesh_allocations: Vec<MeshAllocation>,
     pub metadata: MeshMetadata,
     pub usage_count: u32,
-    pub vertex_offset: u32,
-    pub index_offset: u32,
-    pub lod0_vertex_length: u32,
-    pub lod0_index_length: u32,
-    pub lod1_vertex_length: u32,
-    pub lod1_index_length: u32,
-    pub lod2_vertex_length: u32,
-    pub lod2_index_length: u32,
-    pub lod3_vertex_length: u32,
-    pub lod3_index_length: u32,
+    pub lifetime: u32,
+    pub metadata_index: u16,
 }
 
-impl Eq for Mesh {}
 unsafe impl Sync for Mesh {}
 unsafe impl Send for Mesh {}

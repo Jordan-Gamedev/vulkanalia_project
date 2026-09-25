@@ -14,7 +14,7 @@ use crate::engine::DeviceQueueHandle;
 use crate::engine::InFlightBuffers;
 use crate::engine::IndirectDrawData;
 use crate::engine::Mesh;
-use crate::engine::MeshBufferLayout;
+use crate::engine::MeshAllocation;
 use crate::engine::MeshMetadata;
 use crate::engine::ModelHandle;
 use crate::engine::PerInstanceData;
@@ -33,8 +33,7 @@ use crate::engine::TextureUsage;
 use crate::engine::UniformBufferObject;
 use crate::engine::WindowHandle;
 use crate::engine::buffer::Buffer;
-use crate::resources::AssetId;
-use crate::resources::get_asset_from_id;
+use crate::resources::*;
 use anyhow::{Result, anyhow};
 use glam::Quat;
 use glam::Vec3;
@@ -53,9 +52,12 @@ use vulkanalia::Version;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::loader::{LIBRARY, LibloadingLoader};
 use vulkanalia::prelude::v1_0::*;
+use vulkanalia::vk::DeviceV1_2;
 use vulkanalia::vk::ExtDebugUtilsExtensionInstanceCommands;
+use vulkanalia::vk::ExternalMemoryHandleTypeFlags;
 use vulkanalia::vk::{KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
 use vulkanalia::window as vk_window;
+use vulkanalia_vma::{self as vma, Alloc};
 use winit::dpi::LogicalSize;
 use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, Window, WindowBuilder};
@@ -67,15 +69,18 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 #[error("{0}")]
 struct SuitabilityError(&'static str);
 
-#[derive(bevy_ecs::resource::Resource)]
 pub struct VulkanRenderer {
     pub device_context: DeviceContext,
+    pub allocator: vulkanalia_vma::Allocator,
     pub present_handle: PresentHandle,
     pub render_pipeline_handle: RenderPipelineHandle,
     pub command_handle: CommandHandle,
     pub model_handle: ModelHandle,
     pub texture_handle: TextureHandle,
 }
+
+pub static mut VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<VulkanRenderer> =
+    std::sync::LazyLock::new(|| VulkanRenderer::new().unwrap());
 
 impl VulkanRenderer {
     pub fn new() -> Result<Self> {
@@ -124,6 +129,9 @@ impl VulkanRenderer {
                 physical_device,
                 device_queue_handle: device_queue_handle.clone(),
             };
+
+            // Create VMA allocator
+            let allocator = create_allocator(&device_context)?;
 
             // Set a starting value for multisample antialiasing
             let msaa_samples = set_default_msaa(&device_context);
@@ -193,9 +201,25 @@ impl VulkanRenderer {
             // Create instance buffers
             let instance_buffers = create_instance_buffers(&device_context, command_pool);
 
-            // Create vertex and index buffers
-            let (vertex_buffer, index_buffer) =
-                create_vertex_index_buffers(device_context.clone(), command_pool);
+            // Create vertex buffer using VMA
+            let (
+                vertex_buffer,
+                vertex_buffer_allocation,
+                vertex_buffer_base_device_address,
+                vertex_buffer_virtual_block,
+            ) = create_vertex_buffer(&device, &allocator, VERTEX_BUFFER_COUNT as u64);
+
+            // Create index buffer using VMA
+            let (
+                index_buffer,
+                index_buffer_allocation,
+                index_buffer_base_device_address,
+                index_buffer_virtual_block,
+            ) = create_index_buffer(&device, &allocator, INDEX_BUFFER_COUNT as u64);
+
+            // Create staging buffer using VMA
+            let (staging_buffer, staging_buffer_allocation, staging_buffer_mapped_memory) =
+                create_geometry_staging_buffer(&device, &allocator, MAX_MESH_VERTEX_COUNT as u64);
 
             // Create uniform buffer objects
             let uniform_buffers = create_uniform_buffers(&device_context, command_pool);
@@ -205,16 +229,26 @@ impl VulkanRenderer {
                 create_model_matrix_buffers(device_context.clone(), command_pool);
 
             // Create mesh buffer
-            let mesh_uniform_buffer = create_mesh_buffer(device_context.clone(), command_pool);
+            let mesh_metadata_buffers =
+                create_mesh_uniform_buffers(device_context.clone(), command_pool);
 
             // Finalize model handle
             let model_handle = ModelHandle {
-                vertex_buffer,
-                index_buffer,
                 uniform_buffers,
                 model_matrix_buffers,
                 loaded_meshes: HashMap::new(),
-                mesh_uniform_buffer: mesh_uniform_buffer,
+                mesh_metadata_buffers,
+                vertex_buffer,
+                vertex_buffer_allocation,
+                vertex_buffer_base_device_address,
+                vertex_buffer_virtual_block,
+                index_buffer,
+                index_buffer_allocation,
+                index_buffer_base_device_address,
+                index_buffer_virtual_block,
+                staging_buffer,
+                staging_buffer_allocation,
+                staging_buffer_mapped_memory,
             };
 
             // Create starting texture handle
@@ -269,6 +303,7 @@ impl VulkanRenderer {
 
             Ok(Self {
                 device_context,
+                allocator,
                 present_handle,
                 render_pipeline_handle,
                 command_handle,
@@ -354,16 +389,23 @@ impl VulkanRenderer {
 
             // Model Handle
 
-            self.model_handle.vertex_buffer.destroy(&device);
-            self.model_handle.index_buffer.destroy(&device);
-            self.model_handle.mesh_uniform_buffer.destroy(&device);
+            self.allocator.destroy_buffer(
+                self.model_handle.vertex_buffer,
+                self.model_handle.vertex_buffer_allocation,
+            );
+            self.allocator.destroy_buffer(
+                self.model_handle.index_buffer,
+                self.model_handle.index_buffer_allocation,
+            );
+            self.allocator.destroy_buffer(
+                self.model_handle.staging_buffer,
+                self.model_handle.staging_buffer_allocation,
+            );
+            self.model_handle.mesh_metadata_buffers.destroy(&device);
             self.model_handle.loaded_meshes.clear();
-            self.model_handle
-                .uniform_buffers
-                .iter_mut()
-                .for_each(|b| b.destroy(&device));
+            self.model_handle.uniform_buffers.destroy(&device);
             self.model_handle.model_matrix_buffers.destroy(&device);
-            self.model_handle.mesh_uniform_buffer.destroy(&device);
+            self.model_handle.mesh_metadata_buffers.destroy(&device);
 
             // Texture Handle
 
@@ -389,8 +431,14 @@ impl VulkanRenderer {
         sampler_contents: SamplerContents,
         matrix: QuantizedModelMatrix,
     ) -> Result<(PerInstanceData, usize)> {
-        // Potentially load model and texture
-        let mesh_metadata_index = self.load_mesh(mesh_asset_id)?;
+        // Only load mesh if it is not loaded
+        if let Some(mesh) = self.model_handle.loaded_meshes.get_mut(&mesh_asset_id) {
+            mesh.usage_count += 1;
+            mesh.lifetime = MAX_FRAMES_IN_FLIGHT;
+        } else {
+            self.load_mesh(mesh_asset_id)?;
+        }
+
         self.load_texture(texture_asset_id, sampler_contents)?;
 
         // Get the mesh that the instance uses
@@ -466,7 +514,12 @@ impl VulkanRenderer {
         let new_instance = PerInstanceData {
             texture_index,
             sampler_index,
-            mesh_metadata_index,
+            mesh_metadata_index: self
+                .model_handle
+                .loaded_meshes
+                .get(&mesh_asset_id)
+                .unwrap()
+                .metadata_index,
             mesh_asset_id: mesh_asset_id as u16,
         };
         let mut new_instance_buffer_index: usize = usize::MAX;
@@ -514,8 +567,17 @@ impl VulkanRenderer {
         instance: &PerInstanceData,
         model_matrix: &QuantizedModelMatrix,
     ) -> Result<()> {
-        // Potentially unload model and texture
-        self.unload_mesh(mesh_asset_id)?;
+        // Unload model if there are no more instances using it
+        if let Some(mesh) = self.model_handle.loaded_meshes.get_mut(&mesh_asset_id)
+            && mesh.usage_count > 0
+        {
+            mesh.usage_count -= 1;
+            if mesh.usage_count == 0 {
+                self.try_unload_mesh(mesh_asset_id);
+            }
+        }
+
+        // Potentially texture
         self.unload_texture(texture_asset_id, sampler_contents)?;
 
         // Get the remove index
@@ -552,47 +614,45 @@ impl VulkanRenderer {
         instance: &PerInstanceData,
         model_matrix: &QuantizedModelMatrix,
     ) -> Result<u32> {
-        unsafe {
-            let model_matrices = self
-                .model_handle
-                .model_matrix_buffers
-                .get_current()
-                .get_buffer_items(
-                    &self.device_context,
-                    self.command_handle.command_pool,
-                    false,
-                )
-                .unwrap();
+        let model_matrices = self
+            .model_handle
+            .model_matrix_buffers
+            .get_current()
+            .get_buffer_items(
+                &self.device_context,
+                self.command_handle.command_pool,
+                false,
+            )
+            .unwrap();
 
-            let instances = self
-                .command_handle
-                .instance_buffers
-                .get_current()
-                .get_buffer_items(
-                    &self.device_context,
-                    self.command_handle.command_pool,
-                    false,
-                )
-                .unwrap();
+        let instances = self
+            .command_handle
+            .instance_buffers
+            .get_current()
+            .get_buffer_items(
+                &self.device_context,
+                self.command_handle.command_pool,
+                false,
+            )
+            .unwrap();
 
-            // Get the remove index
-            let mut remove_index = usize::MAX;
-            for i in 0..instances.len() {
-                if instances[i] == *instance && model_matrices[i] == *model_matrix {
-                    remove_index = i;
-                }
+        // Get the remove index
+        let mut remove_index = usize::MAX;
+        for i in 0..instances.len() {
+            if instances[i] == *instance && model_matrices[i] == *model_matrix {
+                remove_index = i;
             }
-
-            // Instance to remove not found
-            if remove_index == usize::MAX {
-                return Err(anyhow!(format!(
-                    "Instance: {:?} with model matrix: {:?} not found!",
-                    instance, model_matrix
-                )));
-            }
-
-            Ok(remove_index as u32)
         }
+
+        // Instance to remove not found
+        if remove_index == usize::MAX {
+            return Err(anyhow!(format!(
+                "Instance: {:?} with model matrix: {:?} not found!",
+                instance, model_matrix
+            )));
+        }
+
+        Ok(remove_index as u32)
     }
 
     pub fn get_model_matrix_mut(
@@ -601,7 +661,9 @@ impl VulkanRenderer {
         frame_index: usize,
     ) -> &mut QuantizedModelMatrix {
         unsafe {
-            self.model_handle.model_matrix_buffers[frame_index]
+            self.model_handle
+                .model_matrix_buffers
+                .get_current()
                 .mapped
                 .add(model_matrix_index as usize)
                 .cast_mut()
@@ -619,7 +681,9 @@ impl VulkanRenderer {
         scale: Vec3,
     ) -> Result<()> {
         let model_matrix = unsafe {
-            self.model_handle.model_matrix_buffers[frame_index]
+            self.model_handle
+                .model_matrix_buffers
+                .get_current()
                 .mapped
                 .add(model_matrix_index as usize)
                 .cast_mut()
@@ -641,16 +705,9 @@ impl VulkanRenderer {
     }
 
     /// Returns mesh metadata index inside the mesh metadata uniform buffer
-    pub fn load_mesh(&mut self, mesh_asset_id: AssetId) -> Result<u16> {
+    pub fn load_mesh(&mut self, mesh_asset_id: AssetId) -> Result<()> {
         if mesh_asset_id == AssetId::None {
-            return Ok(u16::MAX);
-        }
-
-        // Do not load mesh if it is already loaded
-
-        if let Some(mesh) = self.model_handle.loaded_meshes.get_mut(&mesh_asset_id) {
-            mesh.usage_count += 1;
-            return Ok(u16::MAX);
+            return Ok(());
         }
 
         let asset = get_asset_from_id(mesh_asset_id);
@@ -725,13 +782,12 @@ impl VulkanRenderer {
 
         // Decode vertices and indices
 
-        let mut vertices0: Vec<QuantizedVertex> =
+        let vertices0: Vec<QuantizedVertex> =
             match meshopt::decode_vertex_buffer(vertex_bytes0, vertex_count0) {
                 Ok(bytes) => bytes,
                 Err(_) => return Err(anyhow!("Failed to decode vertex buffer 0")),
             };
-        let mut indices0: Vec<u32> = match meshopt::decode_index_buffer(index_bytes0, index_count0)
-        {
+        let indices0: Vec<Index> = match meshopt::decode_index_buffer(index_bytes0, index_count0) {
             Ok(indices) => indices,
             Err(_) => return Err(anyhow!("Failed to decode index buffer 0")),
         };
@@ -744,7 +800,7 @@ impl VulkanRenderer {
         } else {
             Vec::new()
         };
-        let indices1: Vec<u32> = if index_count1 > 0 {
+        let indices1: Vec<Index> = if index_count1 > 0 {
             match meshopt::decode_index_buffer(index_bytes1, index_count1) {
                 Ok(bytes) => bytes,
                 Err(_) => return Err(anyhow!("Failed to decode index buffer 1")),
@@ -761,7 +817,7 @@ impl VulkanRenderer {
         } else {
             Vec::new()
         };
-        let indices2: Vec<u32> = if index_count2 > 0 {
+        let indices2: Vec<Index> = if index_count2 > 0 {
             match meshopt::decode_index_buffer(index_bytes2, index_count2) {
                 Ok(bytes) => bytes,
                 Err(_) => return Err(anyhow!("Failed to decode index buffer 2")),
@@ -778,7 +834,7 @@ impl VulkanRenderer {
         } else {
             Vec::new()
         };
-        let indices3: Vec<u32> = if index_count3 > 0 {
+        let indices3: Vec<Index> = if index_count3 > 0 {
             match meshopt::decode_index_buffer(index_bytes3, index_count3) {
                 Ok(bytes) => bytes,
                 Err(_) => return Err(anyhow!("Failed to decode index buffer 3")),
@@ -789,27 +845,69 @@ impl VulkanRenderer {
 
         // Finish loading
 
-        vertices0.extend(vertices1);
-        vertices0.extend(vertices2);
-        vertices0.extend(vertices3);
-        indices0.extend(indices1);
-        indices0.extend(indices2);
-        indices0.extend(indices3);
+        let mut mesh_allocations: Vec<MeshAllocation> = Vec::new();
 
-        let prev_vertex_count = self.model_handle.vertex_buffer.element_count;
-        let prev_index_count = self.model_handle.index_buffer.element_count;
+        if vertices0.len() > 0 && indices0.len() > 0 {
+            mesh_allocations.push(self.upload_mesh(mesh_asset_id, &vertices0, &indices0));
+        }
+        if vertices1.len() > 0 && indices1.len() > 0 {
+            mesh_allocations.push(self.upload_mesh(mesh_asset_id, &vertices1, &indices1));
+        }
+        if vertices2.len() > 0 && indices2.len() > 0 {
+            mesh_allocations.push(self.upload_mesh(mesh_asset_id, &vertices2, &indices2));
+        }
+        if vertices3.len() > 0 && indices3.len() > 0 {
+            mesh_allocations.push(self.upload_mesh(mesh_asset_id, &vertices3, &indices3));
+        }
 
-        self.model_handle.vertex_buffer.add_items(
+        // Update indirect draw buffers
+
+        let indirect_draw_buffer = self.command_handle.indirect_draw_buffers.get_current_mut();
+        indirect_draw_buffer.add_items(
             &self.device_context,
             self.command_handle.command_pool,
-            vertices0,
-        )?;
+            vec![
+                IndirectDrawData::new(
+                    mesh_allocations[0].index_count,
+                    0,
+                    mesh_allocations[0].index_offset,
+                    mesh_allocations[0].vertex_offset,
+                    0,
+                ),
+                IndirectDrawData::new(
+                    mesh_allocations[1].index_count,
+                    0,
+                    mesh_allocations[1].index_offset,
+                    mesh_allocations[1].vertex_offset,
+                    0,
+                ),
+                IndirectDrawData::new(
+                    mesh_allocations[2].index_count,
+                    0,
+                    mesh_allocations[2].index_offset,
+                    mesh_allocations[2].vertex_offset,
+                    0,
+                ),
+                IndirectDrawData::new(
+                    mesh_allocations[3].index_count,
+                    0,
+                    mesh_allocations[3].index_offset,
+                    mesh_allocations[3].vertex_offset,
+                    0,
+                ),
+            ],
+        );
 
-        self.model_handle.index_buffer.add_items(
-            &self.device_context,
-            self.command_handle.command_pool,
-            indices0,
-        )?;
+        // Signal that indirect draw buffer and mesh metadata buffer have changed to other frames in flight
+
+        self.command_handle
+            .indirect_draw_buffers
+            .signal_buffer_change_propagation();
+        self.model_handle
+            .mesh_metadata_buffers
+            .signal_buffer_change_propagation();
+
+        // Add mesh metadata to uniform buffer
 
         let mesh_metadata = MeshMetadata::new(
             min_aabb,
@@ -819,160 +917,194 @@ impl VulkanRenderer {
             lod3_percentage,
             cull_percentage,
         );
+
+        let mesh_metadata_buffer = self.model_handle.mesh_metadata_buffers.get_current_mut();
+
+        let loaded_metadata = mesh_metadata_buffer.get_buffer_items(
+            &self.device_context,
+            self.command_handle.command_pool,
+            false,
+        )?;
+
+        let metadata_index = loaded_metadata
+            .iter()
+            .position(|m| m.eq(&mesh_metadata))
+            .unwrap_or_else(|| {
+                mesh_metadata_buffer
+                    .add_item(
+                        &self.device_context,
+                        self.command_handle.command_pool,
+                        mesh_metadata,
+                    )
+                    .unwrap() as usize
+            }) as u16;
+
         let mesh = Mesh {
-            mesh_asset_id,
+            mesh_allocations,
             metadata: mesh_metadata,
             usage_count: 1,
-            vertex_offset: prev_vertex_count,
-            index_offset: prev_index_count,
-            lod0_vertex_length: vertex_count0 as u32,
-            lod0_index_length: index_count0 as u32,
-            lod1_vertex_length: vertex_count1 as u32,
-            lod1_index_length: index_count1 as u32,
-            lod2_vertex_length: vertex_count2 as u32,
-            lod2_index_length: index_count2 as u32,
-            lod3_vertex_length: vertex_count3 as u32,
-            lod3_index_length: index_count3 as u32,
+            lifetime: MAX_FRAMES_IN_FLIGHT,
+            metadata_index,
         };
 
         self.model_handle.loaded_meshes.insert(mesh_asset_id, mesh);
 
-        // Add mesh metadata to uniform buffer
-        let (mesh_buffer, mesh_buffer_memory, mesh_buffer_mapped) = self
-            .model_handle
-            .mesh_uniform_buffer
-            .get_buffer_parts(&self.device_context, self.command_handle.command_pool);
-        let mesh_buffer_layout = unsafe { mesh_buffer_mapped.cast_mut().as_mut().unwrap() };
-
-        let mut mesh_metadata_index = u16::MAX;
-        for i in 0..2048 {
-            if mesh_buffer_layout.0[i] == mesh_metadata {
-                mesh_metadata_index = i as u16;
-                break;
-            }
-        }
-
-        if mesh_metadata_index == u16::MAX {
-            for i in 0..2048 {
-                if mesh_buffer_layout.0[i] == MeshMetadata::default() {
-                    mesh_buffer_layout.0[i] = mesh_metadata;
-                    mesh_metadata_index = i as u16;
-                    break;
-                }
-            }
-        }
-
-        // Finalize and Cleanup
-        unsafe {
-            if !self.model_handle.mesh_uniform_buffer.is_host_visible {
-                Buffer::<MeshBufferLayout>::copy_buffer(
-                    &self.device_context,
-                    self.command_handle.command_pool,
-                    mesh_buffer,
-                    self.model_handle.mesh_uniform_buffer.buffer,
-                    1u64,
-                )?;
-                self.device_context.device.destroy_buffer(mesh_buffer, None);
-                self.device_context.device.unmap_memory(mesh_buffer_memory);
-                self.device_context
-                    .device
-                    .free_memory(mesh_buffer_memory, None);
-            }
-        }
-
-        Ok(mesh_metadata_index)
+        Ok(())
     }
 
-    pub fn unload_mesh(&mut self, mesh_asset_id: AssetId) -> Result<()> {
-        // Do not unload mesh if it is not loaded
-
+    pub fn try_unload_mesh(&mut self, mesh_asset_id: AssetId) -> Result<()> {
         if mesh_asset_id == AssetId::None
             || !self.model_handle.loaded_meshes.contains_key(&mesh_asset_id)
         {
             return Ok(());
         }
 
-        self.model_handle
-            .loaded_meshes
-            .get_mut(&mesh_asset_id)
-            .unwrap()
-            .usage_count -= 1;
-
         let unloading_mesh = self
             .model_handle
             .loaded_meshes
-            .get(&mesh_asset_id)
-            .unwrap()
-            .clone();
+            .get_mut(&mesh_asset_id)
+            .unwrap();
 
-        if unloading_mesh.usage_count == 0 {
-            let unloaded_vertex_count = unloading_mesh.lod0_vertex_length
-                + unloading_mesh.lod1_vertex_length
-                + unloading_mesh.lod2_vertex_length
-                + unloading_mesh.lod3_vertex_length;
-            let unloaded_index_count = unloading_mesh.lod0_index_length
-                + unloading_mesh.lod1_index_length
-                + unloading_mesh.lod2_index_length
-                + unloading_mesh.lod3_index_length;
-
-            self.model_handle.vertex_buffer.remove_items(
-                &self.device_context,
-                self.command_handle.command_pool,
-                unloading_mesh.vertex_offset,
-                unloading_mesh.vertex_offset + unloaded_vertex_count,
-            )?;
-            self.model_handle.index_buffer.remove_items(
-                &self.device_context,
-                self.command_handle.command_pool,
-                unloading_mesh.index_offset,
-                unloading_mesh.index_offset + unloaded_index_count,
-            )?;
-
-            // Update other model offsets
+        // Remove mesh metadata
+        if unloading_mesh.lifetime == MAX_FRAMES_IN_FLIGHT {
             self.model_handle
-                .loaded_meshes
-                .values_mut()
-                .filter(|m| m.vertex_offset > unloading_mesh.vertex_offset)
-                .for_each(|m| {
-                    m.vertex_offset -= unloaded_vertex_count;
-                    m.index_offset -= unloaded_index_count;
-                });
+                .mesh_metadata_buffers
+                .signal_buffer_change_propagation();
 
-            // Unload mesh
-            self.model_handle.loaded_meshes.remove(&mesh_asset_id);
-
-            // Unload mesh metadata from uniform buffer
-            let (mesh_buffer, mesh_buffer_memory, mesh_buffer_mapped) = self
-                .model_handle
-                .mesh_uniform_buffer
-                .get_buffer_parts(&self.device_context, self.command_handle.command_pool);
-            let mesh_buffer_layout = unsafe { mesh_buffer_mapped.cast_mut().as_mut().unwrap() };
-
-            for i in 0..2048 {
-                if mesh_buffer_layout.0[i] == unloading_mesh.metadata {
-                    mesh_buffer_layout.0[i] = MeshMetadata::default();
-                    break;
-                }
-            }
-
-            // Finalize and Cleanup
-            unsafe {
-                if !self.model_handle.mesh_uniform_buffer.is_host_visible {
-                    Buffer::<MeshBufferLayout>::copy_buffer(
-                        &self.device_context,
-                        self.command_handle.command_pool,
-                        mesh_buffer,
-                        self.model_handle.mesh_uniform_buffer.buffer,
-                        1u64,
-                    )?;
-                    self.device_context.device.destroy_buffer(mesh_buffer, None);
-                    self.device_context.device.unmap_memory(mesh_buffer_memory);
-                    self.device_context
-                        .device
-                        .free_memory(mesh_buffer_memory, None);
-                }
-            }
+            let buffer = self.model_handle.mesh_metadata_buffers.get_current_mut();
+            buffer.remove_item_at(
+                &self.device_context,
+                self.command_handle.command_pool,
+                unloading_mesh.metadata_index as u32,
+            )?;
         }
+
+        unloading_mesh.lifetime -= 1;
+
+        // Unload vertices and indices
+        if unloading_mesh.lifetime == 0 {
+            let alloc = unloading_mesh.mesh_allocations.pop().unwrap();
+            while let Some(alloc) = unloading_mesh.mesh_allocations.pop() {
+                self.model_handle
+                    .vertex_buffer_virtual_block
+                    .free(alloc.vertex_virtual_allocation);
+                self.model_handle
+                    .index_buffer_virtual_block
+                    .free(alloc.index_virtual_allocation);
+            }
+            self.model_handle.loaded_meshes.remove(&mesh_asset_id);
+        }
+
+        // self.model_handle
+        //     .index_buffer_virtual_block
+        //     .free(unloading_mesh.mesh_allocations[0].index_virtual_allocation);
+
+        // unloading_mesh.mesh_allocations.iter().for_each(move |m| {
+        //     self.model_handle
+        //         .index_buffer_virtual_block
+        //         .free(m.index_virtual_allocation);
+        //     self.model_handle
+        //         .vertex_buffer_virtual_block
+        //         .free(m.vertex_virtual_allocation);
+        // });
+
+        // let unloaded_vertex_count = unloading_mesh.lod0_vertex_length
+        //     + unloading_mesh.lod1_vertex_length
+        //     + unloading_mesh.lod2_vertex_length
+        //     + unloading_mesh.lod3_vertex_length;
+        // let unloaded_index_count = unloading_mesh.lod0_index_length
+        //     + unloading_mesh.lod1_index_length
+        //     + unloading_mesh.lod2_index_length
+        //     + unloading_mesh.lod3_index_length;
+
+        // self.model_handle.vertex_buffer.remove_items(
+        //     &self.device_context,
+        //     self.command_handle.command_pool,
+        //     unloading_mesh.vertex_offset,
+        //     unloading_mesh.vertex_offset + unloaded_vertex_count,
+        // )?;
+        // self.model_handle.index_buffer.remove_items(
+        //     &self.device_context,
+        //     self.command_handle.command_pool,
+        //     unloading_mesh.index_offset,
+        //     unloading_mesh.index_offset + unloaded_index_count,
+        // )?;
+
+        // // Update other model offsets
+        // self.model_handle
+        //     .loaded_meshes
+        //     .values_mut()
+        //     .filter(|m| m.vertex_offset > unloading_mesh.vertex_offset)
+        //     .for_each(|m| {
+        //         m.vertex_offset -= unloaded_vertex_count;
+        //         m.index_offset -= unloaded_index_count;
+        //     });
+
+        // // Unload mesh
+        // self.model_handle.loaded_meshes.remove(&mesh_asset_id);
+
+        // // Update indirect draw buffers
+
+        // let indirect_draw_buffer = self.command_handle.indirect_draw_buffers.get_current_mut();
+
+        // let indirect_draw_data_remove_index = indirect_draw_buffer
+        //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+        //     .unwrap()
+        //     .iter()
+        //     .position(|i| {
+        //         i.first_index == unloading_mesh.index_offset
+        //             && i.vertex_offset == unloading_mesh.vertex_offset as i32
+        //     })
+        //     .unwrap();
+
+        // indirect_draw_buffer.remove_items(
+        //     &self.device_context,
+        //     self.command_handle.command_pool,
+        //     indirect_draw_data_remove_index as u32,
+        //     indirect_draw_data_remove_index as u32 + 4,
+        // );
+
+        // // Signal that indirect draw buffer and mesh metadata buffer have changed to other frames in flight
+
+        // self.command_handle
+        //     .indirect_draw_buffers
+        //     .signal_buffer_change_propagation();
+        // self.model_handle
+        //     .mesh_metadata_buffers
+        //     .signal_buffer_change_propagation();
+
+        // // Unload mesh metadata from uniform buffer
+
+        // let mesh_uniform_buffer = self.model_handle.mesh_metadata_buffers.get_current_mut();
+        // let (mesh_buffer, mesh_buffer_memory, mesh_buffer_mapped) = mesh_uniform_buffer
+        //     .get_buffer_parts(&self.device_context, self.command_handle.command_pool);
+        // let mesh_buffer_layout = unsafe { mesh_buffer_mapped.cast_mut().as_mut().unwrap() };
+
+        // for i in 0..2048 {
+        //     if mesh_buffer_layout.0[i] == unloading_mesh.metadata {
+        //         mesh_buffer_layout.0[i] = MeshMetadata::default();
+        //         break;
+        //     }
+        // }
+
+        // // Finalize and Cleanup
+
+        // unsafe {
+        //     if !mesh_uniform_buffer.is_host_visible {
+        //         Buffer::<MeshBufferLayout>::copy_buffer(
+        //             &self.device_context,
+        //             self.command_handle.command_pool,
+        //             mesh_buffer,
+        //             mesh_uniform_buffer.buffer,
+        //             1u64,
+        //         )?;
+        //         self.device_context.device.destroy_buffer(mesh_buffer, None);
+        //         self.device_context.device.unmap_memory(mesh_buffer_memory);
+        //         self.device_context
+        //             .device
+        //             .free_memory(mesh_buffer_memory, None);
+        //     }
+        // }
 
         Ok(())
     }
@@ -1330,6 +1462,163 @@ impl VulkanRenderer {
             .map(|s| s.slot_index)
     }
 
+    fn upload_mesh(
+        &mut self,
+        mesh_asset_id: AssetId,
+        vertices: &Vec<QuantizedVertex>,
+        indices: &Vec<Index>,
+    ) -> MeshAllocation {
+        // Upload vertices to vertex buffer
+
+        let v_size = (vertices.len() * size_of::<QuantizedVertex>()) as u64;
+
+        let vertex_alloc_request = vma::VirtualAllocationOptions {
+            size: v_size,
+            alignment: 16,
+            flags: vma::VirtualAllocationCreateFlags::STRATEGY_MIN_MEMORY,
+        };
+
+        // Allocate subsection of vertex buffer
+
+        let (vertex_virtual_alloc, vertex_virtual_alloc_offset) = match self
+            .model_handle
+            .index_buffer_virtual_block
+            .allocate(&vertex_alloc_request)
+        {
+            Ok((alloc, offset)) => (alloc, offset),
+            Err(_) => {
+                // Todo: make it not crash when running out of virtual block storage for vertex buffer
+                panic!("Error: Vertex buffer out of VRAM!")
+            }
+        };
+
+        // Copy staging info into vertex buffer slot
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                vertices.as_ptr(),
+                self.model_handle.staging_buffer_mapped_memory.cast(),
+                vertices.len(),
+            );
+        }
+
+        let copy_region = vk::BufferCopy::builder()
+            .dst_offset(vertex_virtual_alloc_offset)
+            .size(v_size);
+
+        let command_buffer = begin_single_time_commands(
+            self.command_handle.command_pool,
+            self.device_context.clone().device,
+        )
+        .expect(&format!(
+            "Error: Failed to create command buffer when loading vertices for mesh: {:#?}!",
+            mesh_asset_id
+        ));
+
+        unsafe {
+            self.device_context.device.cmd_copy_buffer(
+                command_buffer,
+                self.model_handle.staging_buffer,
+                self.model_handle.vertex_buffer,
+                &[copy_region],
+            );
+        }
+
+        end_single_time_commands(
+            self.command_handle.command_pool,
+            command_buffer,
+            self.device_context.clone().device,
+            self.device_context.clone().device_queue_handle,
+        )
+        .expect(&format!(
+            "Error: Failed to end command buffer when loading vertices for mesh: {:#?}!",
+            mesh_asset_id
+        ));
+
+        // Upload indices to index buffer
+
+        let i_size = (indices.len() * size_of::<Index>()) as u64;
+
+        let index_alloc_request = vma::VirtualAllocationOptions {
+            size: i_size,
+            alignment: 4,
+            flags: vma::VirtualAllocationCreateFlags::STRATEGY_MIN_MEMORY,
+        };
+
+        // Allocate subsection of index buffer
+
+        let (index_vma_alloc, index_virtual_alloc_offset) = match self
+            .model_handle
+            .index_buffer_virtual_block
+            .allocate(&index_alloc_request)
+        {
+            Ok((alloc, offset)) => (alloc, offset),
+            Err(_) => {
+                // Todo: make it not crash when running out of virtual block storage for index buffer
+                panic!("Error: Index buffer out of VRAM!")
+            }
+        };
+
+        // Copy staging info into index buffer slot
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                indices.as_ptr(),
+                self.model_handle.staging_buffer_mapped_memory.cast(),
+                indices.len(),
+            );
+        }
+
+        let copy_region = vk::BufferCopy::builder()
+            .dst_offset(index_virtual_alloc_offset)
+            .size(i_size);
+
+        let command_buffer = begin_single_time_commands(
+            self.command_handle.command_pool,
+            self.device_context.clone().device,
+        )
+        .expect(&format!(
+            "Error: Failed to create command buffer when loading indices for mesh: {:#?}!",
+            mesh_asset_id
+        ));
+
+        unsafe {
+            self.device_context.device.cmd_copy_buffer(
+                command_buffer,
+                self.model_handle.staging_buffer,
+                self.model_handle.index_buffer,
+                &[copy_region],
+            );
+        }
+
+        end_single_time_commands(
+            self.command_handle.command_pool,
+            command_buffer,
+            self.device_context.clone().device,
+            self.device_context.clone().device_queue_handle,
+        )
+        .expect(&format!(
+            "Error: Failed to end command buffer when loading indices for mesh: {:#?}!",
+            mesh_asset_id
+        ));
+
+        // Return the memory information for this loaded mesh
+
+        MeshAllocation {
+            vertex_virtual_allocation: vertex_virtual_alloc,
+            vertex_device_address: self.model_handle.vertex_buffer_base_device_address
+                + vertex_virtual_alloc_offset,
+            vertex_offset: (vertex_virtual_alloc_offset / size_of::<QuantizedVertex>() as u64)
+                as i32,
+            vertex_count: vertices.len() as i32,
+            index_virtual_allocation: index_vma_alloc,
+            index_device_address: self.model_handle.index_buffer_base_device_address
+                + index_virtual_alloc_offset,
+            index_offset: (index_virtual_alloc_offset / size_of::<Index>() as u64) as u32,
+            index_count: indices.len() as u32,
+        }
+    }
+
     /// Recreates the swapchain for the Vulkan app
     #[rustfmt::skip]
     fn recreate_swapchain(&mut self) -> Result<()> {
@@ -1409,13 +1698,52 @@ impl VulkanRenderer {
 
     /// Called before system, physics, and render are called
     pub fn start_of_frame_updates(&mut self) {
+        // Wait for this frame's past self to finish
+
+        unsafe {
+            let in_flight_fence = self.command_handle.sync_handle.in_flight_fences
+                [self.command_handle.sync_handle.current_frame];
+            self.device_context
+                .device
+                .wait_for_fences(&[in_flight_fence], true, u64::MAX);
+        }
+
         // Propagate gpu changes across all frames
+
+        // Unload outdated meshes
+
+        let mut meshes_to_unload: Vec<AssetId> = Vec::new();
+        self.model_handle.loaded_meshes.iter().for_each(|(a, m)| {
+            if m.usage_count == 0 {
+                meshes_to_unload.push(*a);
+            }
+        });
+        meshes_to_unload
+            .iter()
+            .for_each(|a| self.try_unload_mesh(*a).unwrap());
+
+        self.command_handle
+            .indirect_draw_buffers
+            .update(&self.device_context, self.command_handle.command_pool);
 
         self.command_handle
             .instance_buffers
             .update(&self.device_context, self.command_handle.command_pool);
+
+        self.command_handle
+            .main_camera_visbuffers
+            .update(&self.device_context, self.command_handle.command_pool);
+
         self.model_handle
             .model_matrix_buffers
+            .update(&self.device_context, self.command_handle.command_pool);
+
+        self.model_handle
+            .mesh_metadata_buffers
+            .update(&self.device_context, self.command_handle.command_pool);
+
+        self.model_handle
+            .uniform_buffers
             .update(&self.device_context, self.command_handle.command_pool);
     }
 
@@ -1435,8 +1763,6 @@ impl VulkanRenderer {
             let max_frames_in_flight = self.command_handle.sync_handle.max_frames_in_flight;
 
             let in_flight_fence = self.command_handle.sync_handle.in_flight_fences[current_frame];
-
-            device.wait_for_fences(&[in_flight_fence], true, u64::MAX)?;
 
             //println!("wait before swap took: {:?}", start.elapsed());
             //let start = Instant::now();
@@ -1467,7 +1793,7 @@ impl VulkanRenderer {
             //println!("Swapchain took: {:?}", start.elapsed());
             //let start = Instant::now();
 
-            self.update_uniform_buffer(current_frame)?;
+            self.update_uniform_buffer()?;
 
             //println!("Uniform buffer took: {:?}", start.elapsed());
             //let start = Instant::now();
@@ -1524,14 +1850,14 @@ impl VulkanRenderer {
             device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
-                &[self.model_handle.vertex_buffer.buffer],
+                &[self.model_handle.vertex_buffer],
                 &[0],
             );
             device.cmd_bind_index_buffer(
                 command_buffer,
-                self.model_handle.index_buffer.buffer,
+                self.model_handle.index_buffer,
                 0,
-                vk::IndexType::UINT32,
+                crate::resources::VULKAN_INDEX_TYPE,
             );
             device.cmd_bind_descriptor_sets(
                 command_buffer,
@@ -1615,7 +1941,7 @@ impl VulkanRenderer {
 
     /// TEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMP
     /// Updates the uniform buffer object for the Vulkan app
-    fn update_uniform_buffer(&self, frame_index: usize) -> Result<()> {
+    fn update_uniform_buffer(&mut self) -> Result<()> {
         // MVP
 
         let view = Mat4::look_at_rh(
@@ -1641,7 +1967,9 @@ impl VulkanRenderer {
         unsafe {
             memcpy(
                 &ubo,
-                self.model_handle.uniform_buffers[frame_index]
+                self.model_handle
+                    .uniform_buffers
+                    .get_current_mut()
                     .mapped
                     .cast_mut(),
                 1,
@@ -1927,6 +2255,25 @@ unsafe fn create_logical_device(
     // Enable descriptor indexing for bindless rendering
     extensions.push(vk::EXT_DESCRIPTOR_INDEXING_EXTENSION.name.as_ptr());
 
+    // Allocator extensions
+    extensions.push(vk::KHR_BUFFER_DEVICE_ADDRESS_EXTENSION.name.as_ptr());
+    extensions.push(vk::EXT_MEMORY_BUDGET_EXTENSION.name.as_ptr());
+
+    if does_physical_device_support_extension(
+        instance,
+        physical_device,
+        vk::KHR_MAINTENANCE4_EXTENSION,
+    ) {
+        extensions.push(vk::KHR_MAINTENANCE4_EXTENSION.name.as_ptr());
+    }
+    if does_physical_device_support_extension(
+        instance,
+        physical_device,
+        vk::KHR_MAINTENANCE5_EXTENSION,
+    ) {
+        extensions.push(vk::KHR_MAINTENANCE5_EXTENSION.name.as_ptr());
+    }
+
     // Features
 
     let features = vk::PhysicalDeviceFeatures::builder()
@@ -1977,6 +2324,44 @@ unsafe fn get_device_graphics_present_queues(
         graphics_queue_family_index: graphics_index,
         present_queue_family_index: present_index,
     })
+}
+
+fn create_allocator(device_context: &DeviceContext) -> Result<vma::Allocator> {
+    // Set allocator flags
+
+    let mut allocator_create_flags = vma::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS
+        | vma::AllocatorCreateFlags::EXT_MEMORY_BUDGET;
+    if does_physical_device_support_extension(
+        &device_context.instance,
+        device_context.physical_device,
+        vk::KHR_MAINTENANCE4_EXTENSION,
+    ) {
+        allocator_create_flags |= vma::AllocatorCreateFlags::KHR_MAINTENANCE4;
+    }
+    if does_physical_device_support_extension(
+        &device_context.instance,
+        device_context.physical_device,
+        vk::KHR_MAINTENANCE5_EXTENSION,
+    ) {
+        allocator_create_flags |= vma::AllocatorCreateFlags::KHR_MAINTENANCE5;
+    }
+
+    let external_memory_flags = ExternalMemoryHandleTypeFlags::empty();
+
+    // Create allocator
+
+    let options = vma::AllocatorOptions {
+        instance: &device_context.instance,
+        device: &device_context.device,
+        physical_device: device_context.physical_device,
+        version: device_context.entry.version().unwrap(),
+        flags: allocator_create_flags,
+        preferred_large_heap_block_size: 256 * 1024 * 1024,
+        heap_size_limits: &[],
+        external_memory_handle_types: &[external_memory_flags],
+    };
+    let allocator = unsafe { vma::Allocator::new(&options)? };
+    Ok(allocator)
 }
 
 // Helper Functions
@@ -2053,6 +2438,23 @@ pub fn check_physical_device_extensions(
             )))
         }
     }
+}
+
+pub fn does_physical_device_support_extension(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    extension: vk::Extension,
+) -> bool {
+    for ext in unsafe {
+        instance
+            .enumerate_device_extension_properties(physical_device, None)
+            .unwrap()
+    } {
+        if ext.extension_name == extension.name {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn get_queue_family_indices(
@@ -2787,7 +3189,7 @@ unsafe fn create_descriptor_sets(
 
     for i in 0..MAX_FRAMES_IN_FLIGHT as usize {
         let ubo_info = [vk::DescriptorBufferInfo::builder()
-            .buffer(model_handle.uniform_buffers[i].buffer)
+            .buffer(model_handle.uniform_buffers.buffers[i].buffer)
             .offset(0)
             .range(size_of::<UniformBufferObject>() as u64)];
 
@@ -2835,7 +3237,7 @@ unsafe fn create_descriptor_sets(
             .buffer_info(&instance_data_info);
 
         let mesh_uniform_info = [vk::DescriptorBufferInfo::builder()
-            .buffer(model_handle.mesh_uniform_buffer.buffer)
+            .buffer(model_handle.mesh_metadata_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
 
@@ -2941,10 +3343,7 @@ unsafe fn create_pipeline(
     // Vertex Input State
 
     let binding_descriptions = &[QuantizedVertex::binding_description()];
-    let attribute_descriptions = QuantizedVertex::attribute_descriptions(
-        &device_context.instance,
-        &device_context.physical_device,
-    )?;
+    let attribute_descriptions = QuantizedVertex::attribute_descriptions()?;
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
         .vertex_binding_descriptions(binding_descriptions)
         .vertex_attribute_descriptions(&attribute_descriptions);
@@ -3103,7 +3502,7 @@ const DEG_TO_RAD: f32 = PI / 180.0;
 
 const INSTANCE_CHUNK_COUNT: usize = 32_768;
 
-const INDIRECT_DRAW_DATA_COUNT: usize = 8192;
+const INDIRECT_DRAW_DATA_CHUNK_COUNT: usize = 4;
 
 // Build Functions
 
@@ -3179,14 +3578,13 @@ fn create_indirect_draw_buffers(
 ) -> InFlightBuffers<IndirectDrawData> {
     InFlightBuffers::new(
         MAX_FRAMES_IN_FLIGHT as usize,
-        MAX_FRAMES_IN_FLIGHT as usize,
         device_context,
         command_pool,
-        INDIRECT_DRAW_DATA_COUNT as u64,
+        INDIRECT_DRAW_DATA_CHUNK_COUNT as u64,
         vk::BufferUsageFlags::STORAGE_BUFFER,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         0,
-        vec![IndirectDrawData::default(); INDIRECT_DRAW_DATA_COUNT],
+        Vec::new(),
         false,
     )
 }
@@ -3196,7 +3594,6 @@ fn create_instance_buffers(
     command_pool: vk::CommandPool,
 ) -> InFlightBuffers<PerInstanceData> {
     InFlightBuffers::new(
-        MAX_FRAMES_IN_FLIGHT as usize,
         MAX_FRAMES_IN_FLIGHT as usize,
         device_context,
         command_pool,
@@ -3214,7 +3611,6 @@ fn create_visbuffers(
     command_pool: vk::CommandPool,
 ) -> InFlightBuffers<u32> {
     InFlightBuffers::new(
-        MAX_FRAMES_IN_FLIGHT as usize,
         MAX_FRAMES_IN_FLIGHT as usize,
         device_context,
         command_pool,
@@ -3291,56 +3687,314 @@ pub fn end_single_time_commands(
 
 // Build Functions
 
-fn create_vertex_index_buffers(
-    device_context: DeviceContext,
-    command_pool: vk::CommandPool,
-) -> (Buffer<QuantizedVertex>, Buffer<u32>) {
-    let vertex_buffer: Buffer<QuantizedVertex> = Buffer::new(
-        &device_context,
-        command_pool,
-        1,
-        vk::BufferUsageFlags::VERTEX_BUFFER,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        0,
-        Vec::new(),
-        false,
+// pub fn destroy(&mut self, allocator: &Allocator) {
+//     unsafe {
+//         allocator.destroy_buffer(self.vertex_buffer, self.vertex_buffer_memory);
+//         allocator.destroy_buffer(self.index_buffer, self.index_buffer_memory);
+//         allocator.destroy_buffer(self.staging_buffer, self.staging_buffer_memory);
+//     }
+// }
+
+// pub fn load_mesh(
+//     &mut self,
+//     device_context: &DeviceContext,
+//     command_pool: vk::CommandPool,
+//     vertices: &Vec<QuantizedVertex>,
+//     indices: &Vec<Index>,
+// ) -> MeshAllocation {
+//     // ------------------------------
+//     // Load vertices to vertex buffer
+//     // ------------------------------
+
+//     // Reserve sub-allocated space
+
+//     let v_size = (vertices.len() * size_of::<QuantizedVertex>()) as u64;
+
+//     let vertex_alloc_request = VirtualAllocationOptions {
+//         size: v_size,
+//         alignment: 16,
+//         flags: VirtualAllocationCreateFlags::STRATEGY_MIN_MEMORY,
+//     };
+
+//     // Allocate subsection of vertex buffer
+
+//     let (vertex_vma_alloc, vertex_global_buffer_offset) = self
+//         .vertex_block_tracker
+//         .allocate(&vertex_alloc_request)
+//         .expect("Vertex buffer out of VRAM!");
+
+//     // Copy staging info into vertex buffer slot
+
+//     unsafe {
+//         std::ptr::copy_nonoverlapping(
+//             vertices.as_ptr(),
+//             self.staging_buffer_mapped_memory.cast(),
+//             vertices.len(),
+//         );
+//     }
+
+//     let copy_region = vk::BufferCopy::builder()
+//         .dst_offset(vertex_global_buffer_offset)
+//         .size(v_size);
+
+//     let command_buffer =
+//         begin_single_time_commands(command_pool, device_context.clone().device).unwrap();
+
+//     unsafe {
+//         device_context.clone().device.cmd_copy_buffer(
+//             command_buffer,
+//             self.staging_buffer,
+//             self.vertex_buffer,
+//             &[copy_region],
+//         );
+//     }
+
+//     end_single_time_commands(
+//         command_pool,
+//         command_buffer,
+//         device_context.clone().device,
+//         device_context.clone().device_queue_handle,
+//     );
+
+//     // ------------------------------
+//     // Load indices to index buffer
+//     // ------------------------------
+
+//     // Reserve sub-allocated space
+
+//     let i_size = (indices.len() * size_of::<Index>()) as u64;
+
+//     let index_alloc_request = VirtualAllocationOptions {
+//         size: i_size,
+//         alignment: size_of::<Index>() as u64,
+//         flags: VirtualAllocationCreateFlags::STRATEGY_MIN_MEMORY,
+//     };
+
+//     // Allocate subsection of index buffer
+
+//     let (index_vma_alloc, index_global_buffer_offset) = self
+//         .index_block_tracker
+//         .allocate(&index_alloc_request)
+//         .expect("Index buffer out of VRAM!");
+
+//     // Copy staging info into index buffer slot
+
+//     unsafe {
+//         std::ptr::copy_nonoverlapping(
+//             indices.as_ptr(),
+//             self.staging_buffer_mapped_memory.cast(),
+//             indices.len(),
+//         );
+//     }
+
+//     let copy_region = vk::BufferCopy::builder()
+//         .dst_offset(index_global_buffer_offset)
+//         .size(i_size);
+
+//     let command_buffer =
+//         begin_single_time_commands(command_pool, device_context.clone().device).unwrap();
+
+//     unsafe {
+//         device_context.clone().device.cmd_copy_buffer(
+//             command_buffer,
+//             self.staging_buffer,
+//             self.index_buffer,
+//             &[copy_region],
+//         );
+//     }
+
+//     end_single_time_commands(
+//         command_pool,
+//         command_buffer,
+//         device_context.clone().device,
+//         device_context.clone().device_queue_handle,
+//     );
+
+//     // Return the memory information for this loaded mesh
+
+//     MeshAllocation {
+//         vertex_vma_allocation: vertex_vma_alloc,
+//         vertex_device_address: self.vertex_base_device_address + vertex_global_buffer_offset,
+//         vertex_count: vertices.len() as u32,
+//         index_vma_allocation: index_vma_alloc,
+//         index_device_address: self.index_base_device_address + index_global_buffer_offset,
+//         index_count: indices.len() as u32,
+//     }
+// }
+
+// pub fn unload_mesh(&mut self, mesh_allocation: MeshAllocation) {
+//     if !self.unload_mesh_queue.contains(&mesh_allocation) {
+//         self.unload_mesh_queue.push(mesh_allocation);
+//     }
+
+//     self.vertex_block_tracker
+//         .free(mesh_allocation.vertex_vma_allocation);
+//     self.index_block_tracker
+//         .free(mesh_allocation.index_vma_allocation);
+// }
+
+fn create_vertex_buffer(
+    device: &Device,
+    allocator: &vma::Allocator,
+    max_vertex_count: vk::DeviceSize,
+) -> (
+    vk::Buffer,
+    vma::Allocation,
+    vk::DeviceAddress,
+    vma::VirtualBlock,
+) {
+    // Create buffer
+
+    let size = max_vertex_count * size_of::<QuantizedVertex>() as u64;
+
+    let buffer_info = vk::BufferCreateInfo::builder()
+        .size(size)
+        .usage(
+            vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::TRANSFER_DST,
+        )
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let alloc_options = vma::AllocationOptions {
+        usage: vma::MemoryUsage::AutoPreferDevice,
+        flags: vma::AllocationCreateFlags::STRATEGY_MIN_MEMORY,
+        ..Default::default()
+    };
+
+    let (vertex_buffer, vertex_buffer_allocation) = unsafe {
+        allocator
+            .create_buffer(buffer_info, &alloc_options)
+            .expect("Error: Failed to create vertex buffer!")
+    };
+
+    // Get base GPU pointer
+
+    let vertex_buffer_base_device_address = unsafe {
+        let address_info = vk::BufferDeviceAddressInfo::builder().buffer(vertex_buffer);
+        device.get_buffer_device_address(&address_info)
+    };
+
+    // Initialize the virtual block using this buffer's size
+
+    let vertex_buffer_virtual_block = vma::VirtualBlock::new(&vma::VirtualBlockOptions {
+        size: size,
+        flags: vma::VirtualBlockCreateFlags::default(),
+    })
+    .expect("Error: Failed to create a virtual memory block for the vertex buffer!");
+
+    (
+        vertex_buffer,
+        vertex_buffer_allocation,
+        vertex_buffer_base_device_address,
+        vertex_buffer_virtual_block,
+    )
+}
+
+fn create_index_buffer(
+    device: &Device,
+    allocator: &vma::Allocator,
+    max_index_count: vk::DeviceSize,
+) -> (
+    vk::Buffer,
+    vma::Allocation,
+    vk::DeviceAddress,
+    vma::VirtualBlock,
+) {
+    // Create buffer
+
+    let size = max_index_count * size_of::<Index>() as u64;
+
+    let buffer_info = vk::BufferCreateInfo::builder().size(size).usage(
+        vk::BufferUsageFlags::INDEX_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::TRANSFER_DST,
     );
 
-    let index_buffer: Buffer<u32> = Buffer::new(
-        &device_context,
-        command_pool,
-        1,
-        vk::BufferUsageFlags::INDEX_BUFFER,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        0,
-        Vec::new(),
-        false,
-    );
+    let alloc_options = vma::AllocationOptions {
+        usage: vma::MemoryUsage::AutoPreferDevice,
+        flags: vma::AllocationCreateFlags::STRATEGY_MIN_MEMORY,
+        ..Default::default()
+    };
 
-    (vertex_buffer, index_buffer)
+    let (index_buffer, index_buffer_allocation) = unsafe {
+        allocator
+            .create_buffer(buffer_info, &alloc_options)
+            .expect("Error: Failed to create index buffer!")
+    };
+
+    // Get base GPU pointer
+
+    let index_buffer_base_device_address = unsafe {
+        let address_info = vk::BufferDeviceAddressInfo::builder().buffer(index_buffer);
+        device.get_buffer_device_address(&address_info)
+    };
+
+    // Initialize the virtual block using this buffer's size
+
+    let index_buffer_virtual_block = vma::VirtualBlock::new(&vma::VirtualBlockOptions {
+        size: size,
+        flags: vma::VirtualBlockCreateFlags::default(),
+    })
+    .expect("Error: Failed to create a virtual memory block for the index buffer!");
+
+    (
+        index_buffer,
+        index_buffer_allocation,
+        index_buffer_base_device_address,
+        index_buffer_virtual_block,
+    )
+}
+
+fn create_geometry_staging_buffer(
+    device: &Device,
+    allocator: &vma::Allocator,
+    count: vk::DeviceSize,
+) -> (vk::Buffer, vma::Allocation, *mut u8) {
+    let staging_buffer_info = vk::BufferCreateInfo::builder()
+        .size(count * size_of::<QuantizedVertex>() as u64)
+        .usage(vk::BufferUsageFlags::TRANSFER_SRC);
+
+    let staging_alloc_options = vma::AllocationOptions {
+        usage: vma::MemoryUsage::AutoPreferHost,
+        flags: vma::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+        ..Default::default()
+    };
+
+    let (staging_buffer, staging_buffer_allocation) = unsafe {
+        allocator
+            .create_buffer(staging_buffer_info, &staging_alloc_options)
+            .expect("Error: Failed to create geometry staging buffer!")
+    };
+
+    let staging_buffer_mapped_memory = unsafe {
+        allocator
+            .map_memory(staging_buffer_allocation)
+            .expect("Error: Failed to map geometry staging buffer memory!")
+    };
+
+    (
+        staging_buffer,
+        staging_buffer_allocation,
+        staging_buffer_mapped_memory,
+    )
 }
 
 fn create_uniform_buffers(
     device_context: &DeviceContext,
     command_pool: vk::CommandPool,
-) -> Vec<Buffer<UniformBufferObject>> {
-    let mut uniform_buffers: Vec<Buffer<UniformBufferObject>> = Vec::new();
-
-    for _ in 0..MAX_FRAMES_IN_FLIGHT {
-        let buffer: Buffer<UniformBufferObject> = Buffer::new(
-            device_context,
-            command_pool,
-            262_144,
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-            0,
-            Vec::new(),
-            false,
-        );
-        uniform_buffers.push(buffer);
-    }
-
-    uniform_buffers
+) -> InFlightBuffers<UniformBufferObject> {
+    InFlightBuffers::new(
+        MAX_FRAMES_IN_FLIGHT as usize,
+        device_context,
+        command_pool,
+        1,
+        vk::BufferUsageFlags::UNIFORM_BUFFER,
+        vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        0,
+        vec![UniformBufferObject::default()],
+        false,
+    )
 }
 
 fn create_model_matrix_buffers(
@@ -3348,7 +4002,6 @@ fn create_model_matrix_buffers(
     command_pool: vk::CommandPool,
 ) -> InFlightBuffers<QuantizedModelMatrix> {
     InFlightBuffers::new(
-        MAX_FRAMES_IN_FLIGHT as usize,
         MAX_FRAMES_IN_FLIGHT as usize,
         &device_context,
         command_pool,
@@ -3361,19 +4014,20 @@ fn create_model_matrix_buffers(
     )
 }
 
-fn create_mesh_buffer(
+fn create_mesh_uniform_buffers(
     device_context: DeviceContext,
     command_pool: vk::CommandPool,
-) -> Buffer<MeshBufferLayout> {
-    Buffer::new(
+) -> InFlightBuffers<MeshMetadata> {
+    InFlightBuffers::new(
+        MAX_FRAMES_IN_FLIGHT as usize,
         &device_context,
         command_pool,
-        1,
-        vk::BufferUsageFlags::UNIFORM_BUFFER,
+        2048,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        0,
-        vec![MeshBufferLayout::default()],
-        false,
+        2048,
+        Vec::new(),
+        true,
     )
 }
 
