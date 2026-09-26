@@ -1,9 +1,17 @@
 struct VSInput
 {
-    float3 inPos;
-    float3 inColor;
-    float3 inNorm;
-    float2 inUv;
+    [[vk::location(0)]]
+    float3 pos : POSITION; // R32G32B32_SFLOAT (12 bytes)
+    [[vk::location(1)]]
+    float4 normal : NORMAL; // A2R10G10B10_SNORM_PACK32 (4 bytes)
+    [[vk::location(2)]]
+    float4 tangent : TANGENT; // A2R10G10B10_SNORM_PACK32 (4 bytes)
+    [[vk::location(3)]]
+    float2 uv : TEXCOORD; // R16G16_SFLOAT (4 bytes)
+    [[vk::location(4)]]
+    uint4 bone_ids : BONEIDS; // R8G8B8A8_UINT (4 bytes)
+    [[vk::location(5)]]
+    float4 bone_weights : BONEWEIGHTS; // R8G8B8A8_UNORM (4 bytes)
 };
 
 struct VSOutput
@@ -103,9 +111,9 @@ VSOutput vertMain(VSInput input, uint startInstanceId: SV_StartInstanceLocation,
     QuantizedModelMatrix modelMatrix = modelMatrixBuffer[instanceIndex];
     float4x4 model = buildModelMatrix(modelMatrix);
 
-    output.pos = mul(ubo.proj, mul(ubo.view, mul(model, float4(input.inPos, 1.0))));
-    output.fragColor = input.inColor;
-    output.fragUv = input.inUv;
+    output.pos = mul(ubo.proj, mul(ubo.view, mul(model, float4(input.pos, 1.0))));
+    output.fragColor = float3(1.0, 1.0, 1.0);
+    output.fragUv = input.uv;
     output.textureIndex = instance.textureIndex;
     output.samplerIndex = instance.samplerIndex;
     return output;

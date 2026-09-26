@@ -24,9 +24,6 @@ pub struct Buffer<T: Clone + std::fmt::Debug + Default> {
     pub is_preserving_indices: bool,
 }
 
-unsafe impl<T: Clone + std::fmt::Debug + Default> Sync for Buffer<T> {}
-unsafe impl<T: Clone + std::fmt::Debug + Default> Send for Buffer<T> {}
-
 impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     pub fn new(
         device_context: &DeviceContext,
@@ -175,6 +172,67 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             contents,
             self.is_preserving_indices,
         );
+    }
+
+    // TODO: update descriptors when created/recreated
+    pub fn update_descriptor(
+        device: &Device,
+        descriptor_set: vk::DescriptorSet,
+        descriptor_binding: u32,
+    ) {
+        //     if self
+        //         .render_pipeline_handle
+        //         .descriptor_handle
+        //         .descriptor_sets
+        //         .is_empty()
+        //     {
+        //         return Ok(());
+        //     }
+
+        //     for i in 0..MAX_FRAMES_IN_FLIGHT as usize {
+        //         let static_model_matrix_info = vk::DescriptorBufferInfo::builder()
+        //             .buffer(self.model_handle.static_model_matrix_buffer.buffer)
+        //             .offset(0)
+        //             .range(vk::WHOLE_SIZE);
+
+        //         let static_model_matrix_buffer_info = [static_model_matrix_info];
+        //         let static_model_matrix_write = vk::WriteDescriptorSet::builder()
+        //             .dst_set(
+        //                 self.render_pipeline_handle
+        //                     .descriptor_handle
+        //                     .descriptor_sets[i],
+        //             )
+        //             .dst_binding(2)
+        //             .dst_array_element(0)
+        //             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        //             .buffer_info(&static_model_matrix_buffer_info);
+
+        //         let dyn_model_matrix_info = vk::DescriptorBufferInfo::builder()
+        //             .buffer(self.model_handle.dyn_model_matrix_buffer.buffer)
+        //             .offset(0)
+        //             .range(vk::WHOLE_SIZE);
+
+        //         let dyn_model_matrix_buffer_info = [dyn_model_matrix_info];
+        //         let dyn_model_matrix_write = vk::WriteDescriptorSet::builder()
+        //             .dst_set(
+        //                 self.render_pipeline_handle
+        //                     .descriptor_handle
+        //                     .descriptor_sets[i],
+        //             )
+        //             .dst_binding(3)
+        //             .dst_array_element(0)
+        //             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        //             .buffer_info(&dyn_model_matrix_buffer_info);
+
+        //         unsafe {
+        //             self.device_context.device.update_descriptor_sets(
+        //                 &[static_model_matrix_write, dyn_model_matrix_write],
+        //                 &[] as &[vk::CopyDescriptorSet],
+        //             );
+        //         }
+        //     }
+
+        //     Ok(())
     }
 
     pub fn copy(

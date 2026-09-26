@@ -2,6 +2,7 @@
 
 use crate::components::TransformComponent;
 use crate::engine::Material;
+use crate::engine::PerInstanceData;
 use crate::engine::QuantizedModelMatrix;
 use crate::engine::VulkanRenderer;
 use crate::engine::vulkan_renderer::VULKAN_RENDERER_SINGLETON;
@@ -17,9 +18,9 @@ use glam::Vec3;
 #[require(TransformComponent::default())]
 #[component(on_add = Self::on_add, on_remove = Self::on_remove)]
 pub struct RenderComponent {
-    pub mesh: AssetId,              // An asset reference to the renderer's mesh
-    pub material: Material,         // The material that this entity uses
-    pub model_matrix_index: u32,    // The model matrix
+    pub mesh: AssetId,                 // An asset reference to the renderer's mesh
+    pub material: Material,            // The material that this entity uses
+    pub instance_transform_index: u32, // The instance and model matrix index
     pub is_receiving_shadows: bool, // Whether this entity should receive shadows from other shadow casters
     pub is_casting_shadows: bool,   // Whether this entity is a shadow caster
 }
@@ -34,25 +35,18 @@ impl RenderComponent {
         Self {
             mesh,
             material,
-            model_matrix_info: u32::MAX,
+            instance_transform_index: u32::MAX,
             is_receiving_shadows: receives_shadows,
             is_casting_shadows: casts_shadows,
         }
     }
 
-    //
-    // TODO: model_matrix_index does not update when adding or removing instances
-    //
-
     fn on_add(mut world: DeferredWorld, hook_context: HookContext) {
         // Get an unsafe world cell view
         let cell = world.as_unsafe_world_cell();
 
-        // // Fetch the resource directly from cell
-        // let mut vulkan_renderer = unsafe { cell.get_resource_mut::<VulkanRenderer>().unwrap() };
-
         // Get the renderer
-        let vulkan_renderer = unsafe { &mut VULKAN_RENDERER_SINGLETON };
+        let vulkan_renderer = &mut VULKAN_RENDERER_SINGLETON.lock().unwrap();
 
         // Update transform component
         let mut transform_component = unsafe {
@@ -71,18 +65,26 @@ impl RenderComponent {
                 .unwrap()
         };
 
-        // Create instance
-        let (_, model_matrix_index) = vulkan_renderer
-            .add_instance(
-                render.mesh,
-                render.material.albedo,
-                render.material.sampler_contents,
-                transform_component.to_quantized_matrix(),
-            )
-            .unwrap();
+        let mut render_component_query =
+            unsafe { cell.world_mut().query::<&mut RenderComponent>() };
+        let query_iter: bevy_ecs::query::QueryIter<'_, '_, &mut RenderComponent, ()> =
+            unsafe { render_component_query.iter_mut(cell.world_mut()) };
 
-        render.model_matrix_index = model_matrix_index as u32;
-        transform_component.model_matrix_index = model_matrix_index as u32;
+        // Create instance
+        let (_, instance_model_matrix_index) = unsafe {
+            vulkan_renderer
+                .add_instance(
+                    query_iter,
+                    render.mesh,
+                    render.material.albedo,
+                    render.material.sampler_contents,
+                    transform_component.to_quantized_matrix(),
+                )
+                .unwrap()
+        };
+
+        render.instance_transform_index = instance_model_matrix_index as u32;
+        transform_component.model_matrix_index = instance_model_matrix_index as u32;
     }
 
     fn on_remove(mut world: DeferredWorld, hook_context: HookContext) {
@@ -97,19 +99,22 @@ impl RenderComponent {
                 .unwrap()
         };
 
-        // // Fetch the resource directly from cell
-        // let mut vulkan_renderer = unsafe { cell.get_resource_mut::<VulkanRenderer>().unwrap() };
-
         // Get the renderer
-        let vulkan_renderer = unsafe { &mut VULKAN_RENDERER_SINGLETON };
+        let vulkan_renderer = &mut VULKAN_RENDERER_SINGLETON.lock().unwrap();
+
+        let mut render_component_query =
+            unsafe { cell.world_mut().query::<&mut RenderComponent>() };
+        let query_iter: bevy_ecs::query::QueryIter<'_, '_, &mut RenderComponent, ()> =
+            unsafe { render_component_query.iter_mut(cell.world_mut()) };
 
         // Remove instance
         vulkan_renderer
             .remove_instance(
+                query_iter,
                 render.mesh,
                 render.material.albedo,
                 render.material.sampler_contents,
-                render.model_matrix_info,
+                render.instance_transform_index,
             )
             .unwrap();
 

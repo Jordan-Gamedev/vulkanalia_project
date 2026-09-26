@@ -25,18 +25,17 @@ fn gameplay_update(mut _commands: Commands) {
 fn main() {
     let mut bevy_app = bevy_app::App::new();
 
-    // 2. Take the event loop out completely so it doesn't tie up 'self'
-    let event_loop = unsafe {
-        Arc::into_inner(
-            VULKAN_RENDERER_SINGLETON
-                .present_handle
-                .window_handle
-                .event_loop
-                .take()
-                .unwrap(),
-        )
-        .unwrap()
-    };
+    let event_loop = Arc::into_inner(
+        VULKAN_RENDERER_SINGLETON
+            .lock()
+            .unwrap()
+            .present_handle
+            .window_handle
+            .event_loop
+            .take()
+            .unwrap(),
+    )
+    .unwrap();
 
     bevy_app
         .add_systems(Startup, init_spawn)
@@ -48,44 +47,35 @@ fn main() {
             .run(move |event, elwt| {
                 match event {
                     Event::AboutToWait => {
-                        if let Some(renderer) = app.world().get_resource::<VulkanRenderer>() {
-                            renderer
-                                .present_handle
-                                .window_handle
-                                .window
-                                .request_redraw();
-                        }
+                        let renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
+                        renderer
+                            .present_handle
+                            .window_handle
+                            .window
+                            .request_redraw();
                     }
                     Event::WindowEvent { event, .. } => match event {
                         WindowEvent::RedrawRequested if !elwt.exiting() => {
-                            let mut renderer = app
-                                .world_mut()
-                                .get_resource_mut::<VulkanRenderer>()
-                                .unwrap();
-
                             // 1. Start of frame updates from the renderer
-                            renderer.start_of_frame_updates();
-
+                            {
+                                let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
+                                renderer.start_of_frame_updates();
+                            }
                             // 2. Run systems
                             app.update();
 
                             // 3. Render
+                            let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
                             renderer.render().unwrap();
                         }
 
                         WindowEvent::Resized(_size) => {
-                            let mut renderer = app
-                                .world_mut()
-                                .get_resource_mut::<VulkanRenderer>()
-                                .unwrap();
+                            let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
                             renderer.present_handle.window_handle.is_resized = true;
                         }
 
                         WindowEvent::CloseRequested => {
-                            let mut renderer = app
-                                .world_mut()
-                                .get_resource_mut::<VulkanRenderer>()
-                                .unwrap();
+                            let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
                             renderer
                                 .present_handle
                                 .window_handle

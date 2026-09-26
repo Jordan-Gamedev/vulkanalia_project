@@ -10,6 +10,3 @@ pub struct WindowHandle {
     pub surface: vk::SurfaceKHR,
     pub is_resized: bool,
 }
-
-unsafe impl Sync for WindowHandle {}
-unsafe impl Send for WindowHandle {}

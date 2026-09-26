@@ -14,9 +14,6 @@ pub struct InFlightBuffers<T: Clone + std::fmt::Debug + Default> {
     current_frame_index: usize,
 }
 
-unsafe impl<T: Clone + std::fmt::Debug + Default> Sync for InFlightBuffers<T> {}
-unsafe impl<T: Clone + std::fmt::Debug + Default> Send for InFlightBuffers<T> {}
-
 impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
     pub fn new(
         max_frames_in_flight: usize,

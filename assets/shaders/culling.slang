@@ -14,11 +14,6 @@ struct MeshMetadata
     uint8_t lod2_percentage;
 }
 
-struct MeshBufferLayout
-{
-    MeshMetadata meshes[2048];
-}
-
 struct QuantizedModelMatrix
 {
     float[3] position;
@@ -56,7 +51,7 @@ RWStructuredBuffer<IndirectDrawData> indirectDrawData;
 StructuredBuffer<PerInstanceData> instanceData;
 
 [[vk::binding(6, 0)]]
-ConstantBuffer<MeshBufferLayout, Std430DataLayout> meshUniformBuffer;
+StructuredBuffer<MeshMetadata> meshMetadataBuffer;
 
 [[vk::binding(7, 0)]]
 RWStructuredBuffer<uint> visbuffer;
@@ -76,7 +71,7 @@ void pass1(uint3 threadId: SV_DispatchThreadID, uniform uint elementCount)
     {
         // Get instance and associated mesh
         const PerInstanceData sourceInstance = instanceData[gID];
-        MeshMetadata sourceInstanceMesh = meshUniformBuffer.meshes[sourceInstance.meshMetadataIndex];
+        MeshMetadata sourceInstanceMesh = meshMetadataBuffer[sourceInstance.meshMetadataIndex];
 
         // Temp set isVisible to trued (place cull arithmetic here)
         isVisible = true;

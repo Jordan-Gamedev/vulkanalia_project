@@ -8,6 +8,3 @@ pub struct Mesh {
     pub lifetime: u32,
     pub metadata_index: u16,
 }
-
-unsafe impl Sync for Mesh {}
-unsafe impl Send for Mesh {}

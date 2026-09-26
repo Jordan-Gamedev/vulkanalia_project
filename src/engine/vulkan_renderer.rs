@@ -7,6 +7,7 @@
     clippy::unnecessary_wraps
 )]
 
+use crate::components::RenderComponent;
 use crate::engine::CommandHandle;
 use crate::engine::DescriptorHandle;
 use crate::engine::DeviceContext;
@@ -47,14 +48,14 @@ use std::fmt::Debug;
 use std::os::raw::c_void;
 use std::ptr::copy_nonoverlapping as memcpy;
 use std::sync::Arc;
+use std::sync::Mutex;
 use thiserror::Error;
 use vulkanalia::Version;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::loader::{LIBRARY, LibloadingLoader};
-use vulkanalia::prelude::v1_0::*;
+use vulkanalia::prelude::v1_2::*;
 use vulkanalia::vk::DeviceV1_2;
 use vulkanalia::vk::ExtDebugUtilsExtensionInstanceCommands;
-use vulkanalia::vk::ExternalMemoryHandleTypeFlags;
 use vulkanalia::vk::{KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands};
 use vulkanalia::window as vk_window;
 use vulkanalia_vma::{self as vma, Alloc};
@@ -79,9 +80,13 @@ pub struct VulkanRenderer {
     pub texture_handle: TextureHandle,
 }
 
-pub static mut VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<VulkanRenderer> =
-    std::sync::LazyLock::new(|| VulkanRenderer::new().unwrap());
+unsafe impl Sync for VulkanRenderer {}
+unsafe impl Send for VulkanRenderer {}
 
+pub static VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<Mutex<VulkanRenderer>> =
+    std::sync::LazyLock::new(|| Mutex::new(VulkanRenderer::new().unwrap()));
+
+// ------------------ TODO: Implement visbuffers and vma textures
 impl VulkanRenderer {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -230,7 +235,7 @@ impl VulkanRenderer {
 
             // Create mesh buffer
             let mesh_metadata_buffers =
-                create_mesh_uniform_buffers(device_context.clone(), command_pool);
+                create_mesh_metadata_buffers(device_context.clone(), command_pool);
 
             // Finalize model handle
             let model_handle = ModelHandle {
@@ -426,6 +431,12 @@ impl VulkanRenderer {
 
     pub fn add_instance(
         &mut self,
+        render_component_query_iterator: bevy_ecs::query::QueryIter<
+            '_,
+            '_,
+            &mut RenderComponent,
+            (),
+        >,
         mesh_asset_id: AssetId,
         texture_asset_id: AssetId,
         sampler_contents: SamplerContents,
@@ -442,12 +453,7 @@ impl VulkanRenderer {
         self.load_texture(texture_asset_id, sampler_contents)?;
 
         // Get the mesh that the instance uses
-        let mesh = self
-            .model_handle
-            .loaded_meshes
-            .get(&mesh_asset_id)
-            .unwrap()
-            .clone();
+        let mesh = self.model_handle.loaded_meshes.get(&mesh_asset_id).unwrap();
 
         // Get bindless texture index
         let texture_index = self.get_texture_slot_index(texture_asset_id).unwrap_or(0) as u16;
@@ -527,6 +533,8 @@ impl VulkanRenderer {
         let mut in_proper_instance_bucket = false;
         let mut moving_instance = new_instance;
         let mut moving_model_matrix = matrix;
+        let mut moving_index: usize = 0;
+        let mut changed_old_new_indices: Vec<(usize, usize)> = Vec::new();
 
         // Recursively replace end of instance and model matrix buckets with moving instance and moving model matrix until the end is reached
         for i in 0..instance_buffer.element_count as usize {
@@ -539,15 +547,30 @@ impl VulkanRenderer {
                 unsafe {
                     *instance_buffer.mapped.add(i).cast_mut() = moving_instance;
                     *model_matrix_buffer.mapped.add(i).cast_mut() = moving_model_matrix;
-
-                    if new_instance_buffer_index == usize::MAX {
-                        new_instance_buffer_index = i;
-                    }
                 }
+
+                if new_instance_buffer_index == usize::MAX {
+                    new_instance_buffer_index = i;
+                }
+
+                changed_old_new_indices.push((moving_index, i));
 
                 moving_instance = buffer_instance;
                 moving_model_matrix = buffer_model_matrix;
+                moving_index = i;
                 in_proper_instance_bucket = false;
+            }
+        }
+
+        // Update stored instance/transform indices for render components
+        for mut render_component in render_component_query_iterator {
+            if let Some(change_pos) = changed_old_new_indices
+                .iter()
+                .position(|i| i.0 == render_component.instance_transform_index as usize)
+            {
+                render_component.instance_transform_index =
+                    changed_old_new_indices[change_pos].1 as u32;
+                changed_old_new_indices.swap_remove(change_pos);
             }
         }
 
@@ -561,11 +584,16 @@ impl VulkanRenderer {
 
     pub fn remove_instance(
         &mut self,
+        render_component_query_iterator: bevy_ecs::query::QueryIter<
+            '_,
+            '_,
+            &mut RenderComponent,
+            (),
+        >,
         mesh_asset_id: AssetId,
         texture_asset_id: AssetId,
         sampler_contents: SamplerContents,
-        instance: &PerInstanceData,
-        model_matrix: &QuantizedModelMatrix,
+        remove_index: u32,
     ) -> Result<()> {
         // Unload model if there are no more instances using it
         if let Some(mesh) = self.model_handle.loaded_meshes.get_mut(&mesh_asset_id)
@@ -573,15 +601,12 @@ impl VulkanRenderer {
         {
             mesh.usage_count -= 1;
             if mesh.usage_count == 0 {
-                self.try_unload_mesh(mesh_asset_id);
+                self.try_unload_mesh(mesh_asset_id)?;
             }
         }
 
-        // Potentially texture
+        // Potentially unload texture
         self.unload_texture(texture_asset_id, sampler_contents)?;
-
-        // Get the remove index
-        let remove_index: u32 = self.get_model_matrix_index(instance, model_matrix)?;
 
         // The currently used instance and model matrix buffers
         let instance_buffer = &mut self.command_handle.instance_buffers.get_current_mut();
@@ -600,6 +625,13 @@ impl VulkanRenderer {
             self.command_handle.command_pool,
             remove_index,
         )?;
+
+        // Update stored instance/transform indices for render components
+        for mut render_component in render_component_query_iterator {
+            if render_component.instance_transform_index > remove_index {
+                render_component.instance_transform_index -= 1;
+            }
+        }
 
         // Signal to the other frames that the buffer has been changed
         self.command_handle
@@ -862,41 +894,23 @@ impl VulkanRenderer {
 
         // Update indirect draw buffers
 
+        let mut new_indirect_draw_datas: Vec<IndirectDrawData> = Vec::new();
+        for i in 0..mesh_allocations.len() {
+            new_indirect_draw_datas.push(IndirectDrawData::new(
+                mesh_allocations[i].index_count,
+                0,
+                mesh_allocations[i].index_offset,
+                mesh_allocations[i].vertex_offset,
+                0,
+            ));
+        }
+
         let indirect_draw_buffer = self.command_handle.indirect_draw_buffers.get_current_mut();
         indirect_draw_buffer.add_items(
             &self.device_context,
             self.command_handle.command_pool,
-            vec![
-                IndirectDrawData::new(
-                    mesh_allocations[0].index_count,
-                    0,
-                    mesh_allocations[0].index_offset,
-                    mesh_allocations[0].vertex_offset,
-                    0,
-                ),
-                IndirectDrawData::new(
-                    mesh_allocations[1].index_count,
-                    0,
-                    mesh_allocations[1].index_offset,
-                    mesh_allocations[1].vertex_offset,
-                    0,
-                ),
-                IndirectDrawData::new(
-                    mesh_allocations[2].index_count,
-                    0,
-                    mesh_allocations[2].index_offset,
-                    mesh_allocations[2].vertex_offset,
-                    0,
-                ),
-                IndirectDrawData::new(
-                    mesh_allocations[3].index_count,
-                    0,
-                    mesh_allocations[3].index_offset,
-                    mesh_allocations[3].vertex_offset,
-                    0,
-                ),
-            ],
-        );
+            new_indirect_draw_datas,
+        )?;
 
         // Signal that indirect draw buffer and mesh metadata buffer have changed to other frames in flight
 
@@ -965,8 +979,9 @@ impl VulkanRenderer {
             .get_mut(&mesh_asset_id)
             .unwrap();
 
-        // Remove mesh metadata
         if unloading_mesh.lifetime == MAX_FRAMES_IN_FLIGHT {
+            // Remove mesh metadata
+
             self.model_handle
                 .mesh_metadata_buffers
                 .signal_buffer_change_propagation();
@@ -977,11 +992,37 @@ impl VulkanRenderer {
                 self.command_handle.command_pool,
                 unloading_mesh.metadata_index as u32,
             )?;
+
+            // Update indirect draw buffer
+
+            self.command_handle
+                .indirect_draw_buffers
+                .signal_buffer_change_propagation();
+
+            let indirect_draw_buffer = self.command_handle.indirect_draw_buffers.get_current_mut();
+            let indirect_draw_data_remove_index = indirect_draw_buffer
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap()
+                .iter()
+                .position(|i| {
+                    i.first_index == unloading_mesh.mesh_allocations[0].index_offset
+                        && i.vertex_offset == unloading_mesh.mesh_allocations[0].vertex_offset
+                })
+                .unwrap();
+
+            indirect_draw_buffer.remove_items(
+                &self.device_context,
+                self.command_handle.command_pool,
+                indirect_draw_data_remove_index as u32,
+                indirect_draw_data_remove_index as u32
+                    + unloading_mesh.mesh_allocations.len() as u32,
+            )?;
         }
 
         unloading_mesh.lifetime -= 1;
 
         // Unload vertices and indices
+
         if unloading_mesh.lifetime == 0 {
             let alloc = unloading_mesh.mesh_allocations.pop().unwrap();
             while let Some(alloc) = unloading_mesh.mesh_allocations.pop() {
@@ -994,117 +1035,6 @@ impl VulkanRenderer {
             }
             self.model_handle.loaded_meshes.remove(&mesh_asset_id);
         }
-
-        // self.model_handle
-        //     .index_buffer_virtual_block
-        //     .free(unloading_mesh.mesh_allocations[0].index_virtual_allocation);
-
-        // unloading_mesh.mesh_allocations.iter().for_each(move |m| {
-        //     self.model_handle
-        //         .index_buffer_virtual_block
-        //         .free(m.index_virtual_allocation);
-        //     self.model_handle
-        //         .vertex_buffer_virtual_block
-        //         .free(m.vertex_virtual_allocation);
-        // });
-
-        // let unloaded_vertex_count = unloading_mesh.lod0_vertex_length
-        //     + unloading_mesh.lod1_vertex_length
-        //     + unloading_mesh.lod2_vertex_length
-        //     + unloading_mesh.lod3_vertex_length;
-        // let unloaded_index_count = unloading_mesh.lod0_index_length
-        //     + unloading_mesh.lod1_index_length
-        //     + unloading_mesh.lod2_index_length
-        //     + unloading_mesh.lod3_index_length;
-
-        // self.model_handle.vertex_buffer.remove_items(
-        //     &self.device_context,
-        //     self.command_handle.command_pool,
-        //     unloading_mesh.vertex_offset,
-        //     unloading_mesh.vertex_offset + unloaded_vertex_count,
-        // )?;
-        // self.model_handle.index_buffer.remove_items(
-        //     &self.device_context,
-        //     self.command_handle.command_pool,
-        //     unloading_mesh.index_offset,
-        //     unloading_mesh.index_offset + unloaded_index_count,
-        // )?;
-
-        // // Update other model offsets
-        // self.model_handle
-        //     .loaded_meshes
-        //     .values_mut()
-        //     .filter(|m| m.vertex_offset > unloading_mesh.vertex_offset)
-        //     .for_each(|m| {
-        //         m.vertex_offset -= unloaded_vertex_count;
-        //         m.index_offset -= unloaded_index_count;
-        //     });
-
-        // // Unload mesh
-        // self.model_handle.loaded_meshes.remove(&mesh_asset_id);
-
-        // // Update indirect draw buffers
-
-        // let indirect_draw_buffer = self.command_handle.indirect_draw_buffers.get_current_mut();
-
-        // let indirect_draw_data_remove_index = indirect_draw_buffer
-        //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-        //     .unwrap()
-        //     .iter()
-        //     .position(|i| {
-        //         i.first_index == unloading_mesh.index_offset
-        //             && i.vertex_offset == unloading_mesh.vertex_offset as i32
-        //     })
-        //     .unwrap();
-
-        // indirect_draw_buffer.remove_items(
-        //     &self.device_context,
-        //     self.command_handle.command_pool,
-        //     indirect_draw_data_remove_index as u32,
-        //     indirect_draw_data_remove_index as u32 + 4,
-        // );
-
-        // // Signal that indirect draw buffer and mesh metadata buffer have changed to other frames in flight
-
-        // self.command_handle
-        //     .indirect_draw_buffers
-        //     .signal_buffer_change_propagation();
-        // self.model_handle
-        //     .mesh_metadata_buffers
-        //     .signal_buffer_change_propagation();
-
-        // // Unload mesh metadata from uniform buffer
-
-        // let mesh_uniform_buffer = self.model_handle.mesh_metadata_buffers.get_current_mut();
-        // let (mesh_buffer, mesh_buffer_memory, mesh_buffer_mapped) = mesh_uniform_buffer
-        //     .get_buffer_parts(&self.device_context, self.command_handle.command_pool);
-        // let mesh_buffer_layout = unsafe { mesh_buffer_mapped.cast_mut().as_mut().unwrap() };
-
-        // for i in 0..2048 {
-        //     if mesh_buffer_layout.0[i] == unloading_mesh.metadata {
-        //         mesh_buffer_layout.0[i] = MeshMetadata::default();
-        //         break;
-        //     }
-        // }
-
-        // // Finalize and Cleanup
-
-        // unsafe {
-        //     if !mesh_uniform_buffer.is_host_visible {
-        //         Buffer::<MeshBufferLayout>::copy_buffer(
-        //             &self.device_context,
-        //             self.command_handle.command_pool,
-        //             mesh_buffer,
-        //             mesh_uniform_buffer.buffer,
-        //             1u64,
-        //         )?;
-        //         self.device_context.device.destroy_buffer(mesh_buffer, None);
-        //         self.device_context.device.unmap_memory(mesh_buffer_memory);
-        //         self.device_context
-        //             .device
-        //             .free_memory(mesh_buffer_memory, None);
-        //     }
-        // }
 
         Ok(())
     }
@@ -1705,7 +1635,8 @@ impl VulkanRenderer {
                 [self.command_handle.sync_handle.current_frame];
             self.device_context
                 .device
-                .wait_for_fences(&[in_flight_fence], true, u64::MAX);
+                .wait_for_fences(&[in_flight_fence], true, u64::MAX)
+                .unwrap();
         }
 
         // Propagate gpu changes across all frames
@@ -2081,7 +2012,7 @@ unsafe fn create_instance(
         .application_version(vk::make_version(1, 0, 0))
         .engine_name(b"No Engine\0")
         .engine_version(vk::make_version(1, 0, 0))
-        .api_version(vk::make_version(1, 1, 0));
+        .api_version(vk::make_version(1, 2, 0));
 
     // Layers
 
@@ -2270,8 +2201,23 @@ unsafe fn create_logical_device(
         instance,
         physical_device,
         vk::KHR_MAINTENANCE5_EXTENSION,
+    ) && does_physical_device_support_extension(
+        instance,
+        physical_device,
+        vk::KHR_DYNAMIC_RENDERING_EXTENSION,
+    ) && does_physical_device_support_extension(
+        instance,
+        physical_device,
+        vk::KHR_DEPTH_STENCIL_RESOLVE_EXTENSION,
+    ) && does_physical_device_support_extension(
+        instance,
+        physical_device,
+        vk::KHR_CREATE_RENDERPASS2_EXTENSION,
     ) {
         extensions.push(vk::KHR_MAINTENANCE5_EXTENSION.name.as_ptr());
+        extensions.push(vk::KHR_DYNAMIC_RENDERING_EXTENSION.name.as_ptr());
+        extensions.push(vk::KHR_DEPTH_STENCIL_RESOLVE_EXTENSION.name.as_ptr());
+        extensions.push(vk::KHR_CREATE_RENDERPASS2_EXTENSION.name.as_ptr());
     }
 
     // Features
@@ -2282,7 +2228,8 @@ unsafe fn create_logical_device(
         .shader_int16(true)
         .multi_draw_indirect(true);
 
-    let mut descriptor_indexing_features = vk::PhysicalDeviceVulkan12Features::builder()
+    let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::builder()
+        .buffer_device_address(true)
         .descriptor_indexing(true)
         .descriptor_binding_sampled_image_update_after_bind(true)
         .descriptor_binding_partially_bound(true)
@@ -2299,7 +2246,7 @@ unsafe fn create_logical_device(
         .enabled_extension_names(&extensions)
         .enabled_features(&features)
         .push_next(&mut storage_16bit_features)
-        .push_next(&mut descriptor_indexing_features);
+        .push_next(&mut vulkan12_features);
 
     let device = instance.create_device(physical_device, &info, None)?;
 
@@ -2342,11 +2289,21 @@ fn create_allocator(device_context: &DeviceContext) -> Result<vma::Allocator> {
         &device_context.instance,
         device_context.physical_device,
         vk::KHR_MAINTENANCE5_EXTENSION,
+    ) && does_physical_device_support_extension(
+        &device_context.instance,
+        device_context.physical_device,
+        vk::KHR_DYNAMIC_RENDERING_EXTENSION,
+    ) && does_physical_device_support_extension(
+        &device_context.instance,
+        device_context.physical_device,
+        vk::KHR_DEPTH_STENCIL_RESOLVE_EXTENSION,
+    ) && does_physical_device_support_extension(
+        &device_context.instance,
+        device_context.physical_device,
+        vk::KHR_CREATE_RENDERPASS2_EXTENSION,
     ) {
         allocator_create_flags |= vma::AllocatorCreateFlags::KHR_MAINTENANCE5;
     }
-
-    let external_memory_flags = ExternalMemoryHandleTypeFlags::empty();
 
     // Create allocator
 
@@ -2354,11 +2311,15 @@ fn create_allocator(device_context: &DeviceContext) -> Result<vma::Allocator> {
         instance: &device_context.instance,
         device: &device_context.device,
         physical_device: device_context.physical_device,
-        version: device_context.entry.version().unwrap(),
+        version: if device_context.entry.version().unwrap() > vulkanalia::Version::V1_3_0 {
+            vulkanalia::Version::V1_3_0
+        } else {
+            device_context.entry.version().unwrap()
+        },
         flags: allocator_create_flags,
         preferred_large_heap_block_size: 256 * 1024 * 1024,
         heap_size_limits: &[],
-        external_memory_handle_types: &[external_memory_flags],
+        external_memory_handle_types: &[],
     };
     let allocator = unsafe { vma::Allocator::new(&options)? };
     Ok(allocator)
@@ -3068,15 +3029,15 @@ unsafe fn create_descriptor_set_layout(device: Device) -> Result<vk::DescriptorS
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
 
-    let mesh_uniform_binding = vk::DescriptorSetLayoutBinding::builder()
+    let mesh_metadata_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(6)
-        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::COMPUTE);
 
     let visbuffer_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(7)
-        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
 
@@ -3100,7 +3061,7 @@ unsafe fn create_descriptor_set_layout(device: Device) -> Result<vk::DescriptorS
         model_matrix_binding,
         indirect_draw_binding,
         instance_data_binding,
-        mesh_uniform_binding,
+        mesh_metadata_binding,
         visbuffer_binding,
     ];
     let info = vk::DescriptorSetLayoutCreateInfo::builder()
@@ -3138,9 +3099,9 @@ unsafe fn create_descriptor_pool(device: Device) -> Result<vk::DescriptorPool> {
         .type_(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(MAX_FRAMES_IN_FLIGHT);
 
-    let mesh_uniform_size = vk::DescriptorPoolSize::builder()
-        .type_(vk::DescriptorType::UNIFORM_BUFFER)
-        .descriptor_count(1);
+    let mesh_metadata_size = vk::DescriptorPoolSize::builder()
+        .type_(vk::DescriptorType::STORAGE_BUFFER)
+        .descriptor_count(MAX_FRAMES_IN_FLIGHT);
 
     let visbuffer_size = vk::DescriptorPoolSize::builder()
         .type_(vk::DescriptorType::STORAGE_BUFFER)
@@ -3153,7 +3114,7 @@ unsafe fn create_descriptor_pool(device: Device) -> Result<vk::DescriptorPool> {
         model_matrix_size,
         indirect_draw_size,
         instance_data_size,
-        mesh_uniform_size,
+        mesh_metadata_size,
         visbuffer_size,
     ];
     let info = vk::DescriptorPoolCreateInfo::builder()
@@ -3236,17 +3197,17 @@ unsafe fn create_descriptor_sets(
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&instance_data_info);
 
-        let mesh_uniform_info = [vk::DescriptorBufferInfo::builder()
+        let mesh_metadata_info = [vk::DescriptorBufferInfo::builder()
             .buffer(model_handle.mesh_metadata_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
 
-        let mesh_uniform_write = vk::WriteDescriptorSet::builder()
+        let mesh_metadata_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
             .dst_binding(6)
             .dst_array_element(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .buffer_info(&mesh_uniform_info);
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(&mesh_metadata_info);
 
         let visbuffer_info = [vk::DescriptorBufferInfo::builder()
             .buffer(main_camera_visbuffers.buffers[i].buffer)
@@ -3266,7 +3227,7 @@ unsafe fn create_descriptor_sets(
                 model_matrix_write,
                 indirect_draw_write,
                 instance_data_write,
-                mesh_uniform_write,
+                mesh_metadata_write,
                 visbuffer_write,
             ],
             &[] as &[vk::CopyDescriptorSet],
@@ -3289,11 +3250,18 @@ unsafe fn create_compute_pipeline(
     let culling_stage = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::COMPUTE)
         .module(shader_module)
-        .name(b"computeMain\0");
+        .name(b"pass1\0");
 
     // Layout
     let set_layouts = &[descriptor_set_layout];
-    let layout_info = vk::PipelineLayoutCreateInfo::builder().set_layouts(set_layouts);
+    let push_constant_ranges = &[vk::PushConstantRange::builder()
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .offset(0)
+        .size(size_of::<PushConstant>() as u32)
+        .build()];
+    let layout_info = vk::PipelineLayoutCreateInfo::builder()
+        .set_layouts(set_layouts)
+        .push_constant_ranges(push_constant_ranges);
     let pipeline_layout = device_context
         .device
         .create_pipeline_layout(&layout_info, None)?;
@@ -3581,7 +3549,7 @@ fn create_indirect_draw_buffers(
         device_context,
         command_pool,
         INDIRECT_DRAW_DATA_CHUNK_COUNT as u64,
-        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         0,
         Vec::new(),
@@ -3686,152 +3654,6 @@ pub fn end_single_time_commands(
 // ______________________________________________________________________________________________________________________________________________________
 
 // Build Functions
-
-// pub fn destroy(&mut self, allocator: &Allocator) {
-//     unsafe {
-//         allocator.destroy_buffer(self.vertex_buffer, self.vertex_buffer_memory);
-//         allocator.destroy_buffer(self.index_buffer, self.index_buffer_memory);
-//         allocator.destroy_buffer(self.staging_buffer, self.staging_buffer_memory);
-//     }
-// }
-
-// pub fn load_mesh(
-//     &mut self,
-//     device_context: &DeviceContext,
-//     command_pool: vk::CommandPool,
-//     vertices: &Vec<QuantizedVertex>,
-//     indices: &Vec<Index>,
-// ) -> MeshAllocation {
-//     // ------------------------------
-//     // Load vertices to vertex buffer
-//     // ------------------------------
-
-//     // Reserve sub-allocated space
-
-//     let v_size = (vertices.len() * size_of::<QuantizedVertex>()) as u64;
-
-//     let vertex_alloc_request = VirtualAllocationOptions {
-//         size: v_size,
-//         alignment: 16,
-//         flags: VirtualAllocationCreateFlags::STRATEGY_MIN_MEMORY,
-//     };
-
-//     // Allocate subsection of vertex buffer
-
-//     let (vertex_vma_alloc, vertex_global_buffer_offset) = self
-//         .vertex_block_tracker
-//         .allocate(&vertex_alloc_request)
-//         .expect("Vertex buffer out of VRAM!");
-
-//     // Copy staging info into vertex buffer slot
-
-//     unsafe {
-//         std::ptr::copy_nonoverlapping(
-//             vertices.as_ptr(),
-//             self.staging_buffer_mapped_memory.cast(),
-//             vertices.len(),
-//         );
-//     }
-
-//     let copy_region = vk::BufferCopy::builder()
-//         .dst_offset(vertex_global_buffer_offset)
-//         .size(v_size);
-
-//     let command_buffer =
-//         begin_single_time_commands(command_pool, device_context.clone().device).unwrap();
-
-//     unsafe {
-//         device_context.clone().device.cmd_copy_buffer(
-//             command_buffer,
-//             self.staging_buffer,
-//             self.vertex_buffer,
-//             &[copy_region],
-//         );
-//     }
-
-//     end_single_time_commands(
-//         command_pool,
-//         command_buffer,
-//         device_context.clone().device,
-//         device_context.clone().device_queue_handle,
-//     );
-
-//     // ------------------------------
-//     // Load indices to index buffer
-//     // ------------------------------
-
-//     // Reserve sub-allocated space
-
-//     let i_size = (indices.len() * size_of::<Index>()) as u64;
-
-//     let index_alloc_request = VirtualAllocationOptions {
-//         size: i_size,
-//         alignment: size_of::<Index>() as u64,
-//         flags: VirtualAllocationCreateFlags::STRATEGY_MIN_MEMORY,
-//     };
-
-//     // Allocate subsection of index buffer
-
-//     let (index_vma_alloc, index_global_buffer_offset) = self
-//         .index_block_tracker
-//         .allocate(&index_alloc_request)
-//         .expect("Index buffer out of VRAM!");
-
-//     // Copy staging info into index buffer slot
-
-//     unsafe {
-//         std::ptr::copy_nonoverlapping(
-//             indices.as_ptr(),
-//             self.staging_buffer_mapped_memory.cast(),
-//             indices.len(),
-//         );
-//     }
-
-//     let copy_region = vk::BufferCopy::builder()
-//         .dst_offset(index_global_buffer_offset)
-//         .size(i_size);
-
-//     let command_buffer =
-//         begin_single_time_commands(command_pool, device_context.clone().device).unwrap();
-
-//     unsafe {
-//         device_context.clone().device.cmd_copy_buffer(
-//             command_buffer,
-//             self.staging_buffer,
-//             self.index_buffer,
-//             &[copy_region],
-//         );
-//     }
-
-//     end_single_time_commands(
-//         command_pool,
-//         command_buffer,
-//         device_context.clone().device,
-//         device_context.clone().device_queue_handle,
-//     );
-
-//     // Return the memory information for this loaded mesh
-
-//     MeshAllocation {
-//         vertex_vma_allocation: vertex_vma_alloc,
-//         vertex_device_address: self.vertex_base_device_address + vertex_global_buffer_offset,
-//         vertex_count: vertices.len() as u32,
-//         index_vma_allocation: index_vma_alloc,
-//         index_device_address: self.index_base_device_address + index_global_buffer_offset,
-//         index_count: indices.len() as u32,
-//     }
-// }
-
-// pub fn unload_mesh(&mut self, mesh_allocation: MeshAllocation) {
-//     if !self.unload_mesh_queue.contains(&mesh_allocation) {
-//         self.unload_mesh_queue.push(mesh_allocation);
-//     }
-
-//     self.vertex_block_tracker
-//         .free(mesh_allocation.vertex_vma_allocation);
-//     self.index_block_tracker
-//         .free(mesh_allocation.index_vma_allocation);
-// }
 
 fn create_vertex_buffer(
     device: &Device,
@@ -4014,7 +3836,7 @@ fn create_model_matrix_buffers(
     )
 }
 
-fn create_mesh_uniform_buffers(
+fn create_mesh_metadata_buffers(
     device_context: DeviceContext,
     command_pool: vk::CommandPool,
 ) -> InFlightBuffers<MeshMetadata> {

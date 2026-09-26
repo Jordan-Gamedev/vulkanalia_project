@@ -31,10 +31,11 @@ struct Vertex {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QuantizedVertex {
-    pub position_boneids: [f32; 4],
+    pub position: [f32; 3],
     pub normal: u32,
     pub tangent: u32,
     pub uv: [u16; 2],
+    pub bone_ids: [u8; 4],
     pub bone_weights: [u8; 4],
 }
 
@@ -1200,17 +1201,15 @@ fn read_glb(
                 tangent |= 0x10000000;
             }
 
-            // Pack bone ids inside a float to pack with positions
-            let bone_ids = f32::from_bits(u32::from_be_bytes(v.bone_ids));
-
             // Quantize the uv into halfs
             let uv: [u16; 2] = [quantize_half(v.uv[0]), quantize_half(v.uv[1])];
 
             QuantizedVertex {
-                position_boneids: [v.position[0], v.position[1], v.position[2], bone_ids],
+                position: v.position,
                 normal,
                 tangent,
                 uv,
+                bone_ids: v.bone_ids,
                 bone_weights: v.bone_weights,
             }
         })
@@ -1238,9 +1237,9 @@ fn read_glb(
     let mut min_aabb: [f32; 3] = std::array::repeat(f32::INFINITY);
     let mut max_aabb: [f32; 3] = std::array::repeat(f32::NEG_INFINITY);
     for vertex in quantized_vertices {
-        let x = vertex.position_boneids[0];
-        let y = vertex.position_boneids[1];
-        let z = vertex.position_boneids[2];
+        let x = vertex.position[0];
+        let y = vertex.position[1];
+        let z = vertex.position[2];
         if x < min_aabb[0] {
             min_aabb[0] = x;
         }

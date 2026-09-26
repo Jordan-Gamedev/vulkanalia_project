@@ -4,10 +4,11 @@ use vulkanalia::prelude::v1_0::*;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QuantizedVertex {
-    pub position_boneids: [f32; 4],
+    pub position: [f32; 3],
     pub normal: u32,
     pub tangent: u32,
     pub uv: [u16; 2],
+    pub bone_ids: [u8; 4],
     pub bone_weights: [u8; 4],
 }
 
@@ -137,51 +138,53 @@ impl QuantizedVertex {
             .build()
     }
 
-    pub fn attribute_descriptions() -> Result<[vk::VertexInputAttributeDescription; 5]> {
-        // Position as XYZ f32 f32 f32 and Bone ids as 0-255 0-255 0-255 0-255 8bits 8bits 8bits 8bits
-        let pos_boneid_format = vk::Format::R32G32B32A32_SFLOAT;
-        let pos_boneid = vk::VertexInputAttributeDescription::builder()
+    pub fn attribute_descriptions() -> Result<[vk::VertexInputAttributeDescription; 6]> {
+        // Position as XYZ f32 f32 f32
+        let position = vk::VertexInputAttributeDescription::builder()
             .binding(0)
             .location(0)
-            .format(pos_boneid_format)
+            .format(vk::Format::R32G32B32A32_SFLOAT)
             .offset(0)
             .build();
 
         // Normal as XYZ 10bits 10bits 10bits + 2bits to spare
-        let normal_format = vk::Format::A2R10G10B10_SNORM_PACK32;
         let normal = vk::VertexInputAttributeDescription::builder()
             .binding(0)
             .location(1)
-            .format(normal_format)
+            .format(vk::Format::A2R10G10B10_SNORM_PACK32)
             .offset(size_of::<[f32; 4]>() as u32)
             .build();
 
         // Tangent as WXYZ 2bits 10bits 10bits 10bits
-        let tangent_format = vk::Format::A2R10G10B10_SNORM_PACK32;
         let tangent = vk::VertexInputAttributeDescription::builder()
             .binding(0)
             .location(2)
-            .format(tangent_format)
+            .format(vk::Format::A2R10G10B10_SNORM_PACK32)
             .offset(size_of::<[f32; 4]>() as u32 + size_of::<u32>() as u32)
             .build();
 
         // UV as XY f16 f16
-        let uv_format = vk::Format::R16G16_SFLOAT;
         let uv = vk::VertexInputAttributeDescription::builder()
             .binding(0)
             .location(3)
-            .format(uv_format)
+            .format(vk::Format::R16G16_SFLOAT)
             .offset(
                 size_of::<[f32; 4]>() as u32 + size_of::<u32>() as u32 + size_of::<u32>() as u32,
             )
             .build();
 
-        // Max of 4 bone weights as 0-255 0-255 0-255 0-255 8bits 8bits 8bits 8bits
-        let bone_weights_format = vk::Format::R8G8B8A8_UNORM;
-        let bone_weights = vk::VertexInputAttributeDescription::builder()
+        // Bone ids as 0-255 0-255 0-255 0-255 8bits 8bits 8bits 8bits
+        let bone_ids = vk::VertexInputAttributeDescription::builder()
             .binding(0)
             .location(4)
-            .format(bone_weights_format)
+            .format(vk::Format::R8G8B8A8_UINT)
+            .build();
+
+        // Max of 4 bone weights as 0-255 0-255 0-255 0-255 8bits 8bits 8bits 8bits
+        let bone_weights = vk::VertexInputAttributeDescription::builder()
+            .binding(0)
+            .location(5)
+            .format(vk::Format::R8G8B8A8_UNORM)
             .offset(
                 size_of::<[f32; 4]>() as u32
                     + size_of::<u32>() as u32
@@ -190,7 +193,7 @@ impl QuantizedVertex {
             )
             .build();
 
-        Ok([pos_boneid, normal, tangent, uv, bone_weights])
+        Ok([position, bone_ids, normal, tangent, uv, bone_weights])
     }
 
     pub fn get_supported_vertex_format(

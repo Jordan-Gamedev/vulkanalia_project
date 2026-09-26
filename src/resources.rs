@@ -31,7 +31,7 @@ pub const VULKAN_INDEX_TYPE: vulkanalia::vk::IndexType = vulkanalia::vk::IndexTy
 pub const TOTAL_LOADABLE_VERTEX_COUNT: usize = 2150;
 pub const TOTAL_LOADABLE_INDEX_COUNT: usize = 3180;
 pub const MAX_MESH_VERTEX_COUNT: usize = 1966;
-pub const MAX_INDEX_COUNT: usize = 2904;
+pub const MAX_MESH_INDEX_COUNT: usize = 2904;
 pub const VERTEX_BUFFER_COUNT: usize = 2150;
 pub const INDEX_BUFFER_COUNT: usize = 3180;
 
