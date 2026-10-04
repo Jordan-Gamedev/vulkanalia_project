@@ -149,6 +149,8 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         device_context: &DeviceContext,
         command_pool: vk::CommandPool,
         contents: Vec<T>,
+        descriptor_set: vk::DescriptorSet,
+        descriptor_binding: u32,
     ) {
         // Destroy old buffer
         self.destroy(&device_context.device);
@@ -162,7 +164,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             .max(self.alloc_dealloc_threshold);
 
         // Create the new buffer
-        *self = Buffer::new(
+        let new_buffer = Buffer::new(
             device_context,
             command_pool,
             initial_capacity as u64,
@@ -172,85 +174,60 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             contents,
             self.is_preserving_indices,
         );
+
+        *self = new_buffer;
+
+        self.update_descriptor(&device_context.device, descriptor_set, descriptor_binding);
     }
 
-    // TODO: update descriptors when created/recreated
     pub fn update_descriptor(
+        &self,
         device: &Device,
         descriptor_set: vk::DescriptorSet,
         descriptor_binding: u32,
     ) {
-        //     if self
-        //         .render_pipeline_handle
-        //         .descriptor_handle
-        //         .descriptor_sets
-        //         .is_empty()
-        //     {
-        //         return Ok(());
-        //     }
+        let descriptor_type: vk::DescriptorType =
+            if self.usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER) {
+                vk::DescriptorType::STORAGE_BUFFER
+            } else {
+                vk::DescriptorType::UNIFORM_BUFFER
+            };
 
-        //     for i in 0..MAX_FRAMES_IN_FLIGHT as usize {
-        //         let static_model_matrix_info = vk::DescriptorBufferInfo::builder()
-        //             .buffer(self.model_handle.static_model_matrix_buffer.buffer)
-        //             .offset(0)
-        //             .range(vk::WHOLE_SIZE);
+        let descriptor_buffer_info = vk::DescriptorBufferInfo::builder()
+            .buffer(self.buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
 
-        //         let static_model_matrix_buffer_info = [static_model_matrix_info];
-        //         let static_model_matrix_write = vk::WriteDescriptorSet::builder()
-        //             .dst_set(
-        //                 self.render_pipeline_handle
-        //                     .descriptor_handle
-        //                     .descriptor_sets[i],
-        //             )
-        //             .dst_binding(2)
-        //             .dst_array_element(0)
-        //             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-        //             .buffer_info(&static_model_matrix_buffer_info);
+        let descriptor_buffer_info = &[descriptor_buffer_info];
 
-        //         let dyn_model_matrix_info = vk::DescriptorBufferInfo::builder()
-        //             .buffer(self.model_handle.dyn_model_matrix_buffer.buffer)
-        //             .offset(0)
-        //             .range(vk::WHOLE_SIZE);
+        let descriptor_set_write = vk::WriteDescriptorSet::builder()
+            .dst_set(descriptor_set)
+            .dst_binding(descriptor_binding)
+            .dst_array_element(0)
+            .descriptor_type(descriptor_type)
+            .buffer_info(descriptor_buffer_info);
 
-        //         let dyn_model_matrix_buffer_info = [dyn_model_matrix_info];
-        //         let dyn_model_matrix_write = vk::WriteDescriptorSet::builder()
-        //             .dst_set(
-        //                 self.render_pipeline_handle
-        //                     .descriptor_handle
-        //                     .descriptor_sets[i],
-        //             )
-        //             .dst_binding(3)
-        //             .dst_array_element(0)
-        //             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-        //             .buffer_info(&dyn_model_matrix_buffer_info);
-
-        //         unsafe {
-        //             self.device_context.device.update_descriptor_sets(
-        //                 &[static_model_matrix_write, dyn_model_matrix_write],
-        //                 &[] as &[vk::CopyDescriptorSet],
-        //             );
-        //         }
-        //     }
-
-        //     Ok(())
+        unsafe {
+            device.update_descriptor_sets(&[descriptor_set_write], &[] as &[vk::CopyDescriptorSet]);
+        }
     }
 
     pub fn copy(
         &self,
         device_context: &DeviceContext,
         command_pool: vk::CommandPool,
-        destination: vk::Buffer,
-        size: vk::DeviceSize,
+        destination: &mut Buffer<T>,
     ) -> Result<()> {
         unsafe {
             let command_buffer =
                 begin_single_time_commands(command_pool, device_context.clone().device)?;
 
-            let regions = vk::BufferCopy::builder().size(size);
+            let regions = vk::BufferCopy::builder()
+                .size(self.element_capacity as u64 * size_of::<T>() as u64);
             device_context.device.cmd_copy_buffer(
                 command_buffer,
                 self.buffer,
-                destination,
+                destination.buffer,
                 &[regions],
             );
 
@@ -260,6 +237,8 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 device_context.device.clone(),
                 device_context.device_queue_handle.clone(),
             )?;
+
+            destination.element_count = self.element_count;
 
             Ok(())
         }
@@ -339,6 +318,8 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         &mut self,
         device_context: &DeviceContext,
         command_pool: vk::CommandPool,
+        descriptor_set: vk::DescriptorSet,
+        descriptor_binding: u32,
         mut items: Vec<T>,
     ) -> Result<()> {
         let (buffer, memory, mapped) = self.get_buffer_parts(device_context, command_pool);
@@ -361,7 +342,13 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             // Combine old and new items
             total_items.extend(items);
 
-            self.recreate(device_context, command_pool, total_items);
+            self.recreate(
+                device_context,
+                command_pool,
+                total_items,
+                descriptor_set,
+                descriptor_binding,
+            );
         }
 
         // Cleanup
@@ -380,6 +367,8 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         &mut self,
         device_context: &DeviceContext,
         command_pool: vk::CommandPool,
+        descriptor_set: vk::DescriptorSet,
+        descriptor_binding: u32,
         start_remove_index: u32,
         stop_remove_index: u32,
     ) -> Result<()> {
@@ -421,7 +410,13 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
                 // Create a new buffer with all the items
                 let available_indices = self.available_indices.clone();
-                self.recreate(device_context, command_pool, total_items);
+                self.recreate(
+                    device_context,
+                    command_pool,
+                    total_items,
+                    descriptor_set,
+                    descriptor_binding,
+                );
                 self.available_indices = available_indices;
             }
         } else {
@@ -433,7 +428,13 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             total_items.drain(start_remove_index as usize..stop_remove_index as usize);
 
             // Create a new buffer with all the items
-            self.recreate(device_context, command_pool, total_items);
+            self.recreate(
+                device_context,
+                command_pool,
+                total_items,
+                descriptor_set,
+                descriptor_binding,
+            );
         }
 
         Ok(())
@@ -444,6 +445,8 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         &mut self,
         context: &DeviceContext,
         command_pool: vk::CommandPool,
+        descriptor_set: vk::DescriptorSet,
+        descriptor_binding: u32,
         item: T,
     ) -> Result<u32> {
         let chosen_index = if self.available_indices.len() > 0 {
@@ -452,7 +455,13 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             Some(&self.element_count)
         };
         let chosen_index = *chosen_index.unwrap();
-        self.add_items(context, command_pool, vec![item])?;
+        self.add_items(
+            context,
+            command_pool,
+            descriptor_set,
+            descriptor_binding,
+            vec![item],
+        )?;
         Ok(chosen_index)
     }
 
@@ -460,9 +469,18 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         &mut self,
         device_context: &DeviceContext,
         command_pool: vk::CommandPool,
+        descriptor_set: vk::DescriptorSet,
+        descriptor_binding: u32,
         index: u32,
     ) -> Result<()> {
-        self.remove_items(device_context, command_pool, index, index + 1)?;
+        self.remove_items(
+            device_context,
+            command_pool,
+            descriptor_set,
+            descriptor_binding,
+            index,
+            index + 1,
+        )?;
         Ok(())
     }
 

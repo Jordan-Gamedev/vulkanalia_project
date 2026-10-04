@@ -394,6 +394,9 @@ impl VulkanRenderer {
 
             // Model Handle
 
+            self.allocator
+                .unmap_memory(self.model_handle.staging_buffer_allocation);
+
             self.allocator.destroy_buffer(
                 self.model_handle.vertex_buffer,
                 self.model_handle.vertex_buffer_allocation,
@@ -406,6 +409,7 @@ impl VulkanRenderer {
                 self.model_handle.staging_buffer,
                 self.model_handle.staging_buffer_allocation,
             );
+
             self.model_handle.mesh_metadata_buffers.destroy(&device);
             self.model_handle.loaded_meshes.clear();
             self.model_handle.uniform_buffers.destroy(&device);
@@ -488,6 +492,10 @@ impl VulkanRenderer {
                 &self.device_context,
                 self.command_handle.command_pool,
                 instances,
+                self.render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_sets[self.command_handle.sync_handle.current_frame],
+                INSTANCE_DATA_BINDING,
             );
             instance_buffer.available_indices.clear();
         }
@@ -512,6 +520,10 @@ impl VulkanRenderer {
                 &self.device_context,
                 self.command_handle.command_pool,
                 model_matrices,
+                self.render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_sets[self.command_handle.sync_handle.current_frame],
+                MODEL_MATRIX_BINDING,
             );
             model_matrix_buffer.available_indices.clear();
         }
@@ -616,6 +628,10 @@ impl VulkanRenderer {
         instance_buffer.remove_item_at(
             &self.device_context,
             self.command_handle.command_pool,
+            self.render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets[self.command_handle.sync_handle.current_frame],
+            INSTANCE_DATA_BINDING,
             remove_index,
         )?;
 
@@ -623,6 +639,10 @@ impl VulkanRenderer {
         model_matrix_buffer.remove_item_at(
             &self.device_context,
             self.command_handle.command_pool,
+            self.render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets[self.command_handle.sync_handle.current_frame],
+            MODEL_MATRIX_BINDING,
             remove_index,
         )?;
 
@@ -909,6 +929,10 @@ impl VulkanRenderer {
         indirect_draw_buffer.add_items(
             &self.device_context,
             self.command_handle.command_pool,
+            self.render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets[self.command_handle.sync_handle.current_frame],
+            INDIRECT_DRAW_BINDING,
             new_indirect_draw_datas,
         )?;
 
@@ -948,6 +972,10 @@ impl VulkanRenderer {
                     .add_item(
                         &self.device_context,
                         self.command_handle.command_pool,
+                        self.render_pipeline_handle
+                            .descriptor_handle
+                            .descriptor_sets[self.command_handle.sync_handle.current_frame],
+                        MESH_METADATA_BINDING,
                         mesh_metadata,
                     )
                     .unwrap() as usize
@@ -990,6 +1018,10 @@ impl VulkanRenderer {
             buffer.remove_item_at(
                 &self.device_context,
                 self.command_handle.command_pool,
+                self.render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_sets[self.command_handle.sync_handle.current_frame],
+                MESH_METADATA_BINDING,
                 unloading_mesh.metadata_index as u32,
             )?;
 
@@ -1013,6 +1045,10 @@ impl VulkanRenderer {
             indirect_draw_buffer.remove_items(
                 &self.device_context,
                 self.command_handle.command_pool,
+                self.render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_sets[self.command_handle.sync_handle.current_frame],
+                INDIRECT_DRAW_BINDING,
                 indirect_draw_data_remove_index as u32,
                 indirect_draw_data_remove_index as u32
                     + unloading_mesh.mesh_allocations.len() as u32,
@@ -1566,9 +1602,6 @@ impl VulkanRenderer {
             self.present_handle.color_texture = create_color_texture(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
             self.present_handle.depth_texture = create_depth_texture(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
 
-            // Update ubos
-            self.model_handle.uniform_buffers = create_uniform_buffers(&self.device_context, self.command_handle.command_pool);
-
             // Update render pipeline
             self.render_pipeline_handle.base_render_pass = create_base_render_pass(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
             self.render_pipeline_handle.descriptor_handle.descriptor_pool = create_descriptor_pool(self.device_context.device.clone())?;
@@ -1579,6 +1612,7 @@ impl VulkanRenderer {
                 self.render_pipeline_handle.base_render_pass,
                 &self.device_context,
             )?;
+            (self.render_pipeline_handle.compute_pipeline, self.render_pipeline_handle.compute_pipeline_layout) = create_compute_pipeline(self.render_pipeline_handle.descriptor_handle.descriptor_set_layout, &self.device_context)?;
             self.render_pipeline_handle.framebuffers = create_framebuffers(
                 &self.present_handle.swapchain_handle,
                 self.present_handle.color_texture,
@@ -1586,6 +1620,7 @@ impl VulkanRenderer {
                 self.render_pipeline_handle.base_render_pass,
                 self.device_context.device.clone()
             )?;
+
             self.render_pipeline_handle.descriptor_handle.descriptor_sets = create_descriptor_sets(
                 &self.device_context,
                 &self.model_handle,
@@ -1618,11 +1653,11 @@ impl VulkanRenderer {
             self.render_pipeline_handle.framebuffers.iter().for_each(|f| device.destroy_framebuffer(*f, None));
             device.destroy_pipeline(self.render_pipeline_handle.pipeline, None);
             device.destroy_pipeline_layout(self.render_pipeline_handle.pipeline_layout, None);
+            device.destroy_pipeline(self.render_pipeline_handle.compute_pipeline, None);
+            device.destroy_pipeline_layout(self.render_pipeline_handle.compute_pipeline_layout, None);
             device.destroy_render_pass(self.render_pipeline_handle.base_render_pass, None);
             self.present_handle.swapchain_handle.image_views.iter().for_each(|v| device.destroy_image_view(*v, None));
             device.destroy_swapchain_khr(self.present_handle.swapchain_handle.swapchain, None);
-            // self.model_handle.uniform_buffers.iter_mut().for_each(|b| b.destroy(&device));
-            // self.model_handle.uniform_buffers.clear();
         }
     }
 
@@ -1653,29 +1688,65 @@ impl VulkanRenderer {
             .iter()
             .for_each(|a| self.try_unload_mesh(*a).unwrap());
 
-        self.command_handle
-            .indirect_draw_buffers
-            .update(&self.device_context, self.command_handle.command_pool);
+        self.model_handle.uniform_buffers.update(
+            &self.device_context,
+            self.command_handle.command_pool,
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            UBO_BINDING,
+        );
 
-        self.command_handle
-            .instance_buffers
-            .update(&self.device_context, self.command_handle.command_pool);
+        self.model_handle.model_matrix_buffers.update(
+            &self.device_context,
+            self.command_handle.command_pool,
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            MODEL_MATRIX_BINDING,
+        );
 
-        self.command_handle
-            .main_camera_visbuffers
-            .update(&self.device_context, self.command_handle.command_pool);
+        self.command_handle.indirect_draw_buffers.update(
+            &self.device_context,
+            self.command_handle.command_pool,
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            INDIRECT_DRAW_BINDING,
+        );
 
-        self.model_handle
-            .model_matrix_buffers
-            .update(&self.device_context, self.command_handle.command_pool);
+        self.command_handle.instance_buffers.update(
+            &self.device_context,
+            self.command_handle.command_pool,
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            INSTANCE_DATA_BINDING,
+        );
 
-        self.model_handle
-            .mesh_metadata_buffers
-            .update(&self.device_context, self.command_handle.command_pool);
+        self.model_handle.mesh_metadata_buffers.update(
+            &self.device_context,
+            self.command_handle.command_pool,
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            MESH_METADATA_BINDING,
+        );
 
-        self.model_handle
-            .uniform_buffers
-            .update(&self.device_context, self.command_handle.command_pool);
+        self.command_handle.main_camera_visbuffers.update(
+            &self.device_context,
+            self.command_handle.command_pool,
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            VISBUFFER_BINDING,
+        );
     }
 
     /// Renders a frame for the Vulkan app
@@ -1909,62 +1980,6 @@ impl VulkanRenderer {
 
         Ok(())
     }
-
-    // fn update_model_matrix_buffer_descriptors(&self) -> Result<()> {
-    //     if self
-    //         .render_pipeline_handle
-    //         .descriptor_handle
-    //         .descriptor_sets
-    //         .is_empty()
-    //     {
-    //         return Ok(());
-    //     }
-
-    //     for i in 0..MAX_FRAMES_IN_FLIGHT as usize {
-    //         let static_model_matrix_info = vk::DescriptorBufferInfo::builder()
-    //             .buffer(self.model_handle.static_model_matrix_buffer.buffer)
-    //             .offset(0)
-    //             .range(vk::WHOLE_SIZE);
-
-    //         let static_model_matrix_buffer_info = [static_model_matrix_info];
-    //         let static_model_matrix_write = vk::WriteDescriptorSet::builder()
-    //             .dst_set(
-    //                 self.render_pipeline_handle
-    //                     .descriptor_handle
-    //                     .descriptor_sets[i],
-    //             )
-    //             .dst_binding(2)
-    //             .dst_array_element(0)
-    //             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-    //             .buffer_info(&static_model_matrix_buffer_info);
-
-    //         let dyn_model_matrix_info = vk::DescriptorBufferInfo::builder()
-    //             .buffer(self.model_handle.dyn_model_matrix_buffer.buffer)
-    //             .offset(0)
-    //             .range(vk::WHOLE_SIZE);
-
-    //         let dyn_model_matrix_buffer_info = [dyn_model_matrix_info];
-    //         let dyn_model_matrix_write = vk::WriteDescriptorSet::builder()
-    //             .dst_set(
-    //                 self.render_pipeline_handle
-    //                     .descriptor_handle
-    //                     .descriptor_sets[i],
-    //             )
-    //             .dst_binding(3)
-    //             .dst_array_element(0)
-    //             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-    //             .buffer_info(&dyn_model_matrix_buffer_info);
-
-    //         unsafe {
-    //             self.device_context.device.update_descriptor_sets(
-    //                 &[static_model_matrix_write, dyn_model_matrix_write],
-    //                 &[] as &[vk::CopyDescriptorSet],
-    //             );
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
 }
 
 // ______________________________________________________________________________________________________________________________________________________
@@ -2890,6 +2905,15 @@ unsafe fn ensure_wayland_env() {}
 /// Maximum number of textures that can be loaded in memory at any one time
 const BINDLESS_TEXTURE_COUNT: u32 = 5_000;
 
+const TEXTURE_BINDING: u32 = 0;
+const SAMPLER_BINDING: u32 = 1;
+const UBO_BINDING: u32 = 2;
+const MODEL_MATRIX_BINDING: u32 = 3;
+const INDIRECT_DRAW_BINDING: u32 = 4;
+const INSTANCE_DATA_BINDING: u32 = 5;
+const MESH_METADATA_BINDING: u32 = 6;
+const VISBUFFER_BINDING: u32 = 7;
+
 // Build Functions
 
 unsafe fn create_base_render_pass(
@@ -2994,49 +3018,49 @@ unsafe fn create_base_render_pass(
 
 unsafe fn create_descriptor_set_layout(device: Device) -> Result<vk::DescriptorSetLayout> {
     let texture_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(0)
+        .binding(TEXTURE_BINDING)
         .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
         .descriptor_count(BINDLESS_TEXTURE_COUNT)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(1)
+        .binding(SAMPLER_BINDING)
         .descriptor_type(vk::DescriptorType::SAMPLER)
         .descriptor_count(BINDLESS_TEXTURE_COUNT)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
     let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(2)
+        .binding(UBO_BINDING)
         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::VERTEX);
 
     let model_matrix_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(3)
+        .binding(MODEL_MATRIX_BINDING)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::VERTEX);
 
     let indirect_draw_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(4)
+        .binding(INDIRECT_DRAW_BINDING)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
 
     let instance_data_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(5)
+        .binding(INSTANCE_DATA_BINDING)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
 
     let mesh_metadata_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(6)
+        .binding(MESH_METADATA_BINDING)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::COMPUTE);
 
     let visbuffer_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(7)
+        .binding(VISBUFFER_BINDING)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
@@ -3153,10 +3177,9 @@ unsafe fn create_descriptor_sets(
             .buffer(model_handle.uniform_buffers.buffers[i].buffer)
             .offset(0)
             .range(size_of::<UniformBufferObject>() as u64)];
-
         let ubo_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
-            .dst_binding(2)
+            .dst_binding(UBO_BINDING)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .buffer_info(&ubo_info);
@@ -3165,10 +3188,9 @@ unsafe fn create_descriptor_sets(
             .buffer(model_handle.model_matrix_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
-
         let model_matrix_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
-            .dst_binding(3)
+            .dst_binding(MODEL_MATRIX_BINDING)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&model_matrix_info);
@@ -3177,10 +3199,9 @@ unsafe fn create_descriptor_sets(
             .buffer(indirect_draw_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
-
         let indirect_draw_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
-            .dst_binding(4)
+            .dst_binding(INDIRECT_DRAW_BINDING)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&indirect_draw_info);
@@ -3189,10 +3210,9 @@ unsafe fn create_descriptor_sets(
             .buffer(instance_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
-
         let instance_data_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
-            .dst_binding(5)
+            .dst_binding(INSTANCE_DATA_BINDING)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&instance_data_info);
@@ -3201,10 +3221,9 @@ unsafe fn create_descriptor_sets(
             .buffer(model_handle.mesh_metadata_buffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
-
         let mesh_metadata_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
-            .dst_binding(6)
+            .dst_binding(MESH_METADATA_BINDING)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&mesh_metadata_info);
@@ -3213,10 +3232,9 @@ unsafe fn create_descriptor_sets(
             .buffer(main_camera_visbuffers.buffers[i].buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE)];
-
         let visbuffer_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
-            .dst_binding(7)
+            .dst_binding(VISBUFFER_BINDING)
             .dst_array_element(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&visbuffer_info);
@@ -3561,7 +3579,7 @@ fn create_instance_buffers(
     device_context: &DeviceContext,
     command_pool: vk::CommandPool,
 ) -> InFlightBuffers<PerInstanceData> {
-    InFlightBuffers::new(
+    let mut buffers = InFlightBuffers::new(
         MAX_FRAMES_IN_FLIGHT as usize,
         device_context,
         command_pool,
@@ -3571,7 +3589,13 @@ fn create_instance_buffers(
         INSTANCE_CHUNK_COUNT as u32,
         vec![PerInstanceData::default(); INSTANCE_CHUNK_COUNT],
         false,
-    )
+    );
+
+    for i in 0..buffers.buffers.len() {
+        buffers.buffers.get_mut(i).unwrap().element_count = 0;
+    }
+
+    buffers
 }
 
 fn create_visbuffers(
@@ -3823,7 +3847,7 @@ fn create_model_matrix_buffers(
     device_context: DeviceContext,
     command_pool: vk::CommandPool,
 ) -> InFlightBuffers<QuantizedModelMatrix> {
-    InFlightBuffers::new(
+    let mut buffers = InFlightBuffers::new(
         MAX_FRAMES_IN_FLIGHT as usize,
         &device_context,
         command_pool,
@@ -3833,7 +3857,13 @@ fn create_model_matrix_buffers(
         INSTANCE_CHUNK_COUNT as u32,
         vec![QuantizedModelMatrix::default(); INSTANCE_CHUNK_COUNT],
         false,
-    )
+    );
+
+    for i in 0..buffers.buffers.len() {
+        buffers.buffers.get_mut(i).unwrap().element_count = 0;
+    }
+
+    buffers
 }
 
 fn create_mesh_metadata_buffers(
@@ -4105,7 +4135,7 @@ pub fn update_bindless_texture(
     for descriptor_set in descriptor_sets {
         let write_set = vk::WriteDescriptorSet::builder()
             .dst_set(*descriptor_set)
-            .dst_binding(0)
+            .dst_binding(TEXTURE_BINDING)
             .dst_array_element(slot_index)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .image_info(image_info);
@@ -4135,7 +4165,7 @@ pub fn update_bindless_sampler(
     for descriptor_set in descriptor_sets {
         let write_set = vk::WriteDescriptorSet::builder()
             .dst_set(*descriptor_set)
-            .dst_binding(1)
+            .dst_binding(SAMPLER_BINDING)
             .dst_array_element(slot_index)
             .descriptor_type(vk::DescriptorType::SAMPLER)
             .image_info(sampler_info);
