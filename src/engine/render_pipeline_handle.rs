@@ -7,7 +7,7 @@ pub struct RenderPipelineHandle {
     pub descriptor_handle: DescriptorHandle,
     pub pipeline: vk::Pipeline,
     pub pipeline_layout: vk::PipelineLayout,
-    pub compute_pipeline: vk::Pipeline,
-    pub compute_pipeline_layout: vk::PipelineLayout,
+    pub culling_pipelines: Vec<vk::Pipeline>,
+    pub culling_pipeline_layouts: Vec<vk::PipelineLayout>,
     pub framebuffers: Vec<vk::Framebuffer>,
 }

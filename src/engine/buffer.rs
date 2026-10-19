@@ -291,15 +291,13 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
         unsafe {
             // Get CPU visible buffer data
-            let (buffer, memory, _) = self.get_buffer_parts(device_context, command_pool);
+            let (buffer, memory, mapped) = self.get_buffer_parts(device_context, command_pool);
 
             // Collect contents
             let mut contents: Vec<T> = Vec::with_capacity(self.element_capacity as usize);
-            if self.is_host_visible {
-                for i in 0..self.element_capacity {
-                    if include_empty || !self.available_indices.contains(&i) {
-                        contents.push(self.mapped.add(i as usize).read());
-                    }
+            for i in 0..self.element_capacity {
+                if include_empty || !self.available_indices.contains(&i) {
+                    contents.push(mapped.add(i as usize).read());
                 }
             }
 
@@ -324,8 +322,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     ) -> Result<()> {
         let (buffer, memory, mapped) = self.get_buffer_parts(device_context, command_pool);
 
-        while self.is_preserving_indices
-            && items.len() > 0
+        while items.len() > 0
             && let Some(available_index) = self.available_indices.pop_first()
             && let Some(next_item) = items.pop()
         {

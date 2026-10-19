@@ -61,6 +61,10 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
         &mut self.buffers[self.current_frame_index]
     }
 
+    pub fn temp_get_current_frame(&self) -> usize {
+        self.current_frame_index
+    }
+
     // Call if you want the other frame's versions of the buffer to be overwritten by data from this buffer
     pub fn signal_buffer_change_propagation(&mut self) {
         self.num_frames_needing_update = self.buffers.len() - 1;

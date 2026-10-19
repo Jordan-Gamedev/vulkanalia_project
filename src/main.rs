@@ -41,6 +41,8 @@ fn main() {
         .add_systems(Startup, init_spawn)
         .add_systems(Update, gameplay_update);
 
+    let mut is_start = true;
+
     // Set a custom runner that drives the event loop and satisfies the return type
     bevy_app.set_runner(move |mut app| {
         event_loop
@@ -58,9 +60,14 @@ fn main() {
                         WindowEvent::RedrawRequested if !elwt.exiting() => {
                             // 1. Start of frame updates from the renderer
                             {
-                                let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
-                                renderer.start_of_frame_updates();
+                                if is_start {
+                                    is_start = false;
+                                } else {
+                                    let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
+                                    renderer.start_of_frame_updates();
+                                }
                             }
+
                             // 2. Run systems
                             app.update();
 

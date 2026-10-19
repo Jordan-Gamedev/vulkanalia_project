@@ -276,10 +276,12 @@ fn compile_shaders() -> Result<()> {
         for i in 0..shader_lines.len() {
             let mut line_index = i;
 
-            if shader_lines[line_index].contains("[shader(") {
+            if !shader_lines[line_index].starts_with("//")
+                && shader_lines[line_index].contains("[shader(")
+            {
                 line_index += 1;
                 let mut next_line = shader_lines[line_index];
-                while next_line.starts_with("[") {
+                while next_line.starts_with("//") || next_line.starts_with("[") {
                     line_index += 1;
                     next_line = shader_lines[line_index];
                 }

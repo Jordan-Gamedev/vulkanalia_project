@@ -7,8 +7,8 @@ pub struct MeshMetadata {
     pub max_aabb: Vec3,
     pub cull_percentage: u16,
     pub lod3_percentage: u16,
-    pub lod2_percentage: u8,
-    pub lod1_percentage: u8,
+    pub lod2_percentage: u16,
+    pub lod1_percentage: u16,
 }
 
 impl Eq for MeshMetadata {}
@@ -24,8 +24,8 @@ impl MeshMetadata {
     ) -> Self {
         let cull_percentage: u16 = (cull_percentage * u16::MAX as f32) as u16;
         let lod3_percentage: u16 = (lod3_percentage * u16::MAX as f32) as u16;
-        let lod2_percentage: u8 = (lod2_percentage * u8::MAX as f32) as u8;
-        let lod1_percentage: u8 = (lod1_percentage * u8::MAX as f32) as u8;
+        let lod2_percentage: u16 = (lod2_percentage * u16::MAX as f32) as u16;
+        let lod1_percentage: u16 = (lod1_percentage * u16::MAX as f32) as u16;
 
         Self {
             min_aabb,
