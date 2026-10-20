@@ -42,7 +42,12 @@ pub struct CubePrefab;
 impl Prefab<(TransformComponent, RenderComponent)> for CubePrefab {
     fn component_bundle() -> (TransformComponent, RenderComponent) {
         (
-            TransformComponent::new(Vec3::ZERO, Vec3::ONE, Quat::IDENTITY),
+            TransformComponent::new(
+                Vec3::new(0.0, 0.0, 0.0),
+                //Vec3::ONE,
+                Vec3::new(0.15, 0.15, 0.15),
+                Quat::IDENTITY,
+            ),
             RenderComponent::new(
                 AssetId::CubeMesh,
                 Material::new(

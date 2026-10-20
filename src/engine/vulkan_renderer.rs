@@ -1172,7 +1172,6 @@ impl VulkanRenderer {
         };
 
         let format = vk::Format::from_raw(texture.vk_format().as_raw() as i32);
-        let pixel_data = texture.get_image_data(0, 0, 0).unwrap();
         let mipmap_levels = texture.levels();
 
         // Update sampler contents mipmap levels
@@ -1191,7 +1190,7 @@ impl VulkanRenderer {
         // Create (staging)
 
         let (staging_buffer, staging_buffer_memory, staging_buffer_mapped) =
-            Buffer::<*const c_void>::create_buffer(
+            Buffer::<u8>::create_buffer(
                 &device_context,
                 total_size,
                 vk::BufferUsageFlags::TRANSFER_SRC,
@@ -2241,7 +2240,7 @@ impl VulkanRenderer {
             self.present_handle.swapchain_handle.extent.width as f32
                 / self.present_handle.swapchain_handle.extent.height as f32,
             0.1,
-            10.0,
+            1000.0,
         );
 
         proj.col_mut(1).y *= -1.0;
@@ -4282,7 +4281,7 @@ pub fn create_sampler(device: Device, sampler_contents: SamplerContents) -> vk::
         .compare_op(vk::CompareOp::ALWAYS)
         .mipmap_mode(sampler_contents.mipmap_mode)
         .min_lod(0.0)
-        .max_lod(sampler_contents.mipmap_levels as f32)
+        .max_lod(vk::LOD_CLAMP_NONE)
         .mip_lod_bias(0.0);
     unsafe { device.create_sampler(&info, None).unwrap() }
 }

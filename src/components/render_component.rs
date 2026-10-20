@@ -55,7 +55,6 @@ impl RenderComponent {
                 .get_mut::<TransformComponent>()
                 .unwrap()
         };
-        transform_component.scale = Vec3::new(1.0, 1.0, 1.0);
 
         // Fetch the render component directly from cell
         let mut render = unsafe {

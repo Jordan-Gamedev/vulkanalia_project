@@ -143,7 +143,7 @@ impl QuantizedVertex {
         let position = vk::VertexInputAttributeDescription::builder()
             .binding(0)
             .location(0)
-            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .format(vk::Format::R32G32B32_SFLOAT)
             .offset(0)
             .build();
 
@@ -152,7 +152,7 @@ impl QuantizedVertex {
             .binding(0)
             .location(1)
             .format(vk::Format::A2R10G10B10_SNORM_PACK32)
-            .offset(size_of::<[f32; 4]>() as u32)
+            .offset(12)
             .build();
 
         // Tangent as WXYZ 2bits 10bits 10bits 10bits
@@ -160,7 +160,7 @@ impl QuantizedVertex {
             .binding(0)
             .location(2)
             .format(vk::Format::A2R10G10B10_SNORM_PACK32)
-            .offset(size_of::<[f32; 4]>() as u32 + size_of::<u32>() as u32)
+            .offset(16)
             .build();
 
         // UV as XY f16 f16
@@ -168,9 +168,7 @@ impl QuantizedVertex {
             .binding(0)
             .location(3)
             .format(vk::Format::R16G16_SFLOAT)
-            .offset(
-                size_of::<[f32; 4]>() as u32 + size_of::<u32>() as u32 + size_of::<u32>() as u32,
-            )
+            .offset(20)
             .build();
 
         // Bone ids as 0-255 0-255 0-255 0-255 8bits 8bits 8bits 8bits
@@ -178,6 +176,7 @@ impl QuantizedVertex {
             .binding(0)
             .location(4)
             .format(vk::Format::R8G8B8A8_UINT)
+            .offset(24)
             .build();
 
         // Max of 4 bone weights as 0-255 0-255 0-255 0-255 8bits 8bits 8bits 8bits
@@ -185,12 +184,7 @@ impl QuantizedVertex {
             .binding(0)
             .location(5)
             .format(vk::Format::R8G8B8A8_UNORM)
-            .offset(
-                size_of::<[f32; 4]>() as u32
-                    + size_of::<u32>() as u32
-                    + size_of::<u32>() as u32
-                    + size_of::<[u16; 2]>() as u32,
-            )
+            .offset(28)
             .build();
 
         Ok([position, bone_ids, normal, tangent, uv, bone_weights])
