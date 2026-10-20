@@ -86,7 +86,6 @@ unsafe impl Send for VulkanRenderer {}
 pub static VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<Mutex<VulkanRenderer>> =
     std::sync::LazyLock::new(|| Mutex::new(VulkanRenderer::new().unwrap()));
 
-// ------------------ TODO: Implement vma textures
 impl VulkanRenderer {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -147,11 +146,11 @@ impl VulkanRenderer {
 
             // Create screen color texture
             let color_texture =
-                create_color_texture(&device_context, &swapchain_handle, msaa_samples)?;
+                create_color_texture(&device_context, &allocator, &swapchain_handle, msaa_samples)?;
 
             // Create screen depth texture
             let depth_texture =
-                create_depth_texture(&device_context, &swapchain_handle, msaa_samples)?;
+                create_depth_texture(&device_context, &allocator, &swapchain_handle, msaa_samples)?;
 
             // Finalize present handle
             let present_handle = PresentHandle {
@@ -326,8 +325,12 @@ impl VulkanRenderer {
 
             // Present Handle
 
-            self.present_handle.depth_texture.destroy(device.clone());
-            self.present_handle.color_texture.destroy(device.clone());
+            self.present_handle
+                .depth_texture
+                .destroy(device.clone(), &self.allocator);
+            self.present_handle
+                .color_texture
+                .destroy(device.clone(), &self.allocator);
             self.present_handle
                 .swapchain_handle
                 .image_views
@@ -424,7 +427,7 @@ impl VulkanRenderer {
             // Texture Handle
 
             self.texture_handle.loaded_textures.values().for_each(|t| {
-                t.texture.destroy(device.clone());
+                t.texture.destroy(device.clone(), &self.allocator);
             });
             self.texture_handle
                 .samplers
@@ -954,7 +957,6 @@ impl VulkanRenderer {
         for i in mesh_allocations.len()..4 {
             new_indirect_draw_datas.push(IndirectDrawData::default());
         }
-        new_indirect_draw_datas.reverse();
 
         let indirect_draw_buffer = self.command_handle.indirect_draw_buffers.get_current_mut();
         indirect_draw_buffer.add_items(
@@ -966,6 +968,10 @@ impl VulkanRenderer {
             INDIRECT_DRAW_BINDING,
             new_indirect_draw_datas,
         )?;
+
+        let draws = indirect_draw_buffer
+            .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            .unwrap();
 
         // Signal that indirect draw buffer and mesh metadata buffer have changed to other frames in flight
 
@@ -1220,8 +1226,8 @@ impl VulkanRenderer {
 
         // Create (Image)
 
-        let (texture_image, texture_image_memory) = create_image(
-            device_context.clone(),
+        let (texture_image, texture_allocation) = create_image(
+            &self.allocator,
             texture.width(),
             texture.height(),
             mipmap_levels,
@@ -1245,6 +1251,7 @@ impl VulkanRenderer {
         )?;
 
         // Copy each mip level from the staging buffer into the corresponding image mip level
+
         let command_buffer = begin_single_time_commands(
             self.command_handle.command_pool,
             device_context.clone().device,
@@ -1318,6 +1325,7 @@ impl VulkanRenderer {
         }
 
         // Create view
+
         let image_view = create_image_view(
             device_context.clone().device,
             texture_image,
@@ -1327,6 +1335,7 @@ impl VulkanRenderer {
         )?;
 
         // Add one to the usage count if a sampler was found that already has required specifications, otherwise create sampler
+
         let sampler = if let Some(usage) = self.texture_handle.samplers.get_mut(&sampler_contents) {
             usage.instance_count += 1;
             self.texture_handle.samplers[&sampler_contents].sampler
@@ -1361,6 +1370,7 @@ impl VulkanRenderer {
         };
 
         // Add texture to array of textures
+
         let slot_index: u32 = if self.texture_handle.available_texture_slots.len() > 0 {
             self.texture_handle.available_texture_slots.pop().unwrap()
         } else {
@@ -1371,8 +1381,8 @@ impl VulkanRenderer {
             TextureUsage {
                 texture: Texture {
                     image: texture_image,
-                    image_memory: texture_image_memory,
-                    image_view,
+                    allocation: texture_allocation,
+                    view: image_view,
                 },
                 slot_index,
                 instance_count: 1,
@@ -1380,6 +1390,7 @@ impl VulkanRenderer {
         );
 
         // Update bindless descriptor
+
         update_bindless_texture(
             &device_context,
             &self
@@ -1421,35 +1432,29 @@ impl VulkanRenderer {
             self.texture_handle
                 .available_texture_slots
                 .push(unloading_texture.slot_index);
-            unsafe {
-                self.device_context
-                    .device
-                    .destroy_image_view(unloading_texture.texture.image_view, None);
-                self.device_context
-                    .device
-                    .destroy_image(unloading_texture.texture.image, None);
-                self.device_context
-                    .device
-                    .free_memory(unloading_texture.texture.image_memory, None);
+            unloading_texture
+                .texture
+                .destroy(self.device_context.clone().device, &self.allocator);
 
-                // Unload sampler if no more textures use this sampler
-                let sampler = self.texture_handle.samplers[&sampler_contents]
-                    .sampler
-                    .clone();
-                let slot_index = self.texture_handle.samplers[&sampler_contents].slot_index;
-                let should_unload_sampler: bool =
-                    if let Some(usage) = self.texture_handle.samplers.get_mut(&sampler_contents) {
-                        usage.instance_count -= 1;
-                        usage.instance_count == 0
-                    } else {
-                        false
-                    };
+            // Unload sampler if no more textures use this sampler
+            let sampler = self.texture_handle.samplers[&sampler_contents]
+                .sampler
+                .clone();
+            let slot_index = self.texture_handle.samplers[&sampler_contents].slot_index;
+            let should_unload_sampler: bool =
+                if let Some(usage) = self.texture_handle.samplers.get_mut(&sampler_contents) {
+                    usage.instance_count -= 1;
+                    usage.instance_count == 0
+                } else {
+                    false
+                };
 
-                if should_unload_sampler {
+            if should_unload_sampler {
+                unsafe {
                     self.device_context.device.destroy_sampler(sampler, None);
-                    self.texture_handle.samplers.remove(&sampler_contents);
-                    self.texture_handle.available_sampler_slots.push(slot_index);
                 }
+                self.texture_handle.samplers.remove(&sampler_contents);
+                self.texture_handle.available_sampler_slots.push(slot_index);
             }
         }
 
@@ -1490,7 +1495,7 @@ impl VulkanRenderer {
 
         let (vertex_virtual_alloc, vertex_virtual_alloc_offset) = match self
             .model_handle
-            .index_buffer_virtual_block
+            .vertex_buffer_virtual_block
             .allocate(&vertex_alloc_request)
         {
             Ok((alloc, offset)) => (alloc, offset),
@@ -1641,8 +1646,8 @@ impl VulkanRenderer {
 
             // Update presentation
             self.present_handle.swapchain_handle = create_swapchain(&self.device_context, &self.present_handle.window_handle.window, self.present_handle.window_handle.surface)?;
-            self.present_handle.color_texture = create_color_texture(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
-            self.present_handle.depth_texture = create_depth_texture(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
+            self.present_handle.color_texture = create_color_texture(&self.device_context, &self.allocator, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
+            self.present_handle.depth_texture = create_depth_texture(&self.device_context, &self.allocator, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
 
             // Update render pipeline
             self.render_pipeline_handle.base_render_pass = create_base_render_pass(&self.device_context, &self.present_handle.swapchain_handle, self.present_handle.msaa_samples)?;
@@ -1690,8 +1695,8 @@ impl VulkanRenderer {
                 device.free_command_buffers(self.command_handle.command_pool, &self.command_handle.command_buffers);
             }
             device.destroy_descriptor_pool(self.render_pipeline_handle.descriptor_handle.descriptor_pool, None);
-            self.present_handle.depth_texture.destroy(device.clone());
-            self.present_handle.color_texture.destroy(device.clone());
+            self.present_handle.depth_texture.destroy(device.clone(), &self.allocator);
+            self.present_handle.color_texture.destroy(device.clone(), &self.allocator);
             self.render_pipeline_handle.framebuffers.iter().for_each(|f| device.destroy_framebuffer(*f, None));
             device.destroy_pipeline(self.render_pipeline_handle.pipeline, None);
             device.destroy_pipeline_layout(self.render_pipeline_handle.pipeline_layout, None);
@@ -1822,42 +1827,24 @@ impl VulkanRenderer {
             //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
             //     .unwrap();
 
-            // let d = PerInstanceData {
-            //     texture_index: 0,
-            //     sampler_index: 0,
-            //     mesh_metadata_index: 0,
-            //     mesh_asset_id: 4,
-            // };
-            // if instances[0] != d {
-            //     for i in 0..instances.len().min(10) {
-            //         //println!("{:#?}", instances[i]);
-            //         if !instances[i].eq(&PerInstanceData::default()) {
-            //             println!("{:#?}", instances[i]);
-            //         }
-            //     }
-            //     println!("-----------------------------------------------------------------");
+            // for i in 0..instances.len().min(10) {
+            //     println!("{:#?}", instances[i]);
+            //     // if !instances[i].eq(&PerInstanceData::default()) {
+            //     //     println!("{:#?}", instances[i]);
+            //     // }
             // }
+            // println!("-----------------------------------------------------------------");
+            // for i in 0..visbuffer_items.len().min(10) {
+            //     print!("{}  ", visbuffer_items[i]);
+            // }
+            // println!("\n-----------------------------------------------------------------");
 
-            // if visbuffer_items[0] != 4
-            //     && visbuffer_items[1] != 0
-            //     && visbuffer_items[2] != 1
-            //     && visbuffer_items[3] != 2
-            // {
-            //     for i in 0..visbuffer_items.len().min(10) {
-            //         print!("{}  ", visbuffer_items[i]);
-            //     }
-            //     println!("\n-----------------------------------------------------------------");
+            // for i in 0..draws.len().min(8) {
+            //     println!("{:#?}", draws[i]);
+            //     //println!("{}", draws[i].instance_count);
             // }
-
-            // let i = IndirectDrawData::new(36, 1, 224, 0, 0);
-            // if draws[0] != i {
-            //     for i in 0..draws.len().min(1) {
-            //         println!("{:#?}", draws[i]);
-            //         //println!("{}", draws[i].instance_count);
-            //     }
-            //     println!("-----------------------------------------------------------------");
-            //     println!("-----------------------------------------------------------------");
-            // }
+            // println!("-----------------------------------------------------------------");
+            // println!("-----------------------------------------------------------------");
 
             //let start = Instant::now();
 
@@ -2230,9 +2217,9 @@ impl VulkanRenderer {
         // MVP
 
         let view = Mat4::look_at_rh(
-            vec3(2.0, 2.0, 2.0),
+            vec3(0.0, 0.0, -10.0),
             vec3(0.0, 0.0, 0.0),
-            vec3(0.0, 0.0, 1.0),
+            vec3(0.0, 1.0, 0.0),
         );
 
         let mut proj = glam::Mat4::perspective_rh(
@@ -2958,13 +2945,14 @@ unsafe fn create_swapchain(
 
 unsafe fn create_color_texture(
     device_context: &DeviceContext,
+    allocator: &vma::Allocator,
     swapchain_handle: &SwapchainHandle,
     msaa_samples: vk::SampleCountFlags,
 ) -> Result<Texture> {
     // Image + Image Memory
 
-    let (color_image, color_image_memory) = create_image(
-        device_context.clone(),
+    let (color_image, color_image_allocation) = create_image(
+        allocator,
         swapchain_handle.extent.width,
         swapchain_handle.extent.height,
         1,
@@ -2974,9 +2962,6 @@ unsafe fn create_color_texture(
         vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )?;
-
-    let color_image = color_image;
-    let color_image_memory = color_image_memory;
 
     // Image View
 
@@ -2990,13 +2975,14 @@ unsafe fn create_color_texture(
 
     Ok(Texture {
         image: color_image,
-        image_memory: color_image_memory,
-        image_view: color_image_view,
+        allocation: color_image_allocation,
+        view: color_image_view,
     })
 }
 
 unsafe fn create_depth_texture(
     device_context: &DeviceContext,
+    allocator: &vma::Allocator,
     swapchain_handle: &SwapchainHandle,
     msaa_samples: vk::SampleCountFlags,
 ) -> Result<Texture> {
@@ -3007,8 +2993,8 @@ unsafe fn create_depth_texture(
         device_context.physical_device,
     )?;
 
-    let (depth_image, depth_image_memory) = create_image(
-        device_context.clone(),
+    let (depth_image, depth_image_allocation) = create_image(
+        allocator,
         swapchain_handle.extent.width,
         swapchain_handle.extent.height,
         1,
@@ -3018,9 +3004,6 @@ unsafe fn create_depth_texture(
         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )?;
-
-    let depth_image = depth_image;
-    let depth_image_memory = depth_image_memory;
 
     // Image view
 
@@ -3034,8 +3017,8 @@ unsafe fn create_depth_texture(
 
     Ok(Texture {
         image: depth_image,
-        image_memory: depth_image_memory,
-        image_view: depth_image_view,
+        allocation: depth_image_allocation,
+        view: depth_image_view,
     })
 }
 
@@ -3767,7 +3750,7 @@ unsafe fn create_framebuffers(
         .image_views
         .iter()
         .map(|i| {
-            let attachments = &[color_texture.image_view, depth_texture.image_view, *i];
+            let attachments = &[color_texture.view, depth_texture.view, *i];
             let create_info = vk::FramebufferCreateInfo::builder()
                 .render_pass(render_pass)
                 .attachments(attachments)
@@ -4287,7 +4270,7 @@ pub fn create_sampler(device: Device, sampler_contents: SamplerContents) -> vk::
 }
 
 pub fn create_image(
-    device_context: DeviceContext,
+    allocator: &vma::Allocator,
     width: u32,
     height: u32,
     mipmap_levels: u32,
@@ -4296,7 +4279,7 @@ pub fn create_image(
     tiling: vk::ImageTiling,
     usage: vk::ImageUsageFlags,
     properties: vk::MemoryPropertyFlags,
-) -> Result<(vk::Image, vk::DeviceMemory)> {
+) -> Result<(vk::Image, vma::Allocation)> {
     // Image
 
     let info = vk::ImageCreateInfo::builder()
@@ -4315,30 +4298,18 @@ pub fn create_image(
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .samples(samples);
 
-    unsafe {
-        let image = device_context.device.create_image(&info, None)?;
+    let alloc_options = vma::AllocationOptions {
+        flags: vma::AllocationCreateFlags::DEDICATED_MEMORY,
+        usage: vma::MemoryUsage::AutoPreferDevice,
+        required_flags: vk::MemoryPropertyFlags::empty(),
+        preferred_flags: vk::MemoryPropertyFlags::empty(),
+        memory_type_bits: 0,
+        priority: 0.0,
+    };
 
-        // Memory
+    let (image, allocation) = unsafe { allocator.create_image(info, &alloc_options).unwrap() };
 
-        let requirements = device_context.device.get_image_memory_requirements(image);
-
-        let info = vk::MemoryAllocateInfo::builder()
-            .allocation_size(requirements.size)
-            .memory_type_index(get_memory_type_index(
-                &device_context.instance,
-                device_context.physical_device,
-                properties,
-                requirements,
-            )?);
-
-        let image_memory = device_context.device.allocate_memory(&info, None)?;
-
-        device_context
-            .device
-            .bind_image_memory(image, image_memory, 0)?;
-
-        Ok((image, image_memory))
-    }
+    Ok((image, allocation))
 }
 
 pub fn create_image_view(
@@ -4505,7 +4476,7 @@ pub fn refresh_bindless_textures(
             descriptor_sets,
             texture_handle,
             texture.slot_index,
-            texture.texture.image_view,
+            texture.texture.view,
         )?;
     }
     for sampler_usage in texture_handle.samplers.values() {

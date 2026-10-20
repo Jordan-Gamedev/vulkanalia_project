@@ -1,6 +1,6 @@
 use crate::engine::Texture;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct TextureUsage {
     pub texture: Texture,
     pub slot_index: u32,

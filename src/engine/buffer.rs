@@ -88,7 +88,8 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                     buffer: device_buffer,
                     memory: device_buffer_memory,
                     mapped: std::ptr::null_mut(),
-                    available_indices: std::collections::BTreeSet::new(),
+                    available_indices: (initial_contents.len() as u32..initial_capacity as u32)
+                        .collect(),
                     element_count: initial_contents.len() as u32,
                     element_capacity: initial_capacity as u32,
                     alloc_dealloc_threshold: alloc_dealloc_threshold,
@@ -324,9 +325,8 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
         while items.len() > 0
             && let Some(available_index) = self.available_indices.pop_first()
-            && let Some(next_item) = items.pop()
         {
-            unsafe { *self.mapped.add(available_index as usize).cast_mut() = next_item };
+            unsafe { *mapped.add(available_index as usize).cast_mut() = items.remove(0) };
             self.element_count += 1;
         }
 
