@@ -24,6 +24,7 @@ use winit::event::WindowEvent::KeyboardInput;
 use winit::event::{ElementState, MouseButton};
 use winit::event::{Event, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::CursorGrabMode;
 
 // Runs exactly once at startup
 fn init_spawn(mut commands: Commands) {
@@ -36,6 +37,8 @@ fn gameplay_update(mut _commands: Commands) {
 }
 
 fn keyboard_input_update(input_manager: Res<InputManager>) {
+    // Jump logs
+
     if input_manager.jump_input.is_pressed {
         println!("JUMP pressed");
     }
@@ -54,65 +57,39 @@ fn keyboard_input_update(input_manager: Res<InputManager>) {
             input_manager.jump_input.hold_time
         );
     }
-}
 
-fn mouse_click_update(mouse_input: Res<ButtonInput<MouseButton>>) {
-    if mouse_input.just_pressed(MouseButton::Left) {
-        println!("MOUSE 0")
+    // Shoot logs
+
+    if input_manager.shoot_input.is_pressed {
+        println!("SHOOT pressed");
     }
-    if mouse_input.just_pressed(MouseButton::Right) {
-        println!("MOUSE 1");
-    }
-}
 
-// fn mouse_move_update(
-//     accumulated_mouse_motion: Res<AccumulatedMouseMotion>,
-//     accumulated_mouse_scroll: Res<AccumulatedMouseScroll>,
-// ) {
-//     //    if accumulated_mouse_motion.delta != glam::Vec2::ZERO {
-//     // let delta = accumulated_mouse_motion.delta;
-//     // println!("mouse moved ({}, {})", delta.x, delta.y);
-//     //    }
-//     //    if accumulated_mouse_scroll.delta != glam::Vec2::ZERO {
-//     // let delta = accumulated_mouse_scroll.delta;
-//     // println!("mouse scrolled ({}, {})", delta.x, delta.y);
-//     //    }
-// }
-
-fn gamepad_input_update(gamepads: Query<(Entity, &Gamepad)>) {
-    for (_, gamepad) in gamepads {
+    if input_manager.shoot_input.is_held {
         println!(
-            "Gamepad pId: {}  vId: {}",
-            gamepad.product_id().unwrap_or_default(),
-            gamepad.vendor_id().unwrap_or_default()
+            "SHOOT held for {{{}}} seconds",
+            input_manager.shoot_input.hold_time
+        );
+    }
+
+    if input_manager.shoot_input.is_just_released {
+        println!("SHOOT released");
+        println!(
+            "SHOOT was held for a total of {{{}}} seconds",
+            input_manager.shoot_input.hold_time
         );
     }
 }
-
-// // This system grabs the mouse when the left mouse button is pressed
-// // and releases it when the escape key is pressed
-// fn grab_mouse(
-//     mut cursor_options: Single<&mut CursorOptions>,
-//     mouse: Res<ButtonInput<MouseButton>>,
-//     key: Res<ButtonInput<KeyCode>>,
-// ) {
-//     if mouse.just_pressed(MouseButton::Left) {
-//         cursor_options.visible = false;
-//         cursor_options.grab_mode = CursorGrabMode::Locked;
-//     }
-
-//     if key.just_pressed(KeyCode::Escape) {
-//         cursor_options.visible = true;
-//         cursor_options.grab_mode = CursorGrabMode::None;
-//     }
-// }
 
 static mut PREV_MOUSE_POS: std::sync::LazyLock<PhysicalPosition<f64>> =
     std::sync::LazyLock::new(|| PhysicalPosition::new(0.0, 0.0));
 
 fn main() {
     let mut bevy_app = bevy_app::App::new();
-    bevy_app.add_plugins(bevy_time::TimePlugin);
+    bevy_app.add_plugins((
+        bevy_input::InputPlugin,
+        bevy_gilrs::GilrsPlugin,
+        bevy_time::TimePlugin,
+    ));
 
     const DEFAULT_LOOK_SPEED: f32 = 4.0;
     bevy_app.insert_resource(InputManager::new(DEFAULT_LOOK_SPEED));
@@ -131,19 +108,9 @@ fn main() {
     )
     .unwrap();
 
-    bevy_app.add_systems(Startup, init_spawn).add_systems(
-        Update,
-        (
-            (
-                keyboard_input_update,
-                //                mouse_click_update.run_if(resource_changed::<ButtonInput<MouseButton>>),
-                //                mouse_move_update,
-                //                gamepad_input_update,
-            ),
-            gameplay_update,
-        )
-            .chain(),
-    );
+    bevy_app
+        .add_systems(Startup, init_spawn)
+        .add_systems(Update, ((keyboard_input_update,), gameplay_update).chain());
 
     let mut is_start = true;
 
@@ -218,16 +185,28 @@ fn main() {
                             }
 
                             // 2. Register Inputs
-                            let mut system_state: SystemState<(
-                                ResMut<InputManager>,
-                                Res<ButtonInput<KeyCode>>,
-                                Res<Time>,
-                            )> = SystemState::new(app.world_mut());
+                            {
+                                let window = VULKAN_RENDERER_SINGLETON
+                                    .lock()
+                                    .unwrap()
+                                    .present_handle
+                                    .window_handle
+                                    .window
+                                    .clone();
 
-                            let (mut input_manager, keyboard, time) =
-                                system_state.get_mut(app.world_mut()).unwrap();
+                                let mut system_state: SystemState<(
+                                    ResMut<InputManager>,
+                                    Res<ButtonInput<KeyCode>>,
+                                    Query<&Gamepad>,
+                                    Res<ButtonInput<MouseButton>>,
+                                    Res<Time>,
+                                )> = SystemState::new(app.world_mut());
 
-                            input_manager.update_keyboard_inputs(&keyboard, &time);
+                                let (mut input_manager, keyboard, gamepads, mouse, time) =
+                                    system_state.get_mut(app.world_mut()).unwrap();
+
+                                input_manager.update(&keyboard, &gamepads, &mouse, &time, &window);
+                            }
 
                             // 3. Update Time
                             if let Some(mut strategy) =

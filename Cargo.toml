@@ -34,6 +34,7 @@ anyhow = "1.0.102"
 # Ecs
 bevy_app = "0.20.0"
 bevy_ecs = "0.20.0"
+bevy_gilrs = "0.20"
 bevy_input = { version = "0.20.0", features = ["gamepad", "mouse"] }
 bevy_time = "0.20.0"
 
