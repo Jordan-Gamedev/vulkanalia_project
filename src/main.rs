@@ -2,16 +2,28 @@
 #![allow(unused_imports)]
 use bevy_app::{Startup, Update};
 use bevy_ecs::prelude::*;
+use bevy_ecs::system::SystemState;
+use bevy_input::gamepad::Gamepad;
+use bevy_input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy_input::{ButtonInput, InputPlugin};
+use bevy_time::{Time, TimeUpdateStrategy};
+use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Instant;
 use vulkanalia::prelude::v1_0::*;
 use vulkanalia_project::components::RenderComponent;
 use vulkanalia_project::engine::Material;
 use vulkanalia_project::engine::SamplerContents;
 use vulkanalia_project::engine::VulkanRenderer;
 use vulkanalia_project::engine::vulkan_renderer::VULKAN_RENDERER_SINGLETON;
-use vulkanalia_project::prefabs::*;
+use vulkanalia_project::input_manager::InputManager;
 use vulkanalia_project::resources::*;
+use vulkanalia_project::{input_manager, prefabs::*};
+use winit::dpi::PhysicalPosition;
+use winit::event::WindowEvent::KeyboardInput;
+use winit::event::{ElementState, MouseButton};
 use winit::event::{Event, WindowEvent};
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 // Runs exactly once at startup
 fn init_spawn(mut commands: Commands) {
@@ -20,11 +32,92 @@ fn init_spawn(mut commands: Commands) {
 }
 
 fn gameplay_update(mut _commands: Commands) {
-    //println!("UPDATE");
+    //println!("Gameplay UPDATE");
 }
+
+fn keyboard_input_update(input_manager: Res<InputManager>) {
+    if input_manager.jump_input.is_pressed {
+        println!("JUMP pressed");
+    }
+
+    if input_manager.jump_input.is_held {
+        println!(
+            "JUMP held for {{{}}} seconds",
+            input_manager.jump_input.hold_time
+        );
+    }
+
+    if input_manager.jump_input.is_just_released {
+        println!("JUMP released");
+        println!(
+            "JUMP was held for a total of {{{}}} seconds",
+            input_manager.jump_input.hold_time
+        );
+    }
+}
+
+fn mouse_click_update(mouse_input: Res<ButtonInput<MouseButton>>) {
+    if mouse_input.just_pressed(MouseButton::Left) {
+        println!("MOUSE 0")
+    }
+    if mouse_input.just_pressed(MouseButton::Right) {
+        println!("MOUSE 1");
+    }
+}
+
+// fn mouse_move_update(
+//     accumulated_mouse_motion: Res<AccumulatedMouseMotion>,
+//     accumulated_mouse_scroll: Res<AccumulatedMouseScroll>,
+// ) {
+//     //    if accumulated_mouse_motion.delta != glam::Vec2::ZERO {
+//     // let delta = accumulated_mouse_motion.delta;
+//     // println!("mouse moved ({}, {})", delta.x, delta.y);
+//     //    }
+//     //    if accumulated_mouse_scroll.delta != glam::Vec2::ZERO {
+//     // let delta = accumulated_mouse_scroll.delta;
+//     // println!("mouse scrolled ({}, {})", delta.x, delta.y);
+//     //    }
+// }
+
+fn gamepad_input_update(gamepads: Query<(Entity, &Gamepad)>) {
+    for (_, gamepad) in gamepads {
+        println!(
+            "Gamepad pId: {}  vId: {}",
+            gamepad.product_id().unwrap_or_default(),
+            gamepad.vendor_id().unwrap_or_default()
+        );
+    }
+}
+
+// // This system grabs the mouse when the left mouse button is pressed
+// // and releases it when the escape key is pressed
+// fn grab_mouse(
+//     mut cursor_options: Single<&mut CursorOptions>,
+//     mouse: Res<ButtonInput<MouseButton>>,
+//     key: Res<ButtonInput<KeyCode>>,
+// ) {
+//     if mouse.just_pressed(MouseButton::Left) {
+//         cursor_options.visible = false;
+//         cursor_options.grab_mode = CursorGrabMode::Locked;
+//     }
+
+//     if key.just_pressed(KeyCode::Escape) {
+//         cursor_options.visible = true;
+//         cursor_options.grab_mode = CursorGrabMode::None;
+//     }
+// }
+
+static mut PREV_MOUSE_POS: std::sync::LazyLock<PhysicalPosition<f64>> =
+    std::sync::LazyLock::new(|| PhysicalPosition::new(0.0, 0.0));
 
 fn main() {
     let mut bevy_app = bevy_app::App::new();
+    bevy_app.add_plugins(bevy_time::TimePlugin);
+
+    const DEFAULT_LOOK_SPEED: f32 = 4.0;
+    bevy_app.insert_resource(InputManager::new(DEFAULT_LOOK_SPEED));
+    bevy_app.init_resource::<ButtonInput<KeyCode>>();
+    bevy_app.init_resource::<ButtonInput<MouseButton>>();
 
     let event_loop = Arc::into_inner(
         VULKAN_RENDERER_SINGLETON
@@ -38,9 +131,19 @@ fn main() {
     )
     .unwrap();
 
-    bevy_app
-        .add_systems(Startup, init_spawn)
-        .add_systems(Update, gameplay_update);
+    bevy_app.add_systems(Startup, init_spawn).add_systems(
+        Update,
+        (
+            (
+                keyboard_input_update,
+                //                mouse_click_update.run_if(resource_changed::<ButtonInput<MouseButton>>),
+                //                mouse_move_update,
+                //                gamepad_input_update,
+            ),
+            gameplay_update,
+        )
+            .chain(),
+    );
 
     let mut is_start = true;
 
@@ -58,23 +161,107 @@ fn main() {
                             .request_redraw();
                     }
                     Event::WindowEvent { event, .. } => match event {
-                        WindowEvent::RedrawRequested if !elwt.exiting() => {
-                            // 1. Start of frame updates from the renderer
-                            {
-                                if is_start {
-                                    is_start = false;
-                                } else {
-                                    let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
-                                    renderer.start_of_frame_updates();
+                        WindowEvent::KeyboardInput {
+                            event: key_event, ..
+                        } => {
+                            if let PhysicalKey::Code(winit_key) = key_event.physical_key {
+                                if let Some(mut keyboard_res) =
+                                    app.world_mut().get_resource_mut::<ButtonInput<KeyCode>>()
+                                {
+                                    match key_event.state {
+                                        ElementState::Pressed => keyboard_res.press(winit_key),
+                                        ElementState::Released => keyboard_res.release(winit_key),
+                                    }
                                 }
                             }
+                        }
 
-                            // 2. Run systems
+                        WindowEvent::MouseInput { state, button, .. } => {
+                            if let Some(mut mouse_res) = app
+                                .world_mut()
+                                .get_resource_mut::<ButtonInput<MouseButton>>()
+                            {
+                                match state {
+                                    ElementState::Pressed => mouse_res.press(button),
+                                    ElementState::Released => mouse_res.release(button),
+                                }
+                            }
+                        }
+
+                        WindowEvent::CursorMoved {
+                            device_id: _,
+                            position,
+                        } => {
+                            if let Some(mut mouse_res) =
+                                app.world_mut().get_resource_mut::<AccumulatedMouseMotion>()
+                            {
+                                mouse_res.delta = unsafe {
+                                    glam::Vec2::new(
+                                        (position.x - PREV_MOUSE_POS.x) as f32,
+                                        (position.y - PREV_MOUSE_POS.y) as f32,
+                                    )
+                                };
+                            }
+
+                            unsafe {
+                                PREV_MOUSE_POS = position.into();
+                            }
+                        }
+
+                        WindowEvent::RedrawRequested if !elwt.exiting() => {
+                            // 1. Start of frame updates from the renderer
+                            if is_start {
+                                is_start = false;
+                            } else {
+                                let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
+                                renderer.start_of_frame_updates();
+                            }
+
+                            // 2. Register Inputs
+                            let mut system_state: SystemState<(
+                                ResMut<InputManager>,
+                                Res<ButtonInput<KeyCode>>,
+                                Res<Time>,
+                            )> = SystemState::new(app.world_mut());
+
+                            let (mut input_manager, keyboard, time) =
+                                system_state.get_mut(app.world_mut()).unwrap();
+
+                            input_manager.update_keyboard_inputs(&keyboard, &time);
+
+                            // 3. Update Time
+                            if let Some(mut strategy) =
+                                app.world_mut().get_resource_mut::<TimeUpdateStrategy>()
+                            {
+                                *strategy = TimeUpdateStrategy::ManualInstant(Instant::now());
+                            }
+
+                            // 4. Run systems
                             app.update();
 
-                            // 3. Render
+                            // 5. Render
                             let mut renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
                             renderer.render().unwrap();
+
+                            // 6. Clear Inputs
+                            if let Some(mut input_manager) =
+                                app.world_mut().get_resource_mut::<InputManager>()
+                            {
+                                input_manager.clear_inputs();
+                            }
+
+                            if let Some(mut mouse_res) = app
+                                .world_mut()
+                                .get_resource_mut::<ButtonInput<MouseButton>>()
+                            {
+                                mouse_res.clear();
+                            }
+
+                            if let Some(mut keyboard_res) =
+                                app.world_mut().get_resource_mut::<ButtonInput<KeyCode>>()
+                            {
+                                keyboard_res.clear();
+                            }
                         }
 
                         WindowEvent::Resized(_size) => {

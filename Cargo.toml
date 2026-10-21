@@ -32,8 +32,10 @@ winres = "0.1.12"
 anyhow = "1.0.102"
 
 # Ecs
-bevy_app = "0.19"
-bevy_ecs = "0.19"
+bevy_app = "0.20.0"
+bevy_ecs = "0.20.0"
+bevy_input = { version = "0.20.0", features = ["gamepad", "mouse"] }
+bevy_time = "0.20.0"
 
 # Byte conversion
 bytemuck = { version = "1.25.0", features = ["derive"] }
@@ -46,7 +48,9 @@ gltf = "1.4.1"
 ktx2-rw = "0.2.4"
 
 # Logging
-log = { version = "0.4.29", default-features = false, features = ["release_max_level_off"] }
+log = { version = "0.4.29", default-features = false, features = [
+    "release_max_level_off",
+] }
 
 # Meshoptimizer
 meshopt = "0.6.2"
@@ -61,13 +65,17 @@ rayon = "1.12.0"
 rolt = "0.2.0"
 
 # Enum converter
-strum = { version = "0.27.2", features = ["derive"]}
+strum = { version = "0.27.2", features = ["derive"] }
 
 # Errors
 thiserror = "2.0.18"
 
 # Vulkan
-vulkanalia = { version = "=0.35.0", features = ["libloading", "provisional", "window"] }
+vulkanalia = { version = "=0.35.0", features = [
+    "libloading",
+    "provisional",
+    "window",
+] }
 vulkanalia-vma = "0.9.0"
 
 # For opening and manipulating windows

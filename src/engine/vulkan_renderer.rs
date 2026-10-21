@@ -38,7 +38,7 @@ use crate::resources::*;
 use anyhow::{Result, anyhow};
 use glam::Quat;
 use glam::Vec3;
-use glam::{Mat4, vec3};
+use glam::vec3;
 use log::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -2216,21 +2216,19 @@ impl VulkanRenderer {
     fn update_uniform_buffer(&mut self) -> Result<()> {
         // MVP
 
-        let view = Mat4::look_at_rh(
+        let view = glam::camera::rh::view::look_at_mat4(
             vec3(0.0, 0.0, -10.0),
             vec3(0.0, 0.0, 0.0),
             vec3(0.0, 1.0, 0.0),
         );
 
-        let mut proj = glam::Mat4::perspective_rh(
+        let proj = glam::camera::rh::proj::vulkan::perspective(
             45.0 * DEG_TO_RAD,
             self.present_handle.swapchain_handle.extent.width as f32
                 / self.present_handle.swapchain_handle.extent.height as f32,
             0.1,
             1000.0,
         );
-
-        proj.col_mut(1).y *= -1.0;
 
         let ubo = UniformBufferObject { view, proj };
 
