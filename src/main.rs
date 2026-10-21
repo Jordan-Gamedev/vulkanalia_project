@@ -20,8 +20,9 @@ use vulkanalia_project::input_manager::InputManager;
 use vulkanalia_project::resources::*;
 use vulkanalia_project::{input_manager, prefabs::*};
 use winit::dpi::PhysicalPosition;
+use winit::event::DeviceEvent::MouseMotion;
 use winit::event::WindowEvent::KeyboardInput;
-use winit::event::{ElementState, MouseButton};
+use winit::event::{DeviceEvent, ElementState, MouseButton};
 use winit::event::{Event, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::CursorGrabMode;
@@ -37,6 +38,16 @@ fn gameplay_update(mut _commands: Commands) {
 }
 
 fn keyboard_input_update(input_manager: Res<InputManager>) {
+    // Move input
+    if input_manager.move_axis_input != glam::Vec2::ZERO {
+        println!("Move Input: {}", input_manager.move_axis_input);
+    }
+
+    // Look input
+    if input_manager.look_axis_input != glam::Vec2::ZERO {
+        println!("Look Input: {}", input_manager.look_axis_input);
+    }
+
     // Jump logs
 
     if input_manager.jump_input.is_pressed {
@@ -80,9 +91,6 @@ fn keyboard_input_update(input_manager: Res<InputManager>) {
     }
 }
 
-static mut PREV_MOUSE_POS: std::sync::LazyLock<PhysicalPosition<f64>> =
-    std::sync::LazyLock::new(|| PhysicalPosition::new(0.0, 0.0));
-
 fn main() {
     let mut bevy_app = bevy_app::App::new();
     bevy_app.add_plugins((
@@ -91,8 +99,16 @@ fn main() {
         bevy_time::TimePlugin,
     ));
 
-    const DEFAULT_LOOK_SPEED: f32 = 4.0;
-    bevy_app.insert_resource(InputManager::new(DEFAULT_LOOK_SPEED));
+    const DEFAULT_MOUSE_LOOK_SPEED: f32 = 4.0;
+    const DEFAULT_GAMEPAD_LOOK_SPEED: f32 = 16.0;
+    const DEFAULT_DEADZONES: f32 = 0.05;
+
+    bevy_app.insert_resource(InputManager::new(
+        glam::Vec2::new(DEFAULT_GAMEPAD_LOOK_SPEED, DEFAULT_GAMEPAD_LOOK_SPEED),
+        DEFAULT_MOUSE_LOOK_SPEED,
+        DEFAULT_DEADZONES,
+        DEFAULT_DEADZONES,
+    ));
     bevy_app.init_resource::<ButtonInput<KeyCode>>();
     bevy_app.init_resource::<ButtonInput<MouseButton>>();
 
@@ -127,6 +143,7 @@ fn main() {
                             .window
                             .request_redraw();
                     }
+
                     Event::WindowEvent { event, .. } => match event {
                         WindowEvent::KeyboardInput {
                             event: key_event, ..
@@ -159,19 +176,10 @@ fn main() {
                             device_id: _,
                             position,
                         } => {
-                            if let Some(mut mouse_res) =
-                                app.world_mut().get_resource_mut::<AccumulatedMouseMotion>()
+                            if let Some(mut input_manager) =
+                                app.world_mut().get_resource_mut::<InputManager>()
                             {
-                                mouse_res.delta = unsafe {
-                                    glam::Vec2::new(
-                                        (position.x - PREV_MOUSE_POS.x) as f32,
-                                        (position.y - PREV_MOUSE_POS.y) as f32,
-                                    )
-                                };
-                            }
-
-                            unsafe {
-                                PREV_MOUSE_POS = position.into();
+                                input_manager.update_mouse_position(position);
                             }
                         }
 
@@ -260,6 +268,18 @@ fn main() {
                         }
                         _ => {}
                     },
+
+                    Event::DeviceEvent {
+                        event: DeviceEvent::MouseMotion { delta: (dx, dy) },
+                        ..
+                    } => {
+                        if let Some(mut input_manager) =
+                            app.world_mut().get_resource_mut::<InputManager>()
+                        {
+                            input_manager.update_mouse_delta(dx, dy);
+                        }
+                    }
+
                     _ => {}
                 }
             })

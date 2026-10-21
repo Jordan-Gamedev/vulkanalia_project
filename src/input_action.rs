@@ -1,4 +1,3 @@
-use bevy_ecs::system::Query;
 use bevy_input::ButtonInput;
 use bevy_input::gamepad::Gamepad;
 use bevy_input::gamepad::GamepadButton;
@@ -35,12 +34,12 @@ impl InputAction {
     pub fn update(
         &mut self,
         keyboard_input: &ButtonInput<KeyCode>,
-        gamepads_input: &Query<&Gamepad>,
+        gamepads_input: &Option<&Gamepad>,
         mouse_input: &ButtonInput<MouseButton>,
         time: &bevy_time::Time,
     ) {
         let key_binds_count = self.key_binds.len();
-        let gamepad_binds_count = if gamepads_input.is_empty() {
+        let gamepad_binds_count = if gamepads_input.is_none() {
             0
         } else {
             self.gamepad_binds.len()
