@@ -1,5 +1,3 @@
-// TODO: Implement delay for cases where you do not want duplicate data and can handle the changed being delayed by frames = max frames in flight
-
 use crate::engine::Buffer;
 use vulkanalia::prelude::v1_0::*;
 
@@ -80,31 +78,49 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
     ) {
         self.current_frame_index = (self.current_frame_index + 1) % self.max_frames_in_flight;
         if self.num_frames_needing_update > 0 {
-            let updated_buffer = self.buffers.get(self.updated_buffer_frame_index).unwrap();
-            let current_buffer = self.buffers.get(self.current_frame_index).unwrap();
+            let (
+                updated_buffer,
+                updated_element_count,
+                updated_element_capacity,
+                available_indices,
+                contents,
+            ) = {
+                let updated_buffer = self.buffers.get(self.updated_buffer_frame_index).unwrap();
+                (
+                    updated_buffer.buffer,
+                    updated_buffer.element_count,
+                    updated_buffer.element_capacity,
+                    updated_buffer.available_indices.clone(),
+                    updated_buffer
+                        .get_buffer_items(device_context, command_pool, true)
+                        .unwrap(),
+                )
+            };
+            let current_buffer = self.buffers.get_mut(self.current_frame_index).unwrap();
 
-            if updated_buffer.element_capacity == current_buffer.element_capacity {
+            if updated_element_capacity == current_buffer.element_capacity {
                 Buffer::<T>::copy_buffer(
                     device_context,
                     command_pool,
-                    updated_buffer.buffer,
+                    updated_buffer,
                     current_buffer.buffer,
                     current_buffer.element_capacity as u64,
                 )
                 .unwrap();
 
-                self.get_current_mut().element_count = updated_buffer.element_count;
+                current_buffer.element_count = updated_element_count;
+                current_buffer.available_indices = available_indices;
             } else {
-                let contents = self.buffers[self.updated_buffer_frame_index]
-                    .get_buffer_items(device_context, command_pool, true)
-                    .unwrap();
-                self.buffers[self.current_frame_index].recreate(
+                current_buffer.recreate(
                     device_context,
                     command_pool,
                     contents,
                     descriptor_sets[self.current_frame_index],
                     descriptor_binding,
                 );
+
+                current_buffer.element_count = updated_element_count;
+                current_buffer.available_indices = available_indices;
             }
 
             self.num_frames_needing_update -= 1;

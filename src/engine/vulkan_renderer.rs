@@ -85,6 +85,7 @@ unsafe impl Send for VulkanRenderer {}
 pub static VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<Mutex<VulkanRenderer>> =
     std::sync::LazyLock::new(|| Mutex::new(VulkanRenderer::new().unwrap()));
 
+// TODO: FIX ISSUE WITH MANY INSTANCES (GREATER THAN 32??) CAUSING FLICKERING AND BROKEN VISUALS
 impl VulkanRenderer {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -475,7 +476,6 @@ impl VulkanRenderer {
         // The currently used instance and model matrix buffers
         let instance_buffer = self.command_handle.instance_buffers.get_current_mut();
         let model_matrix_buffer = self.model_handle.model_matrix_buffers.get_current_mut();
-        let visbuffer = self.command_handle.main_camera_visbuffers.get_current_mut();
 
         instance_buffer.element_count += 1;
         model_matrix_buffer.element_count += 1;
@@ -491,13 +491,15 @@ impl VulkanRenderer {
                 .to_vec()
             };
 
+            let instance_count = instance_buffer.element_count + 1;
+
             // Add empty instances to the end of the buffer
             instances.extend(vec![
                 PerInstanceData::default();
                 instance_buffer.alloc_dealloc_threshold as usize
             ]);
 
-            let instance_count = instances.len();
+            let instance_count2 = instances.len();
 
             instance_buffer.recreate(
                 &self.device_context,
@@ -509,11 +511,14 @@ impl VulkanRenderer {
                 INSTANCE_DATA_BINDING,
             );
             instance_buffer.available_indices.clear();
+            instance_buffer.element_count = instance_count as u32;
 
+            // Update visbuffer size
+            let visbuffer = self.command_handle.main_camera_visbuffers.get_current_mut();
             visbuffer.recreate(
                 &self.device_context,
                 self.command_handle.command_pool,
-                vec![u32::MAX; instance_count],
+                vec![0; instance_count2 + 1],
                 self.render_pipeline_handle
                     .descriptor_handle
                     .descriptor_sets[self.command_handle.sync_handle.current_frame],
@@ -550,6 +555,7 @@ impl VulkanRenderer {
                 MODEL_MATRIX_BINDING,
             );
             model_matrix_buffer.available_indices.clear();
+            model_matrix_buffer.element_count = instance_buffer.element_count;
         }
 
         // New instance data
@@ -569,7 +575,7 @@ impl VulkanRenderer {
         let mut in_proper_instance_bucket = false;
         let mut moving_instance = new_instance;
         let mut moving_model_matrix = matrix;
-        let mut moving_index: usize = 0;
+        let mut moving_index: usize = usize::MAX;
         let mut changed_old_new_indices: Vec<(usize, usize)> = Vec::new();
 
         // Recursively replace end of instance and model matrix buckets with moving instance and moving model matrix until the end is reached
@@ -589,7 +595,9 @@ impl VulkanRenderer {
                     new_instance_buffer_index = i;
                 }
 
-                changed_old_new_indices.push((moving_index, i));
+                if moving_index != usize::MAX {
+                    changed_old_new_indices.push((moving_index, i));
+                }
 
                 moving_instance = buffer_instance;
                 moving_model_matrix = buffer_model_matrix;
@@ -600,6 +608,11 @@ impl VulkanRenderer {
 
         // Update stored instance/transform indices for render components
         for mut render_component in render_component_query_iterator {
+            // println!(
+            //     "before render component meshassetid: {:?}   index: {}",
+            //     render_component.mesh, render_component.instance_transform_index
+            // );
+
             if let Some(change_pos) = changed_old_new_indices
                 .iter()
                 .position(|i| i.0 == render_component.instance_transform_index as usize)
@@ -608,6 +621,10 @@ impl VulkanRenderer {
                     changed_old_new_indices[change_pos].1 as u32;
                 changed_old_new_indices.swap_remove(change_pos);
             }
+            // println!(
+            //     "after render component meshassetid: {:?}   index: {}",
+            //     render_component.mesh, render_component.instance_transform_index
+            // );
         }
 
         // Signal to the other frames that the buffers has been changed
@@ -634,22 +651,38 @@ impl VulkanRenderer {
         sampler_contents: SamplerContents,
         remove_index: u32,
     ) -> Result<()> {
-        // Unload model if there are no more instances using it
+        // Update model usage count
         if let Some(mesh) = self.model_handle.loaded_meshes.get_mut(&mesh_asset_id)
             && mesh.usage_count > 0
         {
             mesh.usage_count -= 1;
-            if mesh.usage_count == 0 {
-                self.try_unload_mesh(mesh_asset_id)?;
-            }
         }
 
-        // Potentially unload texture
-        self.unload_texture(texture_asset_id, sampler_contents)?;
+        // Update texture usage count
+        if let Some(texture) = self
+            .texture_handle
+            .loaded_textures
+            .get_mut(&texture_asset_id)
+            && texture.usage_count > 0
+        {
+            texture.usage_count -= 1;
+
+            // Update sampler usage count
+            if texture.usage_count == 0 {
+                if let Some(sampler) = self.texture_handle.samplers.get_mut(&sampler_contents)
+                    && sampler.usage_count > 0
+                {
+                    sampler.usage_count -= 1;
+                }
+            }
+        }
 
         // The currently used instance and model matrix buffers
         let instance_buffer = &mut self.command_handle.instance_buffers.get_current_mut();
         let model_matrix_buffer = &mut self.model_handle.model_matrix_buffers.get_current_mut();
+
+        let instance_count = instance_buffer.element_count - 1;
+        let model_count = model_matrix_buffer.element_count - 1;
 
         // Remove instance
         instance_buffer.remove_item_at(
@@ -661,6 +694,8 @@ impl VulkanRenderer {
             INSTANCE_DATA_BINDING,
             remove_index,
         )?;
+        instance_buffer.element_count = instance_count;
+        instance_buffer.available_indices.clear();
 
         // Remove model matrix
         model_matrix_buffer.remove_item_at(
@@ -672,6 +707,8 @@ impl VulkanRenderer {
             MODEL_MATRIX_BINDING,
             remove_index,
         )?;
+        model_matrix_buffer.element_count = model_count;
+        model_matrix_buffer.available_indices.clear();
 
         // Update stored instance/transform indices for render components
         for mut render_component in render_component_query_iterator {
@@ -680,9 +717,12 @@ impl VulkanRenderer {
             }
         }
 
-        // Signal to the other frames that the buffer has been changed
+        // Signal to the other frames that the buffers have been changed
         self.command_handle
             .instance_buffers
+            .signal_buffer_change_propagation();
+        self.model_handle
+            .model_matrix_buffers
             .signal_buffer_change_propagation();
 
         Ok(())
@@ -1061,6 +1101,21 @@ impl VulkanRenderer {
                 unloading_mesh.metadata_index as u32,
             )?;
 
+            // Update instance metadata info
+
+            self.command_handle
+                .instance_buffers
+                .signal_buffer_change_propagation();
+
+            let instance_buffer = self.command_handle.instance_buffers.get_current_mut();
+            for i in 0..instance_buffer.element_count as usize {
+                let instance =
+                    unsafe { instance_buffer.mapped.add(i).cast_mut().as_mut().unwrap() };
+                if instance.mesh_metadata_index > unloading_mesh.metadata_index {
+                    instance.mesh_metadata_index -= 1;
+                }
+            }
+
             // Update indirect draw buffer
 
             self.command_handle
@@ -1078,19 +1133,6 @@ impl VulkanRenderer {
                 })
                 .unwrap();
 
-            // indirect_draw_buffer.remove_items(
-            //     &self.device_context,
-            //     self.command_handle.command_pool,
-            //     self.render_pipeline_handle
-            //         .descriptor_handle
-            //         .descriptor_sets[self.command_handle.sync_handle.current_frame],
-            //     INDIRECT_DRAW_BINDING,
-            //     indirect_draw_data_remove_index as u32,
-            //     indirect_draw_data_remove_index as u32
-            //         + unloading_mesh.mesh_allocations.len() as u32,
-            // )?;
-
-            // Maybe temp??
             indirect_draw_buffer.remove_items(
                 &self.device_context,
                 self.command_handle.command_pool,
@@ -1137,7 +1179,7 @@ impl VulkanRenderer {
             .loaded_textures
             .get_mut(&texture_asset_id)
         {
-            texture.instance_count += 1;
+            texture.usage_count += 1;
             return Ok(());
         }
 
@@ -1178,10 +1220,6 @@ impl VulkanRenderer {
 
         let format = vk::Format::from_raw(texture.vk_format().as_raw() as i32);
         let mipmap_levels = texture.levels();
-
-        // Update sampler contents mipmap levels
-        let mut sampler_contents = sampler_contents;
-        sampler_contents.mipmap_levels = mipmap_levels;
 
         // Calculate total size for all mip levels and collect per-level data
         let mut mip_sizes: Vec<usize> = Vec::with_capacity(mipmap_levels as usize);
@@ -1234,7 +1272,6 @@ impl VulkanRenderer {
             format,
             vk::ImageTiling::OPTIMAL,
             vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 
         // Transition + Copy (image)
@@ -1336,7 +1373,7 @@ impl VulkanRenderer {
         // Add one to the usage count if a sampler was found that already has required specifications, otherwise create sampler
 
         let sampler = if let Some(usage) = self.texture_handle.samplers.get_mut(&sampler_contents) {
-            usage.instance_count += 1;
+            usage.usage_count += 1;
             self.texture_handle.samplers[&sampler_contents].sampler
         } else {
             let sampler = create_sampler(device_context.clone().device, sampler_contents);
@@ -1350,11 +1387,13 @@ impl VulkanRenderer {
             let sampler_usage = SamplerUsage {
                 slot_index,
                 sampler,
-                instance_count: 1,
+                usage_count: 1,
+                lifetime: MAX_FRAMES_IN_FLIGHT,
             };
             self.texture_handle
                 .samplers
                 .insert(sampler_contents, sampler_usage);
+
             update_bindless_sampler(
                 &device_context,
                 &self
@@ -1384,7 +1423,8 @@ impl VulkanRenderer {
                     view: image_view,
                 },
                 slot_index,
-                instance_count: 1,
+                usage_count: 1,
+                lifetime: MAX_FRAMES_IN_FLIGHT,
             },
         );
 
@@ -1404,27 +1444,30 @@ impl VulkanRenderer {
         Ok(())
     }
 
-    pub fn unload_texture(
-        &mut self,
-        texture_asset_id: AssetId,
-        sampler_contents: SamplerContents,
-    ) -> Result<()> {
-        if texture_asset_id == AssetId::None {
+    pub fn try_unload_texture(&mut self, texture_asset_id: AssetId) -> Result<()> {
+        if texture_asset_id == AssetId::None
+            || !self
+                .texture_handle
+                .loaded_textures
+                .contains_key(&texture_asset_id)
+        {
             return Ok(());
         }
 
-        let (unloading_texture, fully_unloaded) = if let Some(texture) = self
-            .texture_handle
+        self.texture_handle
             .loaded_textures
             .get_mut(&texture_asset_id)
-        {
-            texture.instance_count -= 1;
-            (*texture, texture.instance_count == 0)
-        } else {
-            return Err(anyhow!("Texture not found"));
-        };
+            .unwrap()
+            .lifetime -= 1;
 
-        if fully_unloaded {
+        let unloading_texture = self
+            .texture_handle
+            .loaded_textures
+            .get(&texture_asset_id)
+            .unwrap()
+            .clone();
+
+        if unloading_texture.lifetime == 0 {
             self.texture_handle
                 .loaded_textures
                 .remove(&texture_asset_id);
@@ -1434,27 +1477,38 @@ impl VulkanRenderer {
             unloading_texture
                 .texture
                 .destroy(self.device_context.clone().device, &self.allocator);
+        }
 
-            // Unload sampler if no more textures use this sampler
-            let sampler = self.texture_handle.samplers[&sampler_contents]
-                .sampler
-                .clone();
+        Ok(())
+    }
+
+    pub fn try_unload_sampler(&mut self, sampler_contents: SamplerContents) -> Result<()> {
+        if !self.texture_handle.samplers.contains_key(&sampler_contents) {
+            return Ok(());
+        }
+
+        self.texture_handle
+            .samplers
+            .get_mut(&sampler_contents)
+            .unwrap()
+            .lifetime -= 1;
+
+        let unloading_sampler = self
+            .texture_handle
+            .samplers
+            .get(&sampler_contents)
+            .unwrap()
+            .clone();
+
+        if unloading_sampler.lifetime == 0 {
             let slot_index = self.texture_handle.samplers[&sampler_contents].slot_index;
-            let should_unload_sampler: bool =
-                if let Some(usage) = self.texture_handle.samplers.get_mut(&sampler_contents) {
-                    usage.instance_count -= 1;
-                    usage.instance_count == 0
-                } else {
-                    false
-                };
-
-            if should_unload_sampler {
-                unsafe {
-                    self.device_context.device.destroy_sampler(sampler, None);
-                }
-                self.texture_handle.samplers.remove(&sampler_contents);
-                self.texture_handle.available_sampler_slots.push(slot_index);
+            unsafe {
+                self.device_context
+                    .device
+                    .destroy_sampler(unloading_sampler.sampler, None);
             }
+            self.texture_handle.samplers.remove(&sampler_contents);
+            self.texture_handle.available_sampler_slots.push(slot_index);
         }
 
         Ok(())
@@ -1731,17 +1785,25 @@ impl VulkanRenderer {
 
         // Propagate gpu changes across all frames
 
-        // Unload outdated meshes
+        self.command_handle.indirect_draw_buffers.update(
+            &self.device_context,
+            self.command_handle.command_pool,
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            INDIRECT_DRAW_BINDING,
+        );
 
-        let mut meshes_to_unload: Vec<AssetId> = Vec::new();
-        self.model_handle.loaded_meshes.iter().for_each(|(a, m)| {
-            if m.usage_count == 0 {
-                meshes_to_unload.push(*a);
-            }
-        });
-        meshes_to_unload
-            .iter()
-            .for_each(|a| self.try_unload_mesh(*a).unwrap());
+        self.command_handle.instance_buffers.update(
+            &self.device_context,
+            self.command_handle.command_pool,
+            &self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets,
+            INSTANCE_DATA_BINDING,
+        );
 
         self.model_handle.uniform_buffers.update(
             &self.device_context,
@@ -1763,26 +1825,6 @@ impl VulkanRenderer {
             MODEL_MATRIX_BINDING,
         );
 
-        self.command_handle.indirect_draw_buffers.update(
-            &self.device_context,
-            self.command_handle.command_pool,
-            &self
-                .render_pipeline_handle
-                .descriptor_handle
-                .descriptor_sets,
-            INDIRECT_DRAW_BINDING,
-        );
-
-        self.command_handle.instance_buffers.update(
-            &self.device_context,
-            self.command_handle.command_pool,
-            &self
-                .render_pipeline_handle
-                .descriptor_handle
-                .descriptor_sets,
-            INSTANCE_DATA_BINDING,
-        );
-
         self.model_handle.mesh_metadata_buffers.update(
             &self.device_context,
             self.command_handle.command_pool,
@@ -1802,48 +1844,88 @@ impl VulkanRenderer {
                 .descriptor_sets,
             VISBUFFER_BINDING,
         );
+
+        // Unload outdated meshes
+
+        let mut meshes_to_unload: Vec<AssetId> = Vec::new();
+        self.model_handle.loaded_meshes.iter().for_each(|(a, m)| {
+            if m.usage_count == 0 {
+                meshes_to_unload.push(*a);
+            }
+        });
+        meshes_to_unload
+            .iter()
+            .for_each(|a| self.try_unload_mesh(*a).unwrap());
+
+        // Unload outdated textures
+
+        let mut textures_to_unload: Vec<AssetId> = Vec::new();
+        self.texture_handle
+            .loaded_textures
+            .iter()
+            .for_each(|(a, t)| {
+                if t.usage_count == 0 {
+                    textures_to_unload.push(*a);
+                }
+            });
+        textures_to_unload
+            .iter()
+            .for_each(|a| self.try_unload_texture(*a).unwrap());
+
+        // Unload outdated samplers
+
+        let mut samplers_to_unload: Vec<SamplerContents> = Vec::new();
+        self.texture_handle.samplers.iter().for_each(|(s, u)| {
+            if u.usage_count == 0 {
+                samplers_to_unload.push(*s);
+            }
+        });
+        samplers_to_unload
+            .iter()
+            .for_each(|s| self.try_unload_sampler(*s).unwrap());
     }
 
     /// Renders a frame for the Vulkan app
     pub fn render(&mut self) -> Result<()> {
         unsafe {
-            // let instances = self
-            //     .command_handle
-            //     .instance_buffers
-            //     .get_current()
-            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-            //     .unwrap();
-            // let draws = self
-            //     .command_handle
-            //     .indirect_draw_buffers
-            //     .get_current()
-            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-            //     .unwrap();
-            // let visbuffer_items = self
-            //     .command_handle
-            //     .main_camera_visbuffers
-            //     .get_current()
-            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-            //     .unwrap();
+            let instances = self
+                .command_handle
+                .instance_buffers
+                .get_current()
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap();
+            let draws = self
+                .command_handle
+                .indirect_draw_buffers
+                .get_current()
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap();
+            let visbuffer_items = self
+                .command_handle
+                .main_camera_visbuffers
+                .get_current()
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap();
 
-            // for i in 0..instances.len().min(10) {
-            //     println!("{:#?}", instances[i]);
-            //     // if !instances[i].eq(&PerInstanceData::default()) {
-            //     //     println!("{:#?}", instances[i]);
-            //     // }
-            // }
-            // println!("-----------------------------------------------------------------");
-            // for i in 0..visbuffer_items.len().min(10) {
-            //     print!("{}  ", visbuffer_items[i]);
-            // }
-            // println!("\n-----------------------------------------------------------------");
+            for i in 0..instances.len() {
+                println!("{:#?}", instances[i]);
+                // if !instances[i].eq(&PerInstanceData::default()) {
+                //     println!("{:#?}", instances[i]);
+                // }
+            }
+            println!("-----------------------------------------------------------------");
+            print!("Visbuffer: ");
+            for i in 0..visbuffer_items.len() {
+                print!("{}  ", visbuffer_items[i]);
+            }
+            println!("\n-----------------------------------------------------------------");
 
-            // for i in 0..draws.len().min(8) {
-            //     println!("{:#?}", draws[i]);
-            //     //println!("{}", draws[i].instance_count);
-            // }
-            // println!("-----------------------------------------------------------------");
-            // println!("-----------------------------------------------------------------");
+            for i in 0..draws.len() {
+                println!("{:#?}", draws[i]);
+                //println!("{}", draws[i].instance_count);
+            }
+            println!("-----------------------------------------------------------------");
+            println!("-----------------------------------------------------------------");
 
             //let start = Instant::now();
 
@@ -2914,7 +2996,6 @@ unsafe fn create_color_texture(
         swapchain_handle.format,
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )?;
 
     // Image View
@@ -2956,7 +3037,6 @@ unsafe fn create_depth_texture(
         format,
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )?;
 
     // Image view
@@ -3858,11 +3938,11 @@ fn create_visbuffers(
         MAX_FRAMES_IN_FLIGHT as usize,
         device_context,
         command_pool,
-        INSTANCE_CHUNK_COUNT as u64,
+        (INSTANCE_CHUNK_COUNT + 1) as u64,
         vk::BufferUsageFlags::STORAGE_BUFFER,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
         INSTANCE_CHUNK_COUNT as u32,
-        vec![u32::MAX; INSTANCE_CHUNK_COUNT],
+        vec![u32::MAX; INSTANCE_CHUNK_COUNT + 1],
         false,
     )
 }
@@ -4232,7 +4312,6 @@ pub fn create_image(
     format: vk::Format,
     tiling: vk::ImageTiling,
     usage: vk::ImageUsageFlags,
-    properties: vk::MemoryPropertyFlags,
 ) -> Result<(vk::Image, vma::Allocation)> {
     // Image
 

@@ -6,12 +6,17 @@ use bevy_ecs::system::SystemState;
 use bevy_input::gamepad::Gamepad;
 use bevy_input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy_input::{ButtonInput, InputPlugin};
+use bevy_prng::WyRand;
+use bevy_rand::global::GlobalRng;
+use bevy_rand::prelude::EntropyPlugin;
 use bevy_time::{Time, TimeUpdateStrategy};
+use glam::{Quat, Vec3};
+use rand::{Rng, RngExt};
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Instant;
 use vulkanalia::prelude::v1_0::*;
-use vulkanalia_project::components::{CameraComponent, RenderComponent};
+use vulkanalia_project::components::*;
 use vulkanalia_project::engine::Material;
 use vulkanalia_project::engine::SamplerContents;
 use vulkanalia_project::engine::VulkanRenderer;
@@ -38,6 +43,63 @@ fn init_spawn(mut commands: Commands) {
 
 fn gameplay_update(mut _commands: Commands) {
     //println!("Gameplay UPDATE");
+}
+
+fn temp_spawn_test(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut rng: Single<&mut WyRand, With<GlobalRng>>,
+    render_query: Query<(Entity, &RenderComponent)>,
+    mut commands: Commands,
+) {
+    if keyboard.just_pressed(KeyCode::Space) {
+        let spawn_pos: Vec3 = Vec3::new(
+            rng.as_mut().random_range(-5.0..=5.0) as f32,
+            rng.as_mut().random_range(-5.0..=5.0) as f32,
+            10.0 + rng.as_mut().random_range(-5.0..=5.0) as f32,
+        );
+
+        commands.spawn((
+            TransformComponent::new(spawn_pos, Vec3::new(0.5, 0.5, 0.5), Quat::IDENTITY),
+            CubePrefab::component_bundle().1,
+        ));
+    }
+
+    if keyboard.just_pressed(KeyCode::ControlLeft) {
+        let (entities, _): (Vec<Entity>, Vec<RenderComponent>) = render_query
+            .iter()
+            .filter(|&(_, r)| r.mesh == AssetId::CubeMesh)
+            .unzip();
+
+        if entities.len() > 0 {
+            let rand_chosen = rng.random_range(0..entities.len());
+            commands.entity(entities[rand_chosen]).despawn();
+        }
+    }
+
+    if keyboard.just_pressed(KeyCode::ShiftLeft) {
+        let spawn_pos: Vec3 = Vec3::new(
+            rng.as_mut().random_range(-5.0..=5.0) as f32,
+            rng.as_mut().random_range(-5.0..=5.0) as f32,
+            10.0 + rng.as_mut().random_range(-5.0..=5.0) as f32,
+        );
+
+        commands.spawn((
+            TransformComponent::new(spawn_pos, Vec3::new(0.5, 0.5, 0.5), Quat::IDENTITY),
+            LimpetPrefab::component_bundle().1,
+        ));
+    }
+
+    if keyboard.just_pressed(KeyCode::Tab) {
+        let (entities, _): (Vec<Entity>, Vec<RenderComponent>) = render_query
+            .iter()
+            .filter(|&(_, r)| r.mesh == AssetId::LimpetMesh)
+            .unzip();
+
+        if entities.len() > 0 {
+            let rand_chosen = rng.random_range(0..entities.len());
+            commands.entity(entities[rand_chosen]).despawn();
+        }
+    }
 }
 
 // fn keyboard_input_update(input_manager: Res<InputManager>) {
@@ -97,6 +159,7 @@ fn gameplay_update(mut _commands: Commands) {
 fn main() {
     let mut bevy_app = bevy_app::App::new();
     bevy_app.add_plugins((
+        EntropyPlugin::<WyRand>::default(),
         bevy_input::InputPlugin,
         bevy_gilrs::GilrsPlugin,
         bevy_time::TimePlugin,
@@ -131,6 +194,7 @@ fn main() {
         Update,
         (
             //(keyboard_input_update,),
+            temp_spawn_test,
             gameplay_update,
             (camera_move_system, camera_render_system).chain(),
         )

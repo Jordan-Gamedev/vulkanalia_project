@@ -38,6 +38,12 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         unsafe {
             let device = device_context.device.clone();
 
+            // Pad empty space with default values so that garbage or zeroed out memory isn't used in buffer
+            let initial_contents_count = initial_contents.len();
+            let mut initial_contents = initial_contents;
+            let default_padding_count = initial_capacity as usize - initial_contents_count;
+            initial_contents.extend(vec![T::default(); default_padding_count]);
+
             // If the buffer needs to be initialized with values and it isn't cpu accessible, use staging buffer
             if properties.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL) {
                 // Create (staging)
@@ -52,7 +58,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
 
                 // Copy (staging)
 
-                memcpy(initial_contents.as_ptr(), mapped, initial_contents.len());
+                memcpy(initial_contents.as_ptr(), mapped, initial_capacity as usize);
                 device.unmap_memory(staging_buffer_memory);
 
                 // Create (device local)
@@ -88,9 +94,9 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                     buffer: device_buffer,
                     memory: device_buffer_memory,
                     mapped: std::ptr::null_mut(),
-                    available_indices: (initial_contents.len() as u32..initial_capacity as u32)
+                    available_indices: (initial_contents_count as u32..initial_capacity as u32)
                         .collect(),
-                    element_count: initial_contents.len() as u32,
+                    element_count: initial_contents_count as u32,
                     element_capacity: initial_capacity as u32,
                     alloc_dealloc_threshold: alloc_dealloc_threshold,
                     usage: usage,
@@ -107,15 +113,15 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 )
                 .unwrap();
 
-                memcpy(initial_contents.as_ptr(), mapped, initial_contents.len());
+                memcpy(initial_contents.as_ptr(), mapped, initial_capacity as usize);
 
                 Self {
                     buffer: buffer,
                     memory: memory,
                     mapped: mapped,
-                    available_indices: (initial_contents.len() as u32..initial_capacity as u32)
+                    available_indices: (initial_contents_count as u32..initial_capacity as u32)
                         .collect(),
-                    element_count: initial_contents.len() as u32,
+                    element_count: initial_contents_count as u32,
                     element_capacity: initial_capacity as u32,
                     alloc_dealloc_threshold: alloc_dealloc_threshold,
                     usage: usage,
@@ -384,7 +390,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                     }
                     prev_val = i;
                 }
-                furthest_used_index = *prev_val - 1;
+                furthest_used_index = *prev_val;
             }
 
             // Get furthest element index not used

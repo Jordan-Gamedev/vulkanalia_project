@@ -4,5 +4,6 @@ use crate::engine::Texture;
 pub struct TextureUsage {
     pub texture: Texture,
     pub slot_index: u32,
-    pub instance_count: u32,
+    pub usage_count: u32,
+    pub lifetime: u32,
 }

@@ -7,7 +7,6 @@ pub struct SamplerContents {
     pub address_mode_v: vk::SamplerAddressMode,
     pub address_mode_w: vk::SamplerAddressMode,
     pub mipmap_mode: vk::SamplerMipmapMode,
-    pub mipmap_levels: u32,
 }
 
 impl SamplerContents {
@@ -24,7 +23,6 @@ impl SamplerContents {
             address_mode_v,
             address_mode_w,
             mipmap_mode,
-            mipmap_levels: 0,
         }
     }
 }

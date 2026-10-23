@@ -4,5 +4,6 @@ use vulkanalia::prelude::v1_0::*;
 pub struct SamplerUsage {
     pub slot_index: u32,
     pub sampler: vk::Sampler,
-    pub instance_count: u32,
+    pub usage_count: u32,
+    pub lifetime: u32,
 }
