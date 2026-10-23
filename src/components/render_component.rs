@@ -1,18 +1,10 @@
-#![allow(unused)]
-
 use crate::components::TransformComponent;
 use crate::engine::Material;
-use crate::engine::PerInstanceData;
-use crate::engine::QuantizedModelMatrix;
-use crate::engine::VulkanRenderer;
 use crate::engine::vulkan_renderer::VULKAN_RENDERER_SINGLETON;
 use crate::resources::AssetId;
-use anyhow::Result;
 use bevy_ecs::component::Component;
 use bevy_ecs::lifecycle::HookContext;
 use bevy_ecs::world::DeferredWorld;
-use glam::Quat;
-use glam::Vec3;
 
 #[derive(Component, Clone, Copy)]
 #[require(TransformComponent::default())]
@@ -70,17 +62,15 @@ impl RenderComponent {
             unsafe { render_component_query.iter_mut(cell.world_mut()) };
 
         // Create instance
-        let (_, instance_model_matrix_index) = unsafe {
-            vulkan_renderer
-                .add_instance(
-                    query_iter,
-                    render.mesh,
-                    render.material.albedo,
-                    render.material.sampler_contents,
-                    transform_component.to_quantized_matrix(),
-                )
-                .unwrap()
-        };
+        let (_, instance_model_matrix_index) = vulkan_renderer
+            .add_instance(
+                query_iter,
+                render.mesh,
+                render.material.albedo,
+                render.material.sampler_contents,
+                transform_component.to_quantized_matrix(),
+            )
+            .unwrap();
 
         render.instance_transform_index = instance_model_matrix_index as u32;
         transform_component.model_matrix_index = instance_model_matrix_index as u32;
@@ -126,50 +116,4 @@ impl RenderComponent {
         };
         transform.model_matrix_index = u32::MAX;
     }
-
-    // pub fn get_model_matrix_index(&self) -> u32 {
-    //     self.model_matrix_info & 0x7FFFFFFF
-    // }
-
-    // pub fn get_quantized_model_matrix(
-    //     &self,
-    //     vulkan_renderer: &VulkanRenderer,
-    // ) -> Result<QuantizedModelMatrix> {
-    //     let model_matrix =
-    //         vulkan_renderer.get_model_matrix(self.get_model_matrix_index(), self.is_static());
-    //     Ok(model_matrix)
-    // }
-
-    // pub fn is_static(&self) -> bool {
-    //     self.model_matrix_info & 0x80000000 > 0
-    // }
-
-    // pub fn set_model_matrix(
-    //     &self,
-    //     vulkan_renderer: &mut VulkanRenderer,
-    //     position: Vec3,
-    //     rotation: Quat,
-    //     scale: Vec3,
-    // ) {
-    //     vulkan_renderer
-    //         .set_model_matrix(
-    //             self.get_model_matrix_index(),
-    //             position,
-    //             rotation,
-    //             scale,
-    //             self.is_static(),
-    //         )
-    //         .unwrap();
-    // }
-
-    // /// TODO: Connect to world to get vulkan renderer instance and make it moveable between buffers
-    // /// Mark this render transform as static (only works before adding component)
-    // pub fn set_is_static(&mut self, is_static: bool) {
-    //     self.model_matrix_info &= 0x7FFFFFFF;
-    //     self.model_matrix_info |= (is_static as u32) << 31;
-    // }
-
-    // fn set_model_matrix_index(&mut self, val: u32) {
-    //     self.model_matrix_info = (self.model_matrix_info & 0x80000000) | val;
-    // }
 }

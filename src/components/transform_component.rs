@@ -51,4 +51,28 @@ impl TransformComponent {
     pub fn has_render(&self) -> bool {
         self.model_matrix_index != u32::MAX
     }
+
+    pub fn forward(&self) -> Vec3 {
+        self.rotation * glam::Vec3::Z
+    }
+
+    pub fn back(&self) -> Vec3 {
+        self.rotation * glam::Vec3::NEG_Z
+    }
+
+    pub fn left(&self) -> Vec3 {
+        self.rotation * glam::Vec3::NEG_X
+    }
+
+    pub fn right(&self) -> Vec3 {
+        self.rotation * glam::Vec3::X
+    }
+
+    pub fn up(&self) -> Vec3 {
+        self.rotation * glam::Vec3::Y
+    }
+
+    pub fn down(&self) -> Vec3 {
+        self.rotation * glam::Vec3::NEG_Y
+    }
 }

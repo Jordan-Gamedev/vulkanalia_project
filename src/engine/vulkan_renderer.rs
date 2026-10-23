@@ -38,7 +38,6 @@ use crate::resources::*;
 use anyhow::{Result, anyhow};
 use glam::Quat;
 use glam::Vec3;
-use glam::vec3;
 use log::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -1888,11 +1887,6 @@ impl VulkanRenderer {
             //println!("Swapchain took: {:?}", start.elapsed());
             //let start = Instant::now();
 
-            self.update_uniform_buffer()?;
-
-            //println!("Uniform buffer took: {:?}", start.elapsed());
-            //let start = Instant::now();
-
             let command_buffer = self.command_handle.command_buffers[image_index];
             let indirect_draw_buffer = &self.command_handle.indirect_draw_buffers.get_current();
 
@@ -2209,44 +2203,6 @@ impl VulkanRenderer {
             &[buffer_barrier],
             &[] as &[vk::ImageMemoryBarrier],
         );
-    }
-
-    /// TEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMPTEMP
-    /// Updates the uniform buffer object for the Vulkan app
-    fn update_uniform_buffer(&mut self) -> Result<()> {
-        // MVP
-
-        let view = glam::camera::rh::view::look_at_mat4(
-            vec3(0.0, 0.0, -10.0),
-            vec3(0.0, 0.0, 0.0),
-            vec3(0.0, 1.0, 0.0),
-        );
-
-        let proj = glam::camera::rh::proj::vulkan::perspective(
-            45.0 * DEG_TO_RAD,
-            self.present_handle.swapchain_handle.extent.width as f32
-                / self.present_handle.swapchain_handle.extent.height as f32,
-            0.1,
-            1000.0,
-        );
-
-        let ubo = UniformBufferObject { view, proj };
-
-        // Copy
-
-        unsafe {
-            memcpy(
-                &ubo,
-                self.model_handle
-                    .uniform_buffers
-                    .get_current_mut()
-                    .mapped
-                    .cast_mut(),
-                1,
-            );
-        }
-
-        Ok(())
     }
 }
 

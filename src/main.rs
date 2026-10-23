@@ -11,13 +11,15 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Instant;
 use vulkanalia::prelude::v1_0::*;
-use vulkanalia_project::components::RenderComponent;
+use vulkanalia_project::components::{CameraComponent, RenderComponent};
 use vulkanalia_project::engine::Material;
 use vulkanalia_project::engine::SamplerContents;
 use vulkanalia_project::engine::VulkanRenderer;
 use vulkanalia_project::engine::vulkan_renderer::VULKAN_RENDERER_SINGLETON;
 use vulkanalia_project::input_manager::InputManager;
 use vulkanalia_project::resources::*;
+use vulkanalia_project::systems::camera_move_system::camera_move_system;
+use vulkanalia_project::systems::camera_render_system::camera_render_system;
 use vulkanalia_project::{input_manager, prefabs::*};
 use winit::dpi::PhysicalPosition;
 use winit::event::DeviceEvent::MouseMotion;
@@ -29,6 +31,7 @@ use winit::window::CursorGrabMode;
 
 // Runs exactly once at startup
 fn init_spawn(mut commands: Commands) {
+    commands.spawn(CameraComponent::default());
     commands.spawn(CubePrefab::component_bundle());
     commands.spawn(LimpetPrefab::component_bundle());
 }
@@ -37,59 +40,59 @@ fn gameplay_update(mut _commands: Commands) {
     //println!("Gameplay UPDATE");
 }
 
-fn keyboard_input_update(input_manager: Res<InputManager>) {
-    // Move input
-    if input_manager.move_axis_input != glam::Vec2::ZERO {
-        println!("Move Input: {}", input_manager.move_axis_input);
-    }
+// fn keyboard_input_update(input_manager: Res<InputManager>) {
+//     // Move input
+//     if input_manager.move_axis_input != glam::Vec2::ZERO {
+//         println!("Move Input: {}", input_manager.move_axis_input);
+//     }
 
-    // Look input
-    if input_manager.look_axis_input != glam::Vec2::ZERO {
-        println!("Look Input: {}", input_manager.look_axis_input);
-    }
+//     // Look input
+//     if input_manager.look_axis_input != glam::Vec2::ZERO {
+//         println!("Look Input: {}", input_manager.look_axis_input);
+//     }
 
-    // Jump logs
+//     // Jump logs
 
-    if input_manager.jump_input.is_pressed {
-        println!("JUMP pressed");
-    }
+//     if input_manager.jump_input.is_pressed {
+//         println!("JUMP pressed");
+//     }
 
-    if input_manager.jump_input.is_held {
-        println!(
-            "JUMP held for {{{}}} seconds",
-            input_manager.jump_input.hold_time
-        );
-    }
+//     if input_manager.jump_input.is_held {
+//         println!(
+//             "JUMP held for {{{}}} seconds",
+//             input_manager.jump_input.hold_time
+//         );
+//     }
 
-    if input_manager.jump_input.is_just_released {
-        println!("JUMP released");
-        println!(
-            "JUMP was held for a total of {{{}}} seconds",
-            input_manager.jump_input.hold_time
-        );
-    }
+//     if input_manager.jump_input.is_just_released {
+//         println!("JUMP released");
+//         println!(
+//             "JUMP was held for a total of {{{}}} seconds",
+//             input_manager.jump_input.hold_time
+//         );
+//     }
 
-    // Shoot logs
+//     // Shoot logs
 
-    if input_manager.shoot_input.is_pressed {
-        println!("SHOOT pressed");
-    }
+//     if input_manager.shoot_input.is_pressed {
+//         println!("SHOOT pressed");
+//     }
 
-    if input_manager.shoot_input.is_held {
-        println!(
-            "SHOOT held for {{{}}} seconds",
-            input_manager.shoot_input.hold_time
-        );
-    }
+//     if input_manager.shoot_input.is_held {
+//         println!(
+//             "SHOOT held for {{{}}} seconds",
+//             input_manager.shoot_input.hold_time
+//         );
+//     }
 
-    if input_manager.shoot_input.is_just_released {
-        println!("SHOOT released");
-        println!(
-            "SHOOT was held for a total of {{{}}} seconds",
-            input_manager.shoot_input.hold_time
-        );
-    }
-}
+//     if input_manager.shoot_input.is_just_released {
+//         println!("SHOOT released");
+//         println!(
+//             "SHOOT was held for a total of {{{}}} seconds",
+//             input_manager.shoot_input.hold_time
+//         );
+//     }
+// }
 
 fn main() {
     let mut bevy_app = bevy_app::App::new();
@@ -99,9 +102,9 @@ fn main() {
         bevy_time::TimePlugin,
     ));
 
-    const DEFAULT_MOUSE_LOOK_SPEED: f32 = 4.0;
-    const DEFAULT_GAMEPAD_LOOK_SPEED: f32 = 16.0;
-    const DEFAULT_DEADZONES: f32 = 0.05;
+    const DEFAULT_MOUSE_LOOK_SPEED: f32 = 100.0;
+    const DEFAULT_GAMEPAD_LOOK_SPEED: f32 = 32.0;
+    const DEFAULT_DEADZONES: f32 = 0.1;
 
     bevy_app.insert_resource(InputManager::new(
         glam::Vec2::new(DEFAULT_GAMEPAD_LOOK_SPEED, DEFAULT_GAMEPAD_LOOK_SPEED),
@@ -124,9 +127,15 @@ fn main() {
     )
     .unwrap();
 
-    bevy_app
-        .add_systems(Startup, init_spawn)
-        .add_systems(Update, ((keyboard_input_update,), gameplay_update).chain());
+    bevy_app.add_systems(Startup, init_spawn).add_systems(
+        Update,
+        (
+            //(keyboard_input_update,),
+            gameplay_update,
+            (camera_move_system, camera_render_system).chain(),
+        )
+            .chain(),
+    );
 
     let mut is_start = true;
 

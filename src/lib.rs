@@ -6,3 +6,4 @@ pub mod input_action;
 pub mod input_manager;
 pub mod prefabs;
 pub mod resources;
+pub mod systems;

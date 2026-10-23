@@ -37,6 +37,7 @@ pub struct InputManager {
     pub shoot_input: InputAction,
 
     // Gameplay
+    pub raw_look_axis_input: Vec2,
     pub look_axis_input: Vec2,
     pub move_axis_input: Vec2,
 }
@@ -76,6 +77,7 @@ impl InputManager {
                 vec![],
                 vec![],
             ),
+            raw_look_axis_input: Vec2::ZERO,
             look_axis_input: Vec2::ZERO,
             move_axis_input: Vec2::ZERO,
             jump_input: InputAction::new(vec![KeyCode::Space], vec![GamepadButton::South], vec![]),
@@ -100,6 +102,7 @@ impl InputManager {
         self.jump_input.clear();
         self.aim_input.clear();
         self.shoot_input.clear();
+        self.raw_look_axis_input = Vec2::ZERO;
         self.look_axis_input = Vec2::ZERO;
         self.move_axis_input = Vec2::ZERO;
         self.mouse_delta = Vec2::ZERO;
@@ -189,15 +192,18 @@ impl InputManager {
             && let Some(right_stick_y) = gamepad.unwrap().get(GamepadAxis::RightStickY)
         {
             if right_stick_x.abs() > self.gamepad_right_stick_deadzone {
-                self.look_axis_input.x = right_stick_x;
+                self.raw_look_axis_input.x = right_stick_x;
             }
             if right_stick_y.abs() > self.gamepad_right_stick_deadzone {
-                self.look_axis_input.y = right_stick_y;
+                self.raw_look_axis_input.y = right_stick_y;
             }
+
+            self.look_axis_input = self.raw_look_axis_input * self.gamepad_look_speed;
         }
 
-        if self.look_axis_input == Vec2::ZERO {
-            self.look_axis_input = self.mouse_delta;
+        if self.raw_look_axis_input == Vec2::ZERO && !self.is_cursor_visible {
+            self.raw_look_axis_input = Vec2::new(self.mouse_delta.x, -self.mouse_delta.y);
+            self.look_axis_input = self.raw_look_axis_input * self.mouse_look_speed;
         }
     }
 

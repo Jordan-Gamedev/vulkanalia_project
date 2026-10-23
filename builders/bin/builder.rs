@@ -1010,7 +1010,8 @@ fn build() -> Result<()> {
                 "-Zbuild-std=std,core,panic_abort",
                 "-Zunstable-options",
                 "-Zno-embed-metadata",
-                "--release",
+                "--profile",
+                "release-abort",
             ])
             .status()
         {
