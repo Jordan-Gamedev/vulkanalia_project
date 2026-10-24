@@ -104,7 +104,7 @@ float4x4 buildModelMatrix(QuantizedModelMatrix modelMatrix)
 VSOutput vertMain(VSInput input, uint startInstanceId: SV_StartInstanceLocation, uint instanceId: SV_InstanceID)
 {
     VSOutput output;
-    uint instanceIndex = visbuffer[1 + startInstanceId + instanceId];
+    uint instanceIndex = visbuffer[startInstanceId + instanceId];
     PerInstanceData instance = instanceData[instanceIndex];
 
     QuantizedModelMatrix modelMatrix = modelMatrixBuffer[instanceIndex];

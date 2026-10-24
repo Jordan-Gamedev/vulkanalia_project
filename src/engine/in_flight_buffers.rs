@@ -22,7 +22,6 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
         properties: vk::MemoryPropertyFlags,
         alloc_dealloc_threshold: u32,
         initial_contents: Vec<T>,
-        should_preserve_indices: bool,
     ) -> Self {
         let mut buffers: Vec<Buffer<T>> = Vec::new();
         for _ in 0..max_frames_in_flight {
@@ -34,7 +33,6 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
                 properties,
                 alloc_dealloc_threshold,
                 initial_contents.clone(),
-                should_preserve_indices,
             ));
         }
 
@@ -78,19 +76,12 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
     ) {
         self.current_frame_index = (self.current_frame_index + 1) % self.max_frames_in_flight;
         if self.num_frames_needing_update > 0 {
-            let (
-                updated_buffer,
-                updated_element_count,
-                updated_element_capacity,
-                available_indices,
-                contents,
-            ) = {
+            let (updated_buffer, updated_element_count, updated_element_capacity, contents) = {
                 let updated_buffer = self.buffers.get(self.updated_buffer_frame_index).unwrap();
                 (
                     updated_buffer.buffer,
                     updated_buffer.element_count,
                     updated_buffer.element_capacity,
-                    updated_buffer.available_indices.clone(),
                     updated_buffer
                         .get_buffer_items(device_context, command_pool, true)
                         .unwrap(),
@@ -109,7 +100,6 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
                 .unwrap();
 
                 current_buffer.element_count = updated_element_count;
-                current_buffer.available_indices = available_indices;
             } else {
                 current_buffer.recreate(
                     device_context,
@@ -120,7 +110,6 @@ impl<T: Clone + std::fmt::Debug + Default> InFlightBuffers<T> {
                 );
 
                 current_buffer.element_count = updated_element_count;
-                current_buffer.available_indices = available_indices;
             }
 
             self.num_frames_needing_update -= 1;

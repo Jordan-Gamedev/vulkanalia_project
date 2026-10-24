@@ -85,7 +85,7 @@ unsafe impl Send for VulkanRenderer {}
 pub static VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<Mutex<VulkanRenderer>> =
     std::sync::LazyLock::new(|| Mutex::new(VulkanRenderer::new().unwrap()));
 
-// TODO: FIX ISSUE WITH MANY INSTANCES (GREATER THAN 32??) CAUSING FLICKERING AND BROKEN VISUALS
+// TODO: FIX ISSUE WITH MESH METADATA not being chosen properly, also crash on high numbers of instances
 impl VulkanRenderer {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -491,7 +491,7 @@ impl VulkanRenderer {
                 .to_vec()
             };
 
-            let instance_count = instance_buffer.element_count + 1;
+            let instance_count = instance_buffer.element_count;
 
             // Add empty instances to the end of the buffer
             instances.extend(vec![
@@ -510,7 +510,6 @@ impl VulkanRenderer {
                     .descriptor_sets[self.command_handle.sync_handle.current_frame],
                 INSTANCE_DATA_BINDING,
             );
-            instance_buffer.available_indices.clear();
             instance_buffer.element_count = instance_count as u32;
 
             // Update visbuffer size
@@ -518,7 +517,7 @@ impl VulkanRenderer {
             visbuffer.recreate(
                 &self.device_context,
                 self.command_handle.command_pool,
-                vec![0; instance_count2 + 1],
+                vec![0; instance_count2],
                 self.render_pipeline_handle
                     .descriptor_handle
                     .descriptor_sets[self.command_handle.sync_handle.current_frame],
@@ -554,7 +553,6 @@ impl VulkanRenderer {
                     .descriptor_sets[self.command_handle.sync_handle.current_frame],
                 MODEL_MATRIX_BINDING,
             );
-            model_matrix_buffer.available_indices.clear();
             model_matrix_buffer.element_count = instance_buffer.element_count;
         }
 
@@ -695,7 +693,6 @@ impl VulkanRenderer {
             remove_index,
         )?;
         instance_buffer.element_count = instance_count;
-        instance_buffer.available_indices.clear();
 
         // Remove model matrix
         model_matrix_buffer.remove_item_at(
@@ -708,7 +705,6 @@ impl VulkanRenderer {
             remove_index,
         )?;
         model_matrix_buffer.element_count = model_count;
-        model_matrix_buffer.available_indices.clear();
 
         // Update stored instance/transform indices for render components
         for mut render_component in render_component_query_iterator {
@@ -1065,6 +1061,17 @@ impl VulkanRenderer {
             metadata_index,
         };
 
+        let metadata_items = self
+            .model_handle
+            .mesh_metadata_buffers
+            .get_current()
+            .get_buffer_items(
+                &self.device_context,
+                self.command_handle.command_pool,
+                false,
+            )
+            .unwrap();
+
         self.model_handle.loaded_meshes.insert(mesh_asset_id, mesh);
 
         Ok(())
@@ -1077,13 +1084,37 @@ impl VulkanRenderer {
             return Ok(());
         }
 
-        let unloading_mesh = self
+        let unloading_metadata_index = self
             .model_handle
             .loaded_meshes
-            .get_mut(&mesh_asset_id)
-            .unwrap();
+            .get(&mesh_asset_id)
+            .unwrap()
+            .metadata_index;
 
-        if unloading_mesh.lifetime == MAX_FRAMES_IN_FLIGHT {
+        if self
+            .model_handle
+            .loaded_meshes
+            .get(&mesh_asset_id)
+            .unwrap()
+            .usage_count
+            > 0
+        {
+            self.model_handle
+                .loaded_meshes
+                .get_mut(&mesh_asset_id)
+                .unwrap()
+                .lifetime = MAX_FRAMES_IN_FLIGHT;
+            return Ok(());
+        }
+
+        if self
+            .model_handle
+            .loaded_meshes
+            .get(&mesh_asset_id)
+            .unwrap()
+            .lifetime
+            == MAX_FRAMES_IN_FLIGHT
+        {
             // Remove mesh metadata
 
             self.model_handle
@@ -1098,8 +1129,15 @@ impl VulkanRenderer {
                     .descriptor_handle
                     .descriptor_sets[self.command_handle.sync_handle.current_frame],
                 MESH_METADATA_BINDING,
-                unloading_mesh.metadata_index as u32,
+                unloading_metadata_index as u32,
             )?;
+
+            // Update references to metadata indexes
+            for (_, mesh) in self.model_handle.loaded_meshes.iter_mut() {
+                if mesh.metadata_index > unloading_metadata_index {
+                    mesh.metadata_index -= 1;
+                }
+            }
 
             // Update instance metadata info
 
@@ -1111,12 +1149,14 @@ impl VulkanRenderer {
             for i in 0..instance_buffer.element_count as usize {
                 let instance =
                     unsafe { instance_buffer.mapped.add(i).cast_mut().as_mut().unwrap() };
-                if instance.mesh_metadata_index > unloading_mesh.metadata_index {
+                if instance.mesh_metadata_index > unloading_metadata_index {
                     instance.mesh_metadata_index -= 1;
                 }
             }
 
             // Update indirect draw buffer
+
+            let unloading_mesh = self.model_handle.loaded_meshes.get(&mesh_asset_id).unwrap();
 
             self.command_handle
                 .indirect_draw_buffers
@@ -1144,6 +1184,12 @@ impl VulkanRenderer {
                 indirect_draw_data_remove_index as u32 + 4 as u32,
             )?;
         }
+
+        let unloading_mesh = self
+            .model_handle
+            .loaded_meshes
+            .get_mut(&mesh_asset_id)
+            .unwrap();
 
         unloading_mesh.lifetime -= 1;
 
@@ -1454,6 +1500,22 @@ impl VulkanRenderer {
             return Ok(());
         }
 
+        if self
+            .texture_handle
+            .loaded_textures
+            .get(&texture_asset_id)
+            .unwrap()
+            .usage_count
+            > 0
+        {
+            self.texture_handle
+                .loaded_textures
+                .get_mut(&texture_asset_id)
+                .unwrap()
+                .lifetime = MAX_FRAMES_IN_FLIGHT;
+            return Ok(());
+        }
+
         self.texture_handle
             .loaded_textures
             .get_mut(&texture_asset_id)
@@ -1484,6 +1546,22 @@ impl VulkanRenderer {
 
     pub fn try_unload_sampler(&mut self, sampler_contents: SamplerContents) -> Result<()> {
         if !self.texture_handle.samplers.contains_key(&sampler_contents) {
+            return Ok(());
+        }
+
+        if self
+            .texture_handle
+            .samplers
+            .get(&sampler_contents)
+            .unwrap()
+            .usage_count
+            > 0
+        {
+            self.texture_handle
+                .samplers
+                .get_mut(&sampler_contents)
+                .unwrap()
+                .lifetime = MAX_FRAMES_IN_FLIGHT;
             return Ok(());
         }
 
@@ -1906,6 +1984,17 @@ impl VulkanRenderer {
                 .get_current()
                 .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
                 .unwrap();
+            let metadata_items = self
+                .model_handle
+                .mesh_metadata_buffers
+                .get_current()
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap();
+
+            for i in 0..metadata_items.len().min(10) {
+                println!("metadata: {:#?}", metadata_items[i]);
+            }
+            println!("-----------------------------------------------------------------");
 
             for i in 0..instances.len() {
                 println!("{:#?}", instances[i]);
@@ -2113,42 +2202,42 @@ impl VulkanRenderer {
         let device = self.device_context.device.clone();
         let indirect_draw_buffer = self.command_handle.indirect_draw_buffers.get_current();
 
-        // Clear visbuffer data
+        // // Clear visbuffer data
 
-        device.cmd_fill_buffer(
-            command_buffer,
-            self.command_handle
-                .main_camera_visbuffers
-                .get_current()
-                .buffer,
-            0,
-            size_of::<u32>() as u64,
-            0,
-        );
+        // device.cmd_fill_buffer(
+        //     command_buffer,
+        //     self.command_handle
+        //         .main_camera_visbuffers
+        //         .get_current()
+        //         .buffer,
+        //     0,
+        //     size_of::<u32>() as u64,
+        //     0,
+        // );
 
-        let buffer_barrier = vk::BufferMemoryBarrier::builder()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .buffer(
-                self.command_handle
-                    .main_camera_visbuffers
-                    .get_current()
-                    .buffer,
-            )
-            .offset(0)
-            .size(size_of::<u32>() as u64);
+        // let buffer_barrier = vk::BufferMemoryBarrier::builder()
+        //     .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        //     .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+        //     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        //     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        //     .buffer(
+        //         self.command_handle
+        //             .main_camera_visbuffers
+        //             .get_current()
+        //             .buffer,
+        //     )
+        //     .offset(0)
+        //     .size(size_of::<u32>() as u64);
 
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[] as &[vk::MemoryBarrier],
-            &[buffer_barrier],
-            &[] as &[vk::ImageMemoryBarrier],
-        );
+        // device.cmd_pipeline_barrier(
+        //     command_buffer,
+        //     vk::PipelineStageFlags::TRANSFER,
+        //     vk::PipelineStageFlags::COMPUTE_SHADER,
+        //     vk::DependencyFlags::empty(),
+        //     &[] as &[vk::MemoryBarrier],
+        //     &[buffer_barrier],
+        //     &[] as &[vk::ImageMemoryBarrier],
+        // );
 
         // First pass
 
@@ -2257,6 +2346,97 @@ impl VulkanRenderer {
             command_buffer,
             vk::PipelineBindPoint::COMPUTE,
             self.render_pipeline_handle.culling_pipeline_layouts[2],
+            0,
+            &[self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets[current_frame]],
+            &[],
+        );
+
+        device.cmd_dispatch(command_buffer, 1, 1, 1);
+
+        let buffer_barrier = vk::BufferMemoryBarrier::builder()
+            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(indirect_draw_buffer.buffer)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[] as &[vk::MemoryBarrier],
+            &[buffer_barrier],
+            &[] as &[vk::ImageMemoryBarrier],
+        );
+
+        // Fourth pass
+
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            self.render_pipeline_handle.culling_pipelines[3],
+        );
+        device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            self.render_pipeline_handle.culling_pipeline_layouts[3],
+            0,
+            &[self
+                .render_pipeline_handle
+                .descriptor_handle
+                .descriptor_sets[current_frame]],
+            &[],
+        );
+
+        device.cmd_dispatch(
+            command_buffer,
+            (self
+                .command_handle
+                .instance_buffers
+                .get_current()
+                .element_count
+                + 63)
+                / 64,
+            1,
+            1,
+        );
+
+        let buffer_barrier = vk::BufferMemoryBarrier::builder()
+            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(indirect_draw_buffer.buffer)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[] as &[vk::MemoryBarrier],
+            &[buffer_barrier],
+            &[] as &[vk::ImageMemoryBarrier],
+        );
+
+        // Fifth pass
+
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            self.render_pipeline_handle.culling_pipelines[4],
+        );
+        device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            self.render_pipeline_handle.culling_pipeline_layouts[4],
             0,
             &[self
                 .render_pipeline_handle
@@ -3562,23 +3742,46 @@ unsafe fn create_compute_pipelines(
     device_context: &DeviceContext,
 ) -> Result<(Vec<vk::Pipeline>, Vec<vk::PipelineLayout>)> {
     let shader = include_bytes!("../../assets/shaders/culling.spv");
-
     let shader_module = create_shader_module(&device_context.device, shader)?;
+    const SHADER_STAGE_COUNT: usize = 5;
 
-    let culling_stage_1 = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::COMPUTE)
-        .module(shader_module)
-        .name(b"pass1\0");
+    let culling_stage_1_name = b"pass1\0";
+    let culling_stage_2_name = b"pass2\0";
+    let culling_stage_3_name = b"pass3\0";
+    let culling_stage_4_name = b"pass4\0";
+    let culling_stage_5_name = b"pass5\0";
 
-    let culling_stage_2 = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::COMPUTE)
-        .module(shader_module)
-        .name(b"pass2\0");
-
-    let culling_stage_3 = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::COMPUTE)
-        .module(shader_module)
-        .name(b"pass3\0");
+    let mut culling_stages: Vec<vk::PipelineShaderStageCreateInfoBuilder> = Vec::new();
+    culling_stages.push(
+        vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(shader_module)
+            .name(culling_stage_1_name),
+    );
+    culling_stages.push(
+        vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(shader_module)
+            .name(culling_stage_2_name),
+    );
+    culling_stages.push(
+        vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(shader_module)
+            .name(culling_stage_3_name),
+    );
+    culling_stages.push(
+        vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(shader_module)
+            .name(culling_stage_4_name),
+    );
+    culling_stages.push(
+        vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(shader_module)
+            .name(culling_stage_5_name),
+    );
 
     // Layout
     let set_layouts = &[descriptor_set_layout];
@@ -3591,35 +3794,29 @@ unsafe fn create_compute_pipelines(
         .set_layouts(set_layouts)
         .push_constant_ranges(push_constant_ranges);
 
-    let pipeline_layout_1 = device_context
-        .device
-        .create_pipeline_layout(&layout_info, None)?;
-    let pipeline_layout_2 = device_context
-        .device
-        .create_pipeline_layout(&layout_info, None)?;
-    let pipeline_layout_3 = device_context
-        .device
-        .create_pipeline_layout(&layout_info, None)?;
+    let mut pipeline_layouts: Vec<vk::PipelineLayout> = Vec::new();
+    for i in 0..SHADER_STAGE_COUNT {
+        pipeline_layouts.push(
+            device_context
+                .device
+                .create_pipeline_layout(&layout_info, None)?,
+        );
+    }
 
     // Create
 
-    let pipeline_info_1 = vk::ComputePipelineCreateInfo::builder()
-        .stage(culling_stage_1)
-        .layout(pipeline_layout_1);
-    let pipeline_info_2 = vk::ComputePipelineCreateInfo::builder()
-        .stage(culling_stage_2)
-        .layout(pipeline_layout_2);
-    let pipeline_info_3 = vk::ComputePipelineCreateInfo::builder()
-        .stage(culling_stage_3)
-        .layout(pipeline_layout_3);
+    let mut pipeline_infos: Vec<vk::ComputePipelineCreateInfoBuilder> = Vec::new();
+    for i in 0..SHADER_STAGE_COUNT {
+        pipeline_infos.push(
+            vk::ComputePipelineCreateInfo::builder()
+                .stage(culling_stages[i])
+                .layout(pipeline_layouts[i]),
+        );
+    }
 
     let cull_pipelines = device_context
         .device
-        .create_compute_pipelines(
-            vk::PipelineCache::null(),
-            &[pipeline_info_1, pipeline_info_2, pipeline_info_3],
-            None,
-        )?
+        .create_compute_pipelines(vk::PipelineCache::null(), &pipeline_infos, None)?
         .0;
 
     // Cleanup
@@ -3628,10 +3825,7 @@ unsafe fn create_compute_pipelines(
         .device
         .destroy_shader_module(shader_module, None);
 
-    Ok((
-        cull_pipelines,
-        vec![pipeline_layout_1, pipeline_layout_2, pipeline_layout_3],
-    ))
+    Ok((cull_pipelines, pipeline_layouts))
 }
 
 unsafe fn create_pipeline(
@@ -3903,7 +4097,6 @@ fn create_indirect_draw_buffers(
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         INDIRECT_DRAW_DATA_CHUNK_COUNT as u32,
         Vec::new(),
-        false,
     )
 }
 
@@ -3920,7 +4113,6 @@ fn create_instance_buffers(
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         INSTANCE_CHUNK_COUNT as u32,
         vec![PerInstanceData::default(); INSTANCE_CHUNK_COUNT],
-        false,
     );
 
     for i in 0..buffers.buffers.len() {
@@ -3942,8 +4134,7 @@ fn create_visbuffers(
         vk::BufferUsageFlags::STORAGE_BUFFER,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
         INSTANCE_CHUNK_COUNT as u32,
-        vec![u32::MAX; INSTANCE_CHUNK_COUNT + 1],
-        false,
+        vec![u32::MAX; INSTANCE_CHUNK_COUNT],
     )
 }
 
@@ -4171,7 +4362,6 @@ fn create_uniform_buffers(
         vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         0,
         vec![UniformBufferObject::default()],
-        false,
     )
 }
 
@@ -4188,7 +4378,6 @@ fn create_model_matrix_buffers(
         vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         INSTANCE_CHUNK_COUNT as u32,
         vec![QuantizedModelMatrix::default(); INSTANCE_CHUNK_COUNT],
-        false,
     );
 
     for i in 0..buffers.buffers.len() {
@@ -4211,7 +4400,6 @@ fn create_mesh_metadata_buffers(
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
         2048,
         Vec::new(),
-        true,
     )
 }
 

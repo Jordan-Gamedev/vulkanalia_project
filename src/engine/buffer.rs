@@ -14,14 +14,12 @@ pub struct Buffer<T: Clone + std::fmt::Debug + Default> {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub mapped: *const T,
-    pub available_indices: std::collections::BTreeSet<u32>,
     pub element_count: u32,
     pub element_capacity: u32,
     pub alloc_dealloc_threshold: u32,
     pub usage: vk::BufferUsageFlags,
     pub properties: vk::MemoryPropertyFlags,
     pub is_host_visible: bool,
-    pub is_preserving_indices: bool,
 }
 
 impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
@@ -33,7 +31,6 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         properties: vk::MemoryPropertyFlags,
         alloc_dealloc_threshold: u32,
         initial_contents: Vec<T>,
-        should_preserve_indices: bool,
     ) -> Self {
         unsafe {
             let device = device_context.device.clone();
@@ -94,15 +91,12 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                     buffer: device_buffer,
                     memory: device_buffer_memory,
                     mapped: std::ptr::null_mut(),
-                    available_indices: (initial_contents_count as u32..initial_capacity as u32)
-                        .collect(),
                     element_count: initial_contents_count as u32,
                     element_capacity: initial_capacity as u32,
                     alloc_dealloc_threshold: alloc_dealloc_threshold,
                     usage: usage,
                     properties: properties,
                     is_host_visible: false,
-                    is_preserving_indices: should_preserve_indices,
                 }
             } else {
                 let (buffer, memory, mapped) = Buffer::<T>::create_buffer(
@@ -119,15 +113,12 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                     buffer: buffer,
                     memory: memory,
                     mapped: mapped,
-                    available_indices: (initial_contents_count as u32..initial_capacity as u32)
-                        .collect(),
                     element_count: initial_contents_count as u32,
                     element_capacity: initial_capacity as u32,
                     alloc_dealloc_threshold: alloc_dealloc_threshold,
                     usage: usage,
                     properties: properties,
                     is_host_visible: true,
-                    is_preserving_indices: should_preserve_indices,
                 }
             }
         }
@@ -146,8 +137,6 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 self.buffer = vk::Buffer::null();
                 self.memory = vk::DeviceMemory::null();
             }
-
-            self.available_indices.clear();
         }
     }
 
@@ -179,7 +168,6 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             self.properties,
             self.alloc_dealloc_threshold,
             contents,
-            self.is_preserving_indices,
         );
 
         *self = new_buffer;
@@ -303,7 +291,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             // Collect contents
             let mut contents: Vec<T> = Vec::with_capacity(self.element_capacity as usize);
             for i in 0..self.element_capacity {
-                if include_empty || !self.available_indices.contains(&i) {
+                if include_empty || i < self.element_count {
                     contents.push(mapped.add(i as usize).read());
                 }
             }
@@ -329,14 +317,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
     ) -> Result<()> {
         let (buffer, memory, mapped) = self.get_buffer_parts(device_context, command_pool);
 
-        while items.len() > 0
-            && let Some(available_index) = self.available_indices.pop_first()
-        {
-            unsafe { *mapped.add(available_index as usize).cast_mut() = items.remove(0) };
-            self.element_count += 1;
-        }
-
-        if items.len() > 0 {
+        if items.len() as u32 + self.element_count > self.element_capacity {
             // Get items from current buffer
             let mut total_items: Vec<T> = unsafe {
                 std::slice::from_raw_parts(mapped.cast(), self.element_capacity as usize).to_vec()
@@ -352,6 +333,22 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
                 descriptor_set,
                 descriptor_binding,
             );
+        } else {
+            while items.len() > 0 {
+                unsafe { *mapped.add(self.element_count as usize).cast_mut() = items.remove(0) };
+                self.element_count += 1;
+            }
+
+            if !self.is_host_visible {
+                Buffer::<T>::copy_buffer(
+                    &device_context,
+                    command_pool,
+                    buffer,
+                    self.buffer,
+                    self.element_capacity as u64,
+                )
+                .unwrap();
+            }
         }
 
         // Cleanup
@@ -375,70 +372,20 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         start_remove_index: u32,
         stop_remove_index: u32,
     ) -> Result<()> {
-        if self.is_preserving_indices {
-            self.element_count -= stop_remove_index - start_remove_index;
-            self.available_indices
-                .extend(start_remove_index..stop_remove_index);
+        // Get items from current buffer
+        let mut total_items: Vec<T> = self.get_buffer_items(device_context, command_pool, false)?;
 
-            // Get furthest element index used
-            let mut furthest_used_index: u32 = self.element_capacity - 1;
+        // Remove in between items
+        total_items.drain(start_remove_index as usize..stop_remove_index as usize);
 
-            if let Some(mut prev_val) = self.available_indices.iter().last() {
-                for i in self.available_indices.iter().rev() {
-                    if prev_val - i > 1 {
-                        break;
-                    }
-                    prev_val = i;
-                }
-                furthest_used_index = *prev_val;
-            }
-
-            // Get furthest element index not used
-            let furthest_empty_index = *self
-                .available_indices
-                .last()
-                .unwrap_or(&(self.element_capacity - 1));
-
-            let num_empty_end_indices = furthest_empty_index - furthest_used_index;
-
-            if num_empty_end_indices >= self.alloc_dealloc_threshold {
-                // Get items from current buffer
-                let mut total_items: Vec<T> =
-                    self.get_buffer_items(device_context, command_pool, true)?;
-
-                for _ in furthest_used_index + 1..=furthest_empty_index {
-                    total_items.pop();
-                    self.available_indices.pop_last();
-                }
-
-                // Create a new buffer with all the items
-                let available_indices = self.available_indices.clone();
-                self.recreate(
-                    device_context,
-                    command_pool,
-                    total_items,
-                    descriptor_set,
-                    descriptor_binding,
-                );
-                self.available_indices = available_indices;
-            }
-        } else {
-            // Get items from current buffer
-            let mut total_items: Vec<T> =
-                self.get_buffer_items(device_context, command_pool, false)?;
-
-            // Remove in between items
-            total_items.drain(start_remove_index as usize..stop_remove_index as usize);
-
-            // Create a new buffer with all the items
-            self.recreate(
-                device_context,
-                command_pool,
-                total_items,
-                descriptor_set,
-                descriptor_binding,
-            );
-        }
+        // Create a new buffer with all the items
+        self.recreate(
+            device_context,
+            command_pool,
+            total_items,
+            descriptor_set,
+            descriptor_binding,
+        );
 
         Ok(())
     }
@@ -452,12 +399,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         descriptor_binding: u32,
         item: T,
     ) -> Result<u32> {
-        let chosen_index = if self.available_indices.len() > 0 {
-            self.available_indices.first()
-        } else {
-            Some(&self.element_count)
-        };
-        let chosen_index = *chosen_index.unwrap();
+        let chosen_index = self.element_count;
         self.add_items(
             context,
             command_pool,
