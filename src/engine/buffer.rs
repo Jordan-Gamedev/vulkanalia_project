@@ -160,7 +160,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             .max(self.alloc_dealloc_threshold);
 
         // Create the new buffer
-        let new_buffer = Buffer::new(
+        let mut new_buffer = Buffer::new(
             device_context,
             command_pool,
             initial_capacity as u64,
@@ -169,6 +169,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
             self.alloc_dealloc_threshold,
             contents,
         );
+        new_buffer.element_count = self.element_count;
 
         *self = new_buffer;
 
@@ -373,7 +374,7 @@ impl<T: Clone + std::fmt::Debug + Default> Buffer<T> {
         stop_remove_index: u32,
     ) -> Result<()> {
         // Get items from current buffer
-        let mut total_items: Vec<T> = self.get_buffer_items(device_context, command_pool, false)?;
+        let mut total_items: Vec<T> = self.get_buffer_items(device_context, command_pool, true)?;
 
         // Remove in between items
         total_items.drain(start_remove_index as usize..stop_remove_index as usize);

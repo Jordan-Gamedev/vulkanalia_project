@@ -35,11 +35,118 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::CursorGrabMode;
 
 // Runs exactly once at startup
-fn init_spawn(mut rng: Single<&mut WyRand, With<GlobalRng>>, mut commands: Commands) {
+fn init_spawn(mut _rng: Single<&mut WyRand, With<GlobalRng>>, mut commands: Commands) {
     commands.spawn(CameraComponent::default());
+    //commands.spawn(CubePrefab::component_bundle());
+    //commands.spawn(LimpetPrefab::component_bundle());
 
-    let num_cubes = rng.random_range(32..=32);
-    for _ in 0..num_cubes {
+    // let num_cubes = rng.random_range(32..=32);
+    // for _ in 0..num_cubes {
+    //     let spawn_pos: Vec3 = Vec3::new(
+    //         rng.as_mut().random_range(-50.0..=50.0) as f32,
+    //         rng.as_mut().random_range(-50.0..=50.0) as f32,
+    //         rng.as_mut().random_range(-50.0..=50.0) as f32,
+    //     );
+
+    //     let random_texture: AssetId =
+    //         AssetId::from_repr(rng.random_range(START_ENUM_T..=END_ENUM_T) as u16).unwrap();
+
+    //     let random_size = rng.random_range(0.05..=2.0);
+
+    //     commands.spawn((
+    //         TransformComponent::new(
+    //             spawn_pos,
+    //             Vec3::new(random_size, random_size, random_size),
+    //             Quat::from_euler(
+    //                 glam::EulerRot::YXZ,
+    //                 rng.random_range(-180.0..180.0),
+    //                 rng.random_range(-180.0..180.0),
+    //                 rng.random_range(-180.0..180.0),
+    //             ),
+    //         ),
+    //         RenderComponent::new(
+    //             AssetId::CubeMesh,
+    //             Material::new(
+    //                 random_texture,
+    //                 AssetId::None,
+    //                 AssetId::None,
+    //                 SamplerContents::new(
+    //                     vk::Filter::LINEAR,
+    //                     vk::SamplerAddressMode::REPEAT,
+    //                     vk::SamplerAddressMode::REPEAT,
+    //                     vk::SamplerAddressMode::REPEAT,
+    //                     vk::SamplerMipmapMode::LINEAR,
+    //                 ),
+    //             ),
+    //             true,
+    //             true,
+    //         ),
+    //     ));
+    // }
+
+    // let num_limpets = rng.random_range(32..=32);
+    // for _ in 0..num_limpets {
+    //     let spawn_pos: Vec3 = Vec3::new(
+    //         rng.as_mut().random_range(-50.0..=50.0) as f32,
+    //         rng.as_mut().random_range(-50.0..=50.0) as f32,
+    //         rng.as_mut().random_range(-50.0..=50.0) as f32,
+    //     );
+
+    //     let random_texture: AssetId =
+    //         AssetId::from_repr(rng.random_range(START_ENUM_T..=END_ENUM_T) as u16).unwrap();
+
+    //     let random_size = rng.random_range(0.05..=2.0);
+
+    //     commands.spawn((
+    //         TransformComponent::new(
+    //             spawn_pos,
+    //             Vec3::new(random_size, random_size, random_size),
+    //             Quat::from_euler(
+    //                 glam::EulerRot::YXZ,
+    //                 rng.random_range(-180.0..180.0),
+    //                 rng.random_range(-180.0..180.0),
+    //                 rng.random_range(-180.0..180.0),
+    //             ),
+    //         ),
+    //         RenderComponent::new(
+    //             AssetId::LimpetMesh,
+    //             Material::new(
+    //                 random_texture,
+    //                 AssetId::None,
+    //                 AssetId::None,
+    //                 SamplerContents::new(
+    //                     vk::Filter::LINEAR,
+    //                     vk::SamplerAddressMode::REPEAT,
+    //                     vk::SamplerAddressMode::REPEAT,
+    //                     vk::SamplerAddressMode::REPEAT,
+    //                     vk::SamplerMipmapMode::LINEAR,
+    //                 ),
+    //             ),
+    //             true,
+    //             true,
+    //         ),
+    //     ));
+    // }
+}
+
+fn gameplay_update(mut _commands: Commands) {
+    //println!("Gameplay UPDATE");
+}
+
+#[derive(Resource)]
+struct TempStruct {
+    pub cube_count: u64,
+    pub limpet_count: u64,
+}
+
+fn temp_spawn_test(
+    mut temp_struct: ResMut<TempStruct>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut rng: Single<&mut WyRand, With<GlobalRng>>,
+    render_query: Query<(Entity, &RenderComponent)>,
+    mut commands: Commands,
+) {
+    if keyboard.pressed(KeyCode::Space) {
         let spawn_pos: Vec3 = Vec3::new(
             rng.as_mut().random_range(-50.0..=50.0) as f32,
             rng.as_mut().random_range(-50.0..=50.0) as f32,
@@ -80,10 +187,37 @@ fn init_spawn(mut rng: Single<&mut WyRand, With<GlobalRng>>, mut commands: Comma
                 true,
             ),
         ));
+
+        temp_struct.cube_count += 1;
+        println!(
+            "cubes: {} limpets: {} total: {}",
+            temp_struct.cube_count,
+            temp_struct.limpet_count,
+            temp_struct.cube_count + temp_struct.limpet_count
+        );
     }
 
-    let num_limpets = rng.random_range(32..=32);
-    for _ in 0..num_limpets {
+    if keyboard.pressed(KeyCode::ControlLeft) {
+        let (entities, _): (Vec<Entity>, Vec<RenderComponent>) = render_query
+            .iter()
+            .filter(|&(_, r)| r.mesh == AssetId::CubeMesh)
+            .unzip();
+
+        if entities.len() > 0 {
+            let rand_chosen = rng.random_range(0..entities.len());
+            commands.entity(entities[rand_chosen]).despawn();
+        }
+
+        temp_struct.cube_count -= 1;
+        println!(
+            "cubes: {} limpets: {} total: {}",
+            temp_struct.cube_count,
+            temp_struct.limpet_count,
+            temp_struct.cube_count + temp_struct.limpet_count
+        );
+    }
+
+    if keyboard.pressed(KeyCode::ShiftLeft) {
         let spawn_pos: Vec3 = Vec3::new(
             rng.as_mut().random_range(-50.0..=50.0) as f32,
             rng.as_mut().random_range(-50.0..=50.0) as f32,
@@ -124,61 +258,17 @@ fn init_spawn(mut rng: Single<&mut WyRand, With<GlobalRng>>, mut commands: Comma
                 true,
             ),
         ));
-    }
 
-    //commands.spawn(CubePrefab::component_bundle());
-    //commands.spawn(LimpetPrefab::component_bundle());
-}
-
-fn gameplay_update(mut _commands: Commands) {
-    //println!("Gameplay UPDATE");
-}
-
-fn temp_spawn_test(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut rng: Single<&mut WyRand, With<GlobalRng>>,
-    render_query: Query<(Entity, &RenderComponent)>,
-    mut commands: Commands,
-) {
-    if keyboard.just_pressed(KeyCode::Space) {
-        let spawn_pos: Vec3 = Vec3::new(
-            rng.as_mut().random_range(-5.0..=5.0) as f32,
-            rng.as_mut().random_range(-5.0..=5.0) as f32,
-            10.0 + rng.as_mut().random_range(-5.0..=5.0) as f32,
+        temp_struct.limpet_count += 1;
+        println!(
+            "cubes: {} limpets: {} total: {}",
+            temp_struct.cube_count,
+            temp_struct.limpet_count,
+            temp_struct.cube_count + temp_struct.limpet_count
         );
-
-        commands.spawn((
-            TransformComponent::new(spawn_pos, Vec3::new(0.5, 0.5, 0.5), Quat::IDENTITY),
-            CubePrefab::component_bundle().1,
-        ));
     }
 
-    if keyboard.just_pressed(KeyCode::ControlLeft) {
-        let (entities, _): (Vec<Entity>, Vec<RenderComponent>) = render_query
-            .iter()
-            .filter(|&(_, r)| r.mesh == AssetId::CubeMesh)
-            .unzip();
-
-        if entities.len() > 0 {
-            let rand_chosen = rng.random_range(0..entities.len());
-            commands.entity(entities[rand_chosen]).despawn();
-        }
-    }
-
-    if keyboard.just_pressed(KeyCode::ShiftLeft) {
-        let spawn_pos: Vec3 = Vec3::new(
-            rng.as_mut().random_range(-5.0..=5.0) as f32,
-            rng.as_mut().random_range(-5.0..=5.0) as f32,
-            10.0 + rng.as_mut().random_range(-5.0..=5.0) as f32,
-        );
-
-        commands.spawn((
-            TransformComponent::new(spawn_pos, Vec3::new(0.5, 0.5, 0.5), Quat::IDENTITY),
-            LimpetPrefab::component_bundle().1,
-        ));
-    }
-
-    if keyboard.just_pressed(KeyCode::Tab) {
+    if keyboard.pressed(KeyCode::Tab) {
         let (entities, _): (Vec<Entity>, Vec<RenderComponent>) = render_query
             .iter()
             .filter(|&(_, r)| r.mesh == AssetId::LimpetMesh)
@@ -188,6 +278,14 @@ fn temp_spawn_test(
             let rand_chosen = rng.random_range(0..entities.len());
             commands.entity(entities[rand_chosen]).despawn();
         }
+
+        temp_struct.limpet_count -= 1;
+        println!(
+            "cubes: {} limpets: {} total: {}",
+            temp_struct.cube_count,
+            temp_struct.limpet_count,
+            temp_struct.cube_count + temp_struct.limpet_count
+        );
     }
 }
 
@@ -266,6 +364,10 @@ fn main() {
     ));
     bevy_app.init_resource::<ButtonInput<KeyCode>>();
     bevy_app.init_resource::<ButtonInput<MouseButton>>();
+    bevy_app.insert_resource(TempStruct {
+        cube_count: 0,
+        limpet_count: 0,
+    });
 
     let event_loop = Arc::into_inner(
         VULKAN_RENDERER_SINGLETON

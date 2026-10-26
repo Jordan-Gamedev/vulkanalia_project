@@ -85,7 +85,6 @@ unsafe impl Send for VulkanRenderer {}
 pub static VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<Mutex<VulkanRenderer>> =
     std::sync::LazyLock::new(|| Mutex::new(VulkanRenderer::new().unwrap()));
 
-// TODO: FIX ISSUE WITH MESH METADATA not being chosen properly, also crash on high numbers of instances
 impl VulkanRenderer {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -560,12 +559,7 @@ impl VulkanRenderer {
         let new_instance = PerInstanceData {
             texture_index,
             sampler_index,
-            mesh_metadata_index: self
-                .model_handle
-                .loaded_meshes
-                .get(&mesh_asset_id)
-                .unwrap()
-                .metadata_index,
+            mesh_metadata_index: mesh.metadata_index,
             mesh_asset_id: mesh_asset_id as u16,
         };
 
@@ -1060,17 +1054,6 @@ impl VulkanRenderer {
             lifetime: MAX_FRAMES_IN_FLIGHT,
             metadata_index,
         };
-
-        let metadata_items = self
-            .model_handle
-            .mesh_metadata_buffers
-            .get_current()
-            .get_buffer_items(
-                &self.device_context,
-                self.command_handle.command_pool,
-                false,
-            )
-            .unwrap();
 
         self.model_handle.loaded_meshes.insert(mesh_asset_id, mesh);
 
@@ -1966,55 +1949,56 @@ impl VulkanRenderer {
     /// Renders a frame for the Vulkan app
     pub fn render(&mut self) -> Result<()> {
         unsafe {
-            let instances = self
-                .command_handle
-                .instance_buffers
-                .get_current()
-                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-                .unwrap();
-            let draws = self
-                .command_handle
-                .indirect_draw_buffers
-                .get_current()
-                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-                .unwrap();
-            let visbuffer_items = self
-                .command_handle
-                .main_camera_visbuffers
-                .get_current()
-                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-                .unwrap();
-            let metadata_items = self
-                .model_handle
-                .mesh_metadata_buffers
-                .get_current()
-                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-                .unwrap();
+            // let instances = self
+            //     .command_handle
+            //     .instance_buffers
+            //     .get_current()
+            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            //     .unwrap();
+            // let draws = self
+            //     .command_handle
+            //     .indirect_draw_buffers
+            //     .get_current()
+            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            //     .unwrap();
+            // let visbuffer_items = self
+            //     .command_handle
+            //     .main_camera_visbuffers
+            //     .get_current()
+            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            //     .unwrap();
+            // let metadata_items = self
+            //     .model_handle
+            //     .mesh_metadata_buffers
+            //     .get_current()
+            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            //     .unwrap();
 
-            for i in 0..metadata_items.len().min(10) {
-                println!("metadata: {:#?}", metadata_items[i]);
-            }
-            println!("-----------------------------------------------------------------");
+            // // for i in 0..metadata_items.len().min(10) {
+            // //     println!("metadata: {:#?}", metadata_items[i]);
+            // // }
+            // // println!("-----------------------------------------------------------------");
 
-            for i in 0..instances.len() {
-                println!("{:#?}", instances[i]);
-                // if !instances[i].eq(&PerInstanceData::default()) {
-                //     println!("{:#?}", instances[i]);
-                // }
-            }
-            println!("-----------------------------------------------------------------");
-            print!("Visbuffer: ");
-            for i in 0..visbuffer_items.len() {
-                print!("{}  ", visbuffer_items[i]);
-            }
-            println!("\n-----------------------------------------------------------------");
+            // for i in 0..instances.len() {
+            //     //println!("{:#?}", instances[i]);
+            //     if !instances[i].eq(&PerInstanceData::default()) {
+            //         println!("{:#?} ", instances[i]);
+            //     }
+            // }
+            // println!("-----------------------------------------------------------------");
 
-            for i in 0..draws.len() {
-                println!("{:#?}", draws[i]);
-                //println!("{}", draws[i].instance_count);
-            }
-            println!("-----------------------------------------------------------------");
-            println!("-----------------------------------------------------------------");
+            // print!("Visbuffer: ");
+            // for i in 0..visbuffer_items.len() {
+            //     print!("{}  ", visbuffer_items[i]);
+            // }
+            // println!("\n-----------------------------------------------------------------");
+
+            // for i in 0..draws.len() {
+            //     println!("{:#?}", draws[i]);
+            //     //println!("{}", draws[i].instance_count);
+            // }
+            // println!("-----------------------------------------------------------------");
+            // println!("-----------------------------------------------------------------");
 
             //let start = Instant::now();
 
