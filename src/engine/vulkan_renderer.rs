@@ -85,6 +85,7 @@ unsafe impl Send for VulkanRenderer {}
 pub static VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<Mutex<VulkanRenderer>> =
     std::sync::LazyLock::new(|| Mutex::new(VulkanRenderer::new().unwrap()));
 
+// TODO: FIX LODS NOT WORKING
 impl VulkanRenderer {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -1030,22 +1031,17 @@ impl VulkanRenderer {
             false,
         )?;
 
-        let metadata_index = loaded_metadata
-            .iter()
-            .position(|m| m.eq(&mesh_metadata))
-            .unwrap_or_else(|| {
-                mesh_metadata_buffer
-                    .add_item(
-                        &self.device_context,
-                        self.command_handle.command_pool,
-                        self.render_pipeline_handle
-                            .descriptor_handle
-                            .descriptor_sets[self.command_handle.sync_handle.current_frame],
-                        MESH_METADATA_BINDING,
-                        mesh_metadata,
-                    )
-                    .unwrap() as usize
-            }) as u16;
+        let metadata_index = mesh_metadata_buffer
+            .add_item(
+                &self.device_context,
+                self.command_handle.command_pool,
+                self.render_pipeline_handle
+                    .descriptor_handle
+                    .descriptor_sets[self.command_handle.sync_handle.current_frame],
+                MESH_METADATA_BINDING,
+                mesh_metadata,
+            )
+            .unwrap() as u16;
 
         let mesh = Mesh {
             mesh_allocations,
@@ -1949,35 +1945,35 @@ impl VulkanRenderer {
     /// Renders a frame for the Vulkan app
     pub fn render(&mut self) -> Result<()> {
         unsafe {
-            // let instances = self
-            //     .command_handle
-            //     .instance_buffers
-            //     .get_current()
-            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-            //     .unwrap();
-            // let draws = self
-            //     .command_handle
-            //     .indirect_draw_buffers
-            //     .get_current()
-            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-            //     .unwrap();
-            // let visbuffer_items = self
-            //     .command_handle
-            //     .main_camera_visbuffers
-            //     .get_current()
-            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-            //     .unwrap();
-            // let metadata_items = self
-            //     .model_handle
-            //     .mesh_metadata_buffers
-            //     .get_current()
-            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-            //     .unwrap();
+            let instances = self
+                .command_handle
+                .instance_buffers
+                .get_current()
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap();
+            let draws = self
+                .command_handle
+                .indirect_draw_buffers
+                .get_current()
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap();
+            let visbuffer_items = self
+                .command_handle
+                .main_camera_visbuffers
+                .get_current()
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap();
+            let metadata_items = self
+                .model_handle
+                .mesh_metadata_buffers
+                .get_current()
+                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+                .unwrap();
 
-            // // for i in 0..metadata_items.len().min(10) {
-            // //     println!("metadata: {:#?}", metadata_items[i]);
-            // // }
-            // // println!("-----------------------------------------------------------------");
+            // for i in 0..metadata_items.len().min(10) {
+            //     println!("metadata: {:#?}", metadata_items[i]);
+            // }
+            // println!("-----------------------------------------------------------------");
 
             // for i in 0..instances.len() {
             //     //println!("{:#?}", instances[i]);
@@ -3497,13 +3493,13 @@ unsafe fn create_descriptor_set_layout(device: Device) -> Result<vk::DescriptorS
         .binding(UBO_BINDING)
         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
         .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::VERTEX);
+        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
 
     let model_matrix_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(MODEL_MATRIX_BINDING)
         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
         .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::VERTEX);
+        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::COMPUTE);
 
     let indirect_draw_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(INDIRECT_DRAW_BINDING)
@@ -3725,7 +3721,7 @@ unsafe fn create_compute_pipelines(
     descriptor_set_layout: vk::DescriptorSetLayout,
     device_context: &DeviceContext,
 ) -> Result<(Vec<vk::Pipeline>, Vec<vk::PipelineLayout>)> {
-    let shader = include_bytes!("../../assets/shaders/culling.spv");
+    let shader = include_bytes!("../../assets/shaders/spirv/culling.spv");
     let shader_module = create_shader_module(&device_context.device, shader)?;
     const SHADER_STAGE_COUNT: usize = 5;
 
@@ -3821,7 +3817,7 @@ unsafe fn create_pipeline(
 ) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
     // Stages
 
-    let shader = include_bytes!("../../assets/shaders/shader.spv");
+    let shader = include_bytes!("../../assets/shaders/spirv/main.spv");
 
     let shader_module = create_shader_module(&device_context.device, &shader[..])?;
 

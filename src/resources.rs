@@ -15,7 +15,7 @@ pub const COUNT_ENUM_T: usize = 2;
 
 /// File Size: 670 B
 pub const BLANK_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/blank_albedo.ktx2").as_slice());
-/// File Size: 213.49 KiB
+/// File Size: 221.05 KiB
 pub const CUTTLEFISH_ALBEDO_T: AlignedAsset = AlignedAsset(include_bytes!("../assets/textures/cuttlefish_albedo.ktx2").as_slice());
 
 // ------------Model Buffers------------

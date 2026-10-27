@@ -239,9 +239,19 @@ fn find_executable() -> Result<PathBuf> {
 
 fn compile_shaders() -> Result<()> {
     print_banner("1/5  Shader Compilation");
+
+    let shader_spirv_target_path = String::from("assets/shaders/spirv/");
     let shader_paths = traverse_directory("assets/shaders", vec!["slang"])?;
+
+    let mut compilable_shader_count = 0;
+    for path in shader_paths.clone() {
+        if !path.iter().any(|p| p.eq_ignore_ascii_case("lib")) {
+            compilable_shader_count += 1;
+        }
+    }
+
     if shader_paths.is_empty() {
-        log_color("No shader files found", ColorType::Yellow);
+        log_color("No compilable shader files found", ColorType::Yellow);
         return Ok(());
     }
 
@@ -273,12 +283,18 @@ fn compile_shaders() -> Result<()> {
         ];
 
         // Find "[shader("s and determine entry points for compilation on the line below
+        let mut is_shader_executable = false;
+        let mut is_vertex_shader = false;
         for i in 0..shader_lines.len() {
             let mut line_index = i;
 
             if !shader_lines[line_index].starts_with("//")
                 && shader_lines[line_index].contains("[shader(")
             {
+                if !is_vertex_shader && shader_lines[line_index].contains("vertex") {
+                    is_vertex_shader = true;
+                }
+
                 line_index += 1;
                 let mut next_line = shader_lines[line_index];
                 while next_line.starts_with("//") || next_line.starts_with("[") {
@@ -289,17 +305,33 @@ fn compile_shaders() -> Result<()> {
                 let entry_point_name = next_line.split([' ', '(']).collect::<Vec<&str>>()[1];
                 args.push("-entry");
                 args.push(entry_point_name);
+                is_shader_executable = true;
             }
+        }
+
+        if !is_shader_executable {
+            continue;
+        }
+
+        if is_vertex_shader {
+            args.push("-D");
+            args.push("__FORCE_READ_ONLY__");
         }
 
         args.push("-o");
 
-        match Command::new(slang_command)
-            .args(args)
-            .arg(shader_path.with_extension("spv"))
-            .arg(shader_path)
-            .output()
-        {
+        let mut destination = shader_spirv_target_path.clone();
+        let shader_path_string = shader_path.clone().into_string().unwrap();
+        destination.push_str(shader_path.file_stem().unwrap().to_str().unwrap());
+        destination.push_str(".spv");
+
+        args.push(destination.as_str());
+        args.push(&shader_path_string);
+
+        args.push("-I");
+        args.push("assets/shaders/lib");
+
+        match Command::new(slang_command).args(args).output() {
             Ok(m) => {
                 if m.status.code().map_or(false, |c| c != 0) {
                     let msg = String::from_utf8_lossy(&m.stderr).to_string();
@@ -313,7 +345,7 @@ fn compile_shaders() -> Result<()> {
             }
         };
 
-        render_progress("Shader compiling", index + 1, shader_paths.len())?;
+        render_progress("Shader compiling", index + 1, compilable_shader_count)?;
     }
     finish_progress();
 

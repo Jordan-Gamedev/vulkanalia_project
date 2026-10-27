@@ -37,8 +37,8 @@ use winit::window::CursorGrabMode;
 // Runs exactly once at startup
 fn init_spawn(mut _rng: Single<&mut WyRand, With<GlobalRng>>, mut commands: Commands) {
     commands.spawn(CameraComponent::default());
-    //commands.spawn(CubePrefab::component_bundle());
-    //commands.spawn(LimpetPrefab::component_bundle());
+    commands.spawn(CubePrefab::component_bundle());
+    commands.spawn(LimpetPrefab::component_bundle());
 
     // let num_cubes = rng.random_range(32..=32);
     // for _ in 0..num_cubes {
@@ -146,6 +146,7 @@ fn temp_spawn_test(
     render_query: Query<(Entity, &RenderComponent)>,
     mut commands: Commands,
 ) {
+    return;
     if keyboard.pressed(KeyCode::Space) {
         let spawn_pos: Vec3 = Vec3::new(
             rng.as_mut().random_range(-50.0..=50.0) as f32,

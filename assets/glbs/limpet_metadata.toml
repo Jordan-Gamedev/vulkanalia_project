@@ -10,7 +10,7 @@ lod3 = "none"
 
 # percentage on screen at which each lod is chosen
 [lod_percentages]
-lod1 = 50.0
+lod1 = 0.5
 lod2 = 0.0
 lod3 = 0.0
-cull = 25.0
+cull = 0.25
