@@ -1945,30 +1945,30 @@ impl VulkanRenderer {
     /// Renders a frame for the Vulkan app
     pub fn render(&mut self) -> Result<()> {
         unsafe {
-            let instances = self
-                .command_handle
-                .instance_buffers
-                .get_current()
-                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-                .unwrap();
-            let draws = self
-                .command_handle
-                .indirect_draw_buffers
-                .get_current()
-                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-                .unwrap();
-            let visbuffer_items = self
-                .command_handle
-                .main_camera_visbuffers
-                .get_current()
-                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-                .unwrap();
-            let metadata_items = self
-                .model_handle
-                .mesh_metadata_buffers
-                .get_current()
-                .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
-                .unwrap();
+            // let instances = self
+            //     .command_handle
+            //     .instance_buffers
+            //     .get_current()
+            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            //     .unwrap();
+            // let draws = self
+            //     .command_handle
+            //     .indirect_draw_buffers
+            //     .get_current()
+            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            //     .unwrap();
+            // let visbuffer_items = self
+            //     .command_handle
+            //     .main_camera_visbuffers
+            //     .get_current()
+            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            //     .unwrap();
+            // let metadata_items = self
+            //     .model_handle
+            //     .mesh_metadata_buffers
+            //     .get_current()
+            //     .get_buffer_items(&self.device_context, self.command_handle.command_pool, true)
+            //     .unwrap();
 
             // for i in 0..metadata_items.len().min(10) {
             //     println!("metadata: {:#?}", metadata_items[i]);
@@ -1990,8 +1990,8 @@ impl VulkanRenderer {
             // println!("\n-----------------------------------------------------------------");
 
             // for i in 0..draws.len() {
-            //     println!("{:#?}", draws[i]);
-            //     //println!("{}", draws[i].instance_count);
+            //     //println!("{:#?}", draws[i]);
+            //     println!("{}", draws[i].instance_count);
             // }
             // println!("-----------------------------------------------------------------");
             // println!("-----------------------------------------------------------------");
@@ -3992,7 +3992,7 @@ pub fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::Shad
 const DEG_TO_RAD: f32 = PI / 180.0;
 
 //const INSTANCE_CHUNK_COUNT: usize = 32_768;
-const INSTANCE_CHUNK_COUNT: usize = 4;
+const INSTANCE_CHUNK_COUNT: usize = 2048;
 
 const INDIRECT_DRAW_DATA_CHUNK_COUNT: usize = 4;
 

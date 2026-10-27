@@ -37,8 +37,8 @@ use winit::window::CursorGrabMode;
 // Runs exactly once at startup
 fn init_spawn(mut _rng: Single<&mut WyRand, With<GlobalRng>>, mut commands: Commands) {
     commands.spawn(CameraComponent::default());
-    commands.spawn(CubePrefab::component_bundle());
-    commands.spawn(LimpetPrefab::component_bundle());
+    //commands.spawn(CubePrefab::component_bundle());
+    //commands.spawn(LimpetPrefab::component_bundle());
 
     // let num_cubes = rng.random_range(32..=32);
     // for _ in 0..num_cubes {
@@ -146,7 +146,6 @@ fn temp_spawn_test(
     render_query: Query<(Entity, &RenderComponent)>,
     mut commands: Commands,
 ) {
-    return;
     if keyboard.pressed(KeyCode::Space) {
         let spawn_pos: Vec3 = Vec3::new(
             rng.as_mut().random_range(-50.0..=50.0) as f32,
@@ -190,12 +189,6 @@ fn temp_spawn_test(
         ));
 
         temp_struct.cube_count += 1;
-        println!(
-            "cubes: {} limpets: {} total: {}",
-            temp_struct.cube_count,
-            temp_struct.limpet_count,
-            temp_struct.cube_count + temp_struct.limpet_count
-        );
     }
 
     if keyboard.pressed(KeyCode::ControlLeft) {
@@ -207,15 +200,8 @@ fn temp_spawn_test(
         if entities.len() > 0 {
             let rand_chosen = rng.random_range(0..entities.len());
             commands.entity(entities[rand_chosen]).despawn();
+            temp_struct.cube_count -= 1;
         }
-
-        temp_struct.cube_count -= 1;
-        println!(
-            "cubes: {} limpets: {} total: {}",
-            temp_struct.cube_count,
-            temp_struct.limpet_count,
-            temp_struct.cube_count + temp_struct.limpet_count
-        );
     }
 
     if keyboard.pressed(KeyCode::ShiftLeft) {
@@ -261,12 +247,6 @@ fn temp_spawn_test(
         ));
 
         temp_struct.limpet_count += 1;
-        println!(
-            "cubes: {} limpets: {} total: {}",
-            temp_struct.cube_count,
-            temp_struct.limpet_count,
-            temp_struct.cube_count + temp_struct.limpet_count
-        );
     }
 
     if keyboard.pressed(KeyCode::Tab) {
@@ -278,9 +258,15 @@ fn temp_spawn_test(
         if entities.len() > 0 {
             let rand_chosen = rng.random_range(0..entities.len());
             commands.entity(entities[rand_chosen]).despawn();
+            temp_struct.limpet_count -= 1;
         }
+    }
 
-        temp_struct.limpet_count -= 1;
+    if keyboard.just_released(KeyCode::Space)
+        || keyboard.just_released(KeyCode::ControlLeft)
+        || keyboard.just_released(KeyCode::ShiftLeft)
+        || keyboard.just_released(KeyCode::Tab)
+    {
         println!(
             "cubes: {} limpets: {} total: {}",
             temp_struct.cube_count,

@@ -27,10 +27,10 @@ export struct MeshMetadata
 {
     float[3] minAabb;
     float[3] maxAabb;
-    uint16_t cullPercentage;
     uint16_t lod1Percentage;
     uint16_t lod2Percentage;
     uint16_t lod3Percentage;
+    uint16_t cullPercentage;
 }
 
 [[vk::binding(0, 0)]]

@@ -13,7 +13,7 @@ struct BoundingBox
         float3 localCenter = 0.5f * float3(metadata.minAabb[0] + metadata.maxAabb[0], metadata.minAabb[1] + metadata.maxAabb[1], metadata.minAabb[2] + metadata.maxAabb[2]);
         float3 localExtents = 0.5f * float3(metadata.maxAabb[0] - metadata.minAabb[0], metadata.maxAabb[1] - metadata.minAabb[1], metadata.maxAabb[2] - metadata.minAabb[2]);
         float3 worldCenter = mul(modelMatrix, float4(localCenter, 1.0f)).xyz;
-        float3 worldExtents = abs(modelMatrix[0].xyz * localExtents.x + abs(modelMatrix[1].xyz) * localExtents.y + abs(modelMatrix[2].xyz) * localExtents.z);
+        float3 worldExtents = abs(modelMatrix[0].xyz) * localExtents.x + abs(modelMatrix[1].xyz) * localExtents.y + abs(modelMatrix[2].xyz) * localExtents.z;
 
         return BoundingBox(
             localCenter,
@@ -65,11 +65,11 @@ void pass2(uint3 threadId: SV_DispatchThreadID)
     // Calculate bounding box
     const BoundingBox boundingBox = BoundingBox.calculate(meshMetadata, modelMatrix);
 
-    // // Check if mesh is visible
-    // if (!isVisible(boundingBox))
-    // {
-    //     return;
-    // }
+    // Check if mesh is visible
+    if (!isVisible(boundingBox))
+    {
+        return;
+    }
 
     // Calculate LOD and determine the draw call index
     uint chosenLod = selectLod(meshMetadata, boundingBox);
@@ -81,8 +81,7 @@ void pass2(uint3 threadId: SV_DispatchThreadID)
     uint drawIndex = sourceInstance.meshMetadataIndex * 4 + chosenLod;
 
     // Increase instance count for the draw call
-    uint prev_count;
-    InterlockedAdd(indirectDrawData[drawIndex].instanceCount, 1, prev_count);
+    InterlockedAdd(indirectDrawData[drawIndex].instanceCount, 1);
 }
 
 // Third pass calculates instance offsets
@@ -132,10 +131,10 @@ void pass4(uint3 threadId: SV_DispatchThreadID)
     const BoundingBox boundingBox = BoundingBox.calculate(meshMetadata, modelMatrix);
 
     // Check if mesh is visible
-    // if (!isVisible(boundingBox))
-    // {
-    //     return;
-    // }
+    if (!isVisible(boundingBox))
+    {
+        return;
+    }
 
     // Calculate LOD and determine the draw call index
     uint chosenLod = selectLod(meshMetadata, boundingBox);
@@ -226,11 +225,10 @@ uint selectLod(in const MeshMetadata metadata, in const BoundingBox boundingBox)
 
     // Projected diameter on screen (fraction of screen height)
     // uniformBuffer.proj[1][1] is the vertical focal length (1 / tan(FOV / 2))
-    float projectedDiameter = (2.0f * boundingRadius * ubo.proj[1][1]) / viewDepth;
+    float projectedDiameter = abs(2.0f * boundingRadius * ubo.proj[1][1]) / viewDepth;
 
     // Convert to percentage represented as u16
-    //    uint16_t screenPercentage = uint16_t(projectedDiameter * uint16_t::maxValue);
-    uint16_t screenPercentage = uint16_t::maxValue / 2 + 100;
+    uint16_t screenPercentage = uint16_t(projectedDiameter * uint16_t::maxValue);
 
     if (screenPercentage < metadata.cullPercentage)
     {
