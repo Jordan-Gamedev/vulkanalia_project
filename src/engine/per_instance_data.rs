@@ -7,6 +7,7 @@ pub struct PerInstanceData {
     pub sampler_index: u16,
     pub mesh_metadata_index: u16,
     pub mesh_asset_id: u16,
+    pub bone_first_instance: u32,
 }
 
 impl Default for PerInstanceData {
@@ -16,6 +17,7 @@ impl Default for PerInstanceData {
             sampler_index: u16::MAX,
             mesh_metadata_index: u16::MAX,
             mesh_asset_id: u16::MAX,
+            bone_first_instance: u32::MAX,
         }
     }
 }

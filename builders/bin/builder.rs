@@ -1,3 +1,6 @@
+#![feature(str_as_str)]
+
+use gltf::animation::Interpolation;
 use meshopt::{quantize_half, quantize_snorm};
 use serde::Deserialize;
 use std::ffi::OsStr;
@@ -60,6 +63,52 @@ struct Model {
     name: String,
     lods: Lods,
     lod_percentages: LodPercentages,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum InterpolationType {
+    Linear,
+    Step,
+    CubicSpline,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TargetType {
+    ModelMatrix,
+    Bone,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PropertyType {
+    Translation,
+    Rotation,
+    Scale,
+    MorphTargetWeight,
+}
+
+#[derive(Debug, Clone)]
+pub enum AnimationOutputData {
+    Translations(Vec<[f32; 3]>),
+    Rotations(Vec<[f32; 4]>),
+    Scales(Vec<[f32; 3]>),
+    MorphTargetWeights(Vec<f32>),
+}
+
+#[derive(Debug, Clone)]
+struct Animation {
+    start_time: f32,
+    end_time: f32,
+    name: String,
+    samplers: Vec<AnimationSampler>,
+}
+
+#[derive(Debug, Clone)]
+struct AnimationSampler {
+    interpolation_type: InterpolationType,
+    target_type: TargetType,
+    target_property_type: PropertyType,
+    timestamps: Vec<f32>,
+    outputs: AnimationOutputData,
 }
 
 fn find_project_root(start: &Path) -> Option<PathBuf> {
@@ -257,8 +306,8 @@ fn compile_shaders() -> Result<()> {
 
     let mut failed_shaders: Vec<&str> = Vec::new();
     let slang_command = cfg_select! {
-        windows => { "C:/VulkanSDK/1.4.335.0/Bin/slangc.exe" },
-        _ => { "slangc" }
+        windows => "C:/VulkanSDK/1.4.335.0/Bin/slangc.exe",
+        _ => "slangc",
     };
 
     for (index, shader_path) in shader_paths.iter().enumerate() {
@@ -382,8 +431,8 @@ fn convert_textures() -> Result<()> {
     }
 
     let ktx_command = cfg_select! {
-        windows => { "toktx" },
-        _ => { "ktx" }
+        windows => "toktx",
+        _ => "ktx",
     };
     let base_args = vec![
         "create",
@@ -541,8 +590,15 @@ fn mesher() -> Result<()> {
         return Ok(());
     }
 
-    let dest_root_dir = "assets/mesh_files";
-    if let Err(e) = fs::remove_dir_all(&dest_root_dir) {
+    let mesh_dest_root_dir = "assets/mesh_files";
+    if let Err(e) = fs::remove_dir_all(&mesh_dest_root_dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("{e}");
+        }
+    }
+
+    let anim_dest_root_dir = "assets/animation_files";
+    if let Err(e) = fs::remove_dir_all(&anim_dest_root_dir) {
         if e.kind() != std::io::ErrorKind::NotFound {
             eprintln!("{e}");
         }
@@ -590,15 +646,34 @@ fn mesher() -> Result<()> {
             }
         }
 
+        let glb_count = gathered_glbs.len();
+
         // Compress meshes and write them to file
-        let bytes = read_glbs(&model, gathered_glbs, gathered_buffers);
+        let bytes = read_glbs(&model, &gathered_glbs, &gathered_buffers);
         write_mesh_to_file(
             &source_root_dir.to_string(),
-            &dest_root_dir.to_string(),
+            &mesh_dest_root_dir.to_string(),
             path.parent().unwrap().as_os_str(),
             &model.name,
             bytes,
         )?;
+
+        // Get and write animations to file
+        for i in 0..glb_count {
+            let animations = read_animation(&gathered_glbs[i], &gathered_buffers[i]);
+            for animation in &animations {
+                let mut file_name: String = model.name.clone();
+                file_name.push('_');
+                file_name.push_str(&animation.name);
+                write_animation_to_file(
+                    &source_root_dir.to_string(),
+                    &anim_dest_root_dir.to_string(),
+                    path.parent().unwrap().as_os_str(),
+                    &file_name,
+                    animation,
+                )?;
+            }
+        }
 
         render_progress("Meshing glbs", index + 1, paths.len())?;
     }
@@ -636,6 +711,8 @@ fn create_resources() -> Result<()> {
     resource_file_contents.push_str("#![allow(dead_code)]\n\n");
     resource_file_contents.push_str("#[repr(align(4096))]\n");
     resource_file_contents.push_str("pub struct AlignedAsset(pub &'static[u8]);\n\n");
+
+    // Textures
 
     resource_file_contents.push_str("// ------------KTX2 Textures------------\n\n");
 
@@ -678,6 +755,54 @@ fn create_resources() -> Result<()> {
         texture_file_names.push(file_name);
     }
 
+    // Animations
+
+    resource_file_contents.push_str("\n// --------------Animations-------------\n\n");
+
+    let animation_resources = traverse_directory("assets", vec!["anim"])?;
+
+    resource_file_contents.push_str(&format!(
+        "pub const START_ENUM_A: usize = {};\n",
+        texture_resources.len() + 1
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const END_ENUM_A: usize = {};\n",
+        texture_resources.len() + animation_resources.len()
+    ));
+    resource_file_contents.push_str(&format!(
+        "pub const COUNT_ENUM_A: usize = {};\n\n",
+        animation_resources.len()
+    ));
+
+    let mut animation_file_names: Vec<String> = Vec::new();
+
+    for resource in animation_resources.clone() {
+        let resource_path = resource.to_string_lossy().replace("\\", "/");
+        let resource_path = resource_path.as_str();
+        let file_name = format!(
+            "{}_A",
+            resource
+                .file_stem()
+                .unwrap()
+                .to_ascii_uppercase()
+                .into_string()
+                .unwrap()
+        );
+
+        let file_size = fs::read(resource_path).unwrap().len();
+
+        // Print file size of resource
+        resource_file_contents.push_str(&format!(
+            "/// File Size: {}\n",
+            &byte_size_as_string(&file_size)
+        ));
+
+        resource_file_contents.push_str(format!("pub const {}: AlignedAsset = AlignedAsset(include_bytes!(\"../{}\").as_slice());\n", file_name, resource_path).as_str());
+        animation_file_names.push(file_name);
+    }
+
+    // Models
+
     resource_file_contents.push_str("\n// ------------Model Buffers------------\n\n");
 
     resource_file_contents.push_str("#[derive(Clone, Debug, Default)]\n");
@@ -694,11 +819,11 @@ fn create_resources() -> Result<()> {
 
     resource_file_contents.push_str(&format!(
         "pub const START_ENUM_M: usize = {};\n",
-        texture_resources.len() + 1
+        texture_resources.len() + animation_resources.len() + 1
     ));
     resource_file_contents.push_str(&format!(
         "pub const END_ENUM_M: usize = {};\n",
-        texture_resources.len() + vertex_resources.len()
+        texture_resources.len() + animation_resources.len() + vertex_resources.len()
     ));
     resource_file_contents.push_str(&format!(
         "pub const COUNT_ENUM_M: usize = {};\n\n",
@@ -977,6 +1102,32 @@ fn create_resources() -> Result<()> {
         enum_texture_names.push(tex_name);
     }
 
+    let mut enum_animation_names: Vec<String> = Vec::new();
+    for anim_name in animation_file_names.clone() {
+        // Split name into individual words
+        let mut name_words: Vec<String> = anim_name
+            .split("_")
+            .map(|s| s.to_ascii_lowercase().to_string())
+            .collect();
+
+        // Remove asset type suffix
+        name_words.remove(name_words.len() - 1);
+
+        // Capitalize first letter of every word
+        for name in &mut name_words {
+            name.get_mut(0..1).unwrap().make_ascii_uppercase();
+        }
+
+        // Add asset type suffix
+        name_words.push("Animation".to_string());
+
+        let anim_name = name_words.concat();
+
+        // Add the enum name
+        resource_file_contents.push_str(&format!("\t{},\n", anim_name));
+        enum_animation_names.push(anim_name);
+    }
+
     let mut enum_vertex_names: Vec<String> = Vec::new();
     for vert_name in model_file_names.clone() {
         // Split name into individual words
@@ -1013,6 +1164,13 @@ fn create_resources() -> Result<()> {
     for i in 0..texture_file_names.len() {
         resource_file_contents.push_str(&format!("\t\tAssetId::{} => {{\n", enum_texture_names[i]));
         resource_file_contents.push_str(&format!("\t\t\t{}\n", texture_file_names[i]));
+        resource_file_contents.push_str("\t\t},\n");
+    }
+
+    for i in 0..animation_file_names.len() {
+        resource_file_contents
+            .push_str(&format!("\t\tAssetId::{} => {{\n", enum_animation_names[i]));
+        resource_file_contents.push_str(&format!("\t\t\t{}\n", animation_file_names[i]));
         resource_file_contents.push_str("\t\t},\n");
     }
 
@@ -1072,8 +1230,11 @@ fn upx_compress(exe_path: &PathBuf) -> Result<()> {
     log_color("Compressing executable with UPX...", ColorType::Blue);
 
     let upx_command = cfg_select! {
-        windows => { &format!("{}\\builders\\upx.exe", std::env::current_dir().unwrap().as_path().to_str().unwrap()) },
-        _ => { "upx" }
+        windows => &format!(
+            "{}\\builders\\upx.exe",
+            std::env::current_dir().unwrap().as_path().to_str().unwrap()
+        ),
+        _ => "upx",
     };
 
     match Command::new(upx_command)
@@ -1097,8 +1258,8 @@ fn upx_compress(exe_path: &PathBuf) -> Result<()> {
 
 fn read_glbs(
     model: &Model,
-    gathered_glbs: Vec<gltf::Document>,
-    gathered_buffers: Vec<Vec<gltf::buffer::Data>>,
+    gathered_glbs: &Vec<gltf::Document>,
+    gathered_buffers: &Vec<Vec<gltf::buffer::Data>>,
 ) -> Vec<u8> {
     if gathered_glbs.is_empty() {
         return Vec::new();
@@ -1310,6 +1471,205 @@ fn read_glb(
         vertex_count,
         glb_indices.len(),
     )))
+}
+
+fn read_animation(glb: &gltf::Document, buffers: &Vec<gltf::buffer::Data>) -> Vec<Animation> {
+    let mut animations: Vec<Animation> = Vec::new();
+
+    for loading_animation in glb.animations() {
+        let mut samplers: Vec<AnimationSampler> = Vec::new();
+
+        for channel in loading_animation.channels() {
+            let sampler = channel.sampler();
+
+            // Get interpolation
+            let interpolation_type = match sampler.interpolation() {
+                Interpolation::Linear => InterpolationType::Linear,
+                Interpolation::Step => InterpolationType::Step,
+                Interpolation::CubicSpline => InterpolationType::CubicSpline,
+            };
+
+            let reader = channel.reader(|buffer| buffers.get(buffer.index()).map(|v| v.as_slice()));
+
+            // Skip if inputs are missing
+            let Some(inputs_iter) = reader.read_inputs() else {
+                continue;
+            };
+
+            let timestamps: Vec<f32> = match inputs_iter {
+                gltf::accessor::Iter::Standard(times) => times.collect(),
+                gltf::accessor::Iter::Sparse(_) => {
+                    unimplemented!("Sparse data not handled")
+                }
+            };
+
+            // Skip if there are no frames
+            if timestamps.is_empty() {
+                continue;
+            }
+
+            // Skip if inputs are missing
+            let Some(outputs_iter) = reader.read_outputs() else {
+                continue;
+            };
+
+            let target_property_type: PropertyType;
+            let outputs: AnimationOutputData = match outputs_iter {
+                gltf::animation::util::ReadOutputs::Translations(t) => {
+                    target_property_type = PropertyType::Translation;
+                    AnimationOutputData::Translations(t.collect())
+                }
+                gltf::animation::util::ReadOutputs::Rotations(r) => {
+                    target_property_type = PropertyType::Rotation;
+                    AnimationOutputData::Rotations(r.into_f32().collect())
+                }
+                gltf::animation::util::ReadOutputs::Scales(s) => {
+                    target_property_type = PropertyType::Scale;
+                    AnimationOutputData::Translations(s.collect())
+                }
+                gltf::animation::util::ReadOutputs::MorphTargetWeights(w) => {
+                    target_property_type = PropertyType::MorphTargetWeight;
+                    AnimationOutputData::MorphTargetWeights(w.into_f32().collect())
+                }
+            };
+
+            let target_type = if channel.target().node().skin().is_some() {
+                TargetType::Bone
+            } else {
+                TargetType::ModelMatrix
+            };
+
+            samplers.push(AnimationSampler {
+                interpolation_type,
+                target_type,
+                target_property_type,
+                timestamps,
+                outputs,
+            });
+        }
+
+        // Skip if there are no samplers to create an animation
+        if samplers.is_empty() {
+            continue;
+        }
+
+        // Get animation name
+        let name = loading_animation.name().unwrap_or("unnamed").to_string();
+
+        // Compute start and end times from samplers if available
+        let start_time = samplers
+            .iter()
+            .map(|s| s.timestamps.first().copied().unwrap_or(0.0))
+            .min_by(|x, y| x.total_cmp(y))
+            .unwrap_or(0.0);
+        let end_time = samplers
+            .iter()
+            .map(|s| s.timestamps.last().copied().unwrap_or(0.0))
+            .max_by(|x, y| x.total_cmp(y))
+            .unwrap_or(0.0);
+
+        let animation = Animation {
+            name,
+            start_time,
+            end_time,
+            samplers,
+        };
+
+        animations.push(animation);
+    }
+
+    animations
+}
+
+fn write_animation_to_file(
+    source_root_dir: &String,
+    dest_root_dir: &String,
+    source_path_dir: &OsStr,
+    file_name: &String,
+    animation: &Animation,
+) -> Result<()> {
+    let mut bytes: Vec<u8> = Vec::new();
+
+    // Animation
+    bytes.extend(animation.start_time.to_be_bytes());
+    bytes.extend(animation.end_time.to_be_bytes());
+    bytes.extend((animation.name.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(animation.name.as_bytes());
+    bytes.extend((animation.samplers.len() as u32).to_be_bytes());
+
+    // Samplers
+    for sampler in &animation.samplers {
+        // Sampler data
+        bytes.extend((sampler.interpolation_type as u32).to_be_bytes());
+        bytes.extend((sampler.target_type as u32).to_be_bytes());
+        bytes.extend((sampler.target_property_type as u32).to_be_bytes());
+
+        // Timestamps
+        bytes.extend((sampler.timestamps.len() as u32).to_be_bytes());
+        sampler
+            .timestamps
+            .iter()
+            .for_each(|t| bytes.extend(t.to_be_bytes()));
+
+        // Outputs
+        match &sampler.outputs {
+            AnimationOutputData::Translations(t) => {
+                bytes.extend((t.len() as u32).to_be_bytes());
+                t.iter().for_each(|t| {
+                    bytes.extend(t[0].to_be_bytes());
+                    bytes.extend(t[1].to_be_bytes());
+                    bytes.extend(t[2].to_be_bytes());
+                });
+            }
+            AnimationOutputData::Rotations(r) => {
+                bytes.extend((r.len() as u32).to_be_bytes());
+                r.iter().for_each(|r| {
+                    bytes.extend(r[0].to_be_bytes());
+                    bytes.extend(r[1].to_be_bytes());
+                    bytes.extend(r[2].to_be_bytes());
+                    bytes.extend(r[3].to_be_bytes());
+                });
+            }
+            AnimationOutputData::Scales(s) => {
+                bytes.extend((s.len() as u32).to_be_bytes());
+                s.iter().for_each(|s| {
+                    bytes.extend(s[0].to_be_bytes());
+                    bytes.extend(s[1].to_be_bytes());
+                    bytes.extend(s[2].to_be_bytes());
+                });
+            }
+            AnimationOutputData::MorphTargetWeights(w) => {
+                bytes.extend((w.len() as u32).to_be_bytes());
+                w.iter().for_each(|w| {
+                    bytes.extend(w.to_be_bytes());
+                });
+            }
+        }
+    }
+
+    let dest_path_dir = {
+        let source_path_string = String::from(source_path_dir.to_str().unwrap());
+        source_path_string.replace(source_root_dir.as_str(), dest_root_dir.as_str())
+    };
+
+    // Create a new directory
+    match fs::create_dir_all(&dest_path_dir) {
+        Ok(_) => {}
+        Err(e) => eprintln!("{e}"),
+    };
+
+    // Write contents to file
+    let file_name = format!(
+        "{}{}{}.anim",
+        dest_path_dir.as_str(),
+        std::path::MAIN_SEPARATOR,
+        file_name,
+    );
+    if let Err(e) = fs::write(file_name, bytes.as_slice()) {
+        eprintln!("{e}");
+    }
+
+    Ok(())
 }
 
 fn write_mesh_to_file(

@@ -23,6 +23,7 @@ use vulkanalia_project::engine::VulkanRenderer;
 use vulkanalia_project::engine::vulkan_renderer::VULKAN_RENDERER_SINGLETON;
 use vulkanalia_project::input_manager::InputManager;
 use vulkanalia_project::resources::*;
+use vulkanalia_project::systems::animation_systems::{animate_system, reset_animated_transforms};
 use vulkanalia_project::systems::camera_move_system::camera_move_system;
 use vulkanalia_project::systems::camera_render_system::camera_render_system;
 use vulkanalia_project::{input_manager, prefabs::*};
@@ -228,7 +229,7 @@ fn temp_spawn_test(
                 ),
             ),
             RenderComponent::new(
-                AssetId::LimpetMesh,
+                AssetId::ShroomMesh,
                 Material::new(
                     random_texture,
                     AssetId::None,
@@ -252,7 +253,7 @@ fn temp_spawn_test(
     if keyboard.pressed(KeyCode::Tab) {
         let (entities, _): (Vec<Entity>, Vec<RenderComponent>) = render_query
             .iter()
-            .filter(|&(_, r)| r.mesh == AssetId::LimpetMesh)
+            .filter(|&(_, r)| r.mesh == AssetId::ShroomMesh)
             .unzip();
 
         if entities.len() > 0 {
@@ -371,12 +372,16 @@ fn main() {
     bevy_app.add_systems(Startup, init_spawn).add_systems(
         Update,
         (
-            //(keyboard_input_update,),
             temp_spawn_test,
-            gameplay_update,
-            (camera_move_system, camera_render_system).chain(),
-        )
-            .chain(),
+            (
+                reset_animated_transforms,
+                gameplay_update,
+                animate_system,
+                camera_move_system,
+                camera_render_system,
+            )
+                .chain(),
+        ),
     );
 
     let mut is_start = true;

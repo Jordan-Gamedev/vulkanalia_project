@@ -85,7 +85,6 @@ unsafe impl Send for VulkanRenderer {}
 pub static VULKAN_RENDERER_SINGLETON: std::sync::LazyLock<Mutex<VulkanRenderer>> =
     std::sync::LazyLock::new(|| Mutex::new(VulkanRenderer::new().unwrap()));
 
-// TODO: FIX LODS NOT WORKING
 impl VulkanRenderer {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -562,6 +561,7 @@ impl VulkanRenderer {
             sampler_index,
             mesh_metadata_index: mesh.metadata_index,
             mesh_asset_id: mesh_asset_id as u16,
+            bone_first_instance: 0,
         };
 
         let mut new_instance_buffer_index: usize = usize::MAX;
@@ -3991,10 +3991,11 @@ pub fn create_shader_module(device: &Device, bytecode: &[u8]) -> Result<vk::Shad
 
 const DEG_TO_RAD: f32 = PI / 180.0;
 
-//const INSTANCE_CHUNK_COUNT: usize = 32_768;
-const INSTANCE_CHUNK_COUNT: usize = 2048;
+const INSTANCE_CHUNK_COUNT: usize = 32_768;
 
-const INDIRECT_DRAW_DATA_CHUNK_COUNT: usize = 4;
+const INDIRECT_DRAW_DATA_CHUNK_COUNT: usize = 16;
+
+const BONE_CHUNK_COUNT: usize = 512;
 
 // Build Functions
 
@@ -4084,7 +4085,7 @@ fn create_instance_buffers(
     device_context: &DeviceContext,
     command_pool: vk::CommandPool,
 ) -> InFlightBuffers<PerInstanceData> {
-    let mut buffers = InFlightBuffers::new(
+    InFlightBuffers::new(
         MAX_FRAMES_IN_FLIGHT as usize,
         device_context,
         command_pool,
@@ -4092,14 +4093,8 @@ fn create_instance_buffers(
         vk::BufferUsageFlags::STORAGE_BUFFER,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         INSTANCE_CHUNK_COUNT as u32,
-        vec![PerInstanceData::default(); INSTANCE_CHUNK_COUNT],
-    );
-
-    for i in 0..buffers.buffers.len() {
-        buffers.buffers.get_mut(i).unwrap().element_count = 0;
-    }
-
-    buffers
+        Vec::new(),
+    )
 }
 
 fn create_visbuffers(
@@ -4329,6 +4324,22 @@ fn create_geometry_staging_buffer(
     )
 }
 
+fn create_bone_buffers(
+    device_context: &DeviceContext,
+    command_pool: vk::CommandPool,
+) -> InFlightBuffers<UniformBufferObject> {
+    InFlightBuffers::new(
+        MAX_FRAMES_IN_FLIGHT as usize,
+        device_context,
+        command_pool,
+        BONE_CHUNK_COUNT as u64,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        BONE_CHUNK_COUNT as u32,
+        Vec::new(),
+    )
+}
+
 fn create_uniform_buffers(
     device_context: &DeviceContext,
     command_pool: vk::CommandPool,
@@ -4349,7 +4360,7 @@ fn create_model_matrix_buffers(
     device_context: DeviceContext,
     command_pool: vk::CommandPool,
 ) -> InFlightBuffers<QuantizedModelMatrix> {
-    let mut buffers = InFlightBuffers::new(
+    InFlightBuffers::new(
         MAX_FRAMES_IN_FLIGHT as usize,
         &device_context,
         command_pool,
@@ -4357,14 +4368,8 @@ fn create_model_matrix_buffers(
         vk::BufferUsageFlags::STORAGE_BUFFER,
         vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         INSTANCE_CHUNK_COUNT as u32,
-        vec![QuantizedModelMatrix::default(); INSTANCE_CHUNK_COUNT],
-    );
-
-    for i in 0..buffers.buffers.len() {
-        buffers.buffers.get_mut(i).unwrap().element_count = 0;
-    }
-
-    buffers
+        Vec::new(),
+    )
 }
 
 fn create_mesh_metadata_buffers(

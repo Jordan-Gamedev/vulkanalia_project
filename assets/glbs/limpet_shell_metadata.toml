@@ -1,10 +1,10 @@
 # model name
-name = "Limpet"
+name = "LimpetShell"
 
 # model glb paths for each level of detail
 [lods]
-lod0 = "Limpet.glb"
-lod1 = "Cube.glb"
+lod0 = "limpet_shell.glb"
+lod1 = "cube.glb"
 lod2 = "none"
 lod3 = "none"
 

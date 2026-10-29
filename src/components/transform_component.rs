@@ -3,6 +3,7 @@ use glam::Quat;
 use glam::Vec3;
 
 use crate::engine::QuantizedModelMatrix;
+use crate::engine::vulkan_renderer::VULKAN_RENDERER_SINGLETON;
 
 #[derive(Component, Clone, Copy, Debug)]
 pub struct TransformComponent {
@@ -50,6 +51,23 @@ impl TransformComponent {
 
     pub fn has_render(&self) -> bool {
         self.model_matrix_index != u32::MAX
+    }
+
+    pub fn update_model_matrix(&self) {
+        if self.has_render() {
+            let vulkan_renderer = VULKAN_RENDERER_SINGLETON.lock().unwrap();
+            let model_matrix_buffer = vulkan_renderer
+                .model_handle
+                .model_matrix_buffers
+                .get_current();
+
+            unsafe {
+                *model_matrix_buffer
+                    .mapped
+                    .add(self.model_matrix_index as usize)
+                    .cast_mut() = self.to_quantized_matrix();
+            }
+        }
     }
 
     pub fn forward(&self) -> Vec3 {

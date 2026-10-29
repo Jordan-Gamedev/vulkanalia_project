@@ -24,7 +24,7 @@ impl Prefab<(TransformComponent, RenderComponent)> for LimpetPrefab {
                 Quat::from_axis_angle(Vec3::new(1.0, 0.0, 0.0), 45.0 * DEG_TO_RAD),
             ),
             RenderComponent::new(
-                AssetId::LimpetMesh,
+                AssetId::LimpetshellMesh,
                 Material::new(
                     AssetId::CuttlefishAlbedoTexture,
                     AssetId::None,

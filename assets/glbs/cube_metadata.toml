@@ -3,7 +3,7 @@ name = "Cube"
 
 # model glb paths for each level of detail
 [lods]
-lod0 = "Cube.glb"
+lod0 = "cube.glb"
 lod1 = "none"
 lod2 = "none"
 lod3 = "none"

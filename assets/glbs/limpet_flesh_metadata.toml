@@ -1,0 +1,16 @@
+# model name
+name = "LimpetFlesh"
+
+# model glb paths for each level of detail
+[lods]
+lod0 = "limpet_flesh.glb"
+lod1 = "cube.glb"
+lod2 = "none"
+lod3 = "none"
+
+# percentage on screen at which each lod is chosen
+[lod_percentages]
+lod1 = 0.5
+lod2 = 0.0
+lod3 = 0.0
+cull = 0.25

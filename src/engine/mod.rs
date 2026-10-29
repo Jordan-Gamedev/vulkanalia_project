@@ -1,3 +1,4 @@
+pub mod animations;
 pub mod buffer;
 pub mod command_handle;
 pub mod descriptor_handle;
